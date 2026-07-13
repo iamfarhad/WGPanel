@@ -23,6 +23,7 @@ env_get() { grep "^${1}=" "$ENV_FILE" | head -n1 | cut -d= -f2-; }
 
 api_port() { env_get API_PORT; }
 internal_token() { env_get INTERNAL_API_TOKEN; }
+panel_url() { echo "https://$(env_get PANEL_DOMAIN)"; }
 
 # curl wrapper for /internal/* calls: attaches the shared secret required by the API's
 # internal-token middleware (see docs/PRD-security-access-control.md §5) - loopback/Caddy
@@ -57,6 +58,8 @@ cmd_status() {
   else
     warn "API: not responding on /internal/healthz"
   fi
+  echo
+  log "Panel address: $(panel_url)"
 }
 
 cmd_doctor() {
@@ -192,6 +195,7 @@ cmd_update() {
   if wait_for_health "$HEALTH_TIMEOUT_SECONDS"; then
     log "Update successful. Current versions:"
     cmd_version
+    log "Panel address: $(panel_url)"
   else
     err "Health check failed after update - rolling back to the previous known-good images."
     cmd_rollback

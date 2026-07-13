@@ -144,6 +144,14 @@ install_cli() {
   log "Installed 'wgpanel' management command (try: wgpanel status / wgpanel doctor)"
 }
 
+# Populated by show_first_admin_credentials, printed as part of the final summary at
+# the very end of main() instead of immediately - previously this printed right
+# before setup_self_node's own long, scrolling output (WireGuard setup, docker pulls,
+# more prompts), so by the time the script finished the one-time password had
+# already scrolled off screen. Same information, just held until the end so it's the
+# last thing on screen, not the first.
+ADMIN_CREDS_BLOCK=""
+
 show_first_admin_credentials() {
   # The API auto-creates the super admin itself on its very first successful boot
   # against a fresh database (gated on the admins table being empty - see
@@ -166,13 +174,7 @@ show_first_admin_credentials() {
     return 0
   fi
 
-  echo
-  echo "=============================================="
-  echo " Super admin created - save these credentials "
-  echo "=============================================="
-  echo "$creds" | sed -E 's/^.*(WGPANEL_INITIAL_ADMIN_[A-Z]+=.*)$/  \1/'
-  echo "=============================================="
-  echo
+  ADMIN_CREDS_BLOCK="$(echo "$creds" | sed -E 's/^.*(WGPANEL_INITIAL_ADMIN_[A-Z]+=.*)$/  \1/')"
 }
 
 wgpanel_wait_for_health() {
@@ -389,7 +391,19 @@ main() {
 
   PANEL_DOMAIN="$(grep '^PANEL_DOMAIN=' "$ENV_FILE" | cut -d= -f2)"
   echo
-  log "Done. Panel should be reachable shortly at: https://${PANEL_DOMAIN}"
+  echo "=================================================================="
+  echo " WGPanel install complete"
+  echo "=================================================================="
+  echo "  Panel address:  https://${PANEL_DOMAIN}"
+  if [[ -n "$ADMIN_CREDS_BLOCK" ]]; then
+    echo
+    echo "  Login (save these now - shown only this once):"
+    echo "$ADMIN_CREDS_BLOCK"
+  else
+    echo
+    echo "  An admin already existed - recover credentials with: wgpanel show-bootstrap-admin"
+  fi
+  echo "=================================================================="
   log "(Caddy needs a minute to obtain the TLS certificate on first boot - check with: wgpanel logs caddy)"
   log "Manage the stack with: wgpanel {start|stop|restart|status|logs|update|rollback|backup|restore|doctor|create-admin}"
   log "To add more WireGuard nodes later: Nodes -> Add Node in the panel, then run install-node.sh on that server."
