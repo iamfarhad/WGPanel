@@ -39,7 +39,7 @@ var caddyfileTemplate = template.Must(template.New("caddyfile").Parse(`{
 {{.Domain}} {
 	tls {{.Email}}
 
-	handle_path /api/* {
+	handle /api/* {
 		reverse_proxy api:8080
 	}
 
