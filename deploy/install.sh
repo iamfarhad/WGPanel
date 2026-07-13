@@ -98,6 +98,14 @@ setup_files() {
   read -rp "Admin e-mail (used for Let's Encrypt notices): " ADMIN_EMAIL
   read -rp "Desired super-admin username [admin]: " ADMIN_USER
   ADMIN_USER=${ADMIN_USER:-admin}
+  # Only relevant if 80/443 are already taken by another service on this host -
+  # Caddy itself still binds :80/:443 inside its own container either way (its
+  # automatic-HTTPS/ACME logic assumes that internally); this only changes which
+  # host-side port maps to it.
+  read -rp "Public HTTP port [80]: " PANEL_HTTP_PORT
+  PANEL_HTTP_PORT=${PANEL_HTTP_PORT:-80}
+  read -rp "Public HTTPS port [443]: " PANEL_HTTPS_PORT
+  PANEL_HTTPS_PORT=${PANEL_HTTPS_PORT:-443}
 
   PG_PASS="$(random_secret)"
   REDIS_PASS="$(random_secret)"
@@ -109,6 +117,8 @@ setup_files() {
   sed -i \
     -e "s#^PANEL_DOMAIN=.*#PANEL_DOMAIN=${PANEL_DOMAIN}#" \
     -e "s#^ADMIN_ACL_EMAIL=.*#ADMIN_ACL_EMAIL=${ADMIN_EMAIL}#" \
+    -e "s#^PANEL_HTTP_PORT=.*#PANEL_HTTP_PORT=${PANEL_HTTP_PORT}#" \
+    -e "s#^PANEL_HTTPS_PORT=.*#PANEL_HTTPS_PORT=${PANEL_HTTPS_PORT}#" \
     -e "s#^POSTGRES_PASSWORD=.*#POSTGRES_PASSWORD=${PG_PASS}#" \
     -e "s#^REDIS_PASSWORD=.*#REDIS_PASSWORD=${REDIS_PASS}#" \
     -e "s#^JWT_SECRET=.*#JWT_SECRET=${JWT_SECRET}#" \
@@ -135,7 +145,13 @@ setup_firewall() {
 
 start_stack() {
   log "Pulling images and starting the stack..."
-  (cd "$INSTALL_DIR" && docker compose pull && docker compose up -d)
+  # --force-recreate: plain `up -d` only recreates a container when compose detects
+  # its own service definition changed - it does NOT notice that a bind-mounted
+  # config file (Caddyfile, docker-compose.yml itself) changed on disk, so a
+  # container can keep running against a stale file indefinitely. Found live: fixing
+  # a real Caddyfile routing bug and updating the file on disk did nothing until the
+  # container was explicitly force-recreated.
+  (cd "$INSTALL_DIR" && docker compose pull && docker compose up -d --force-recreate)
 }
 
 install_cli() {
@@ -275,13 +291,35 @@ setup_self_wireguard() {
   wg pubkey < "${wg_conf_dir}/${WG_IFACE}-private.key" > "${wg_conf_dir}/${WG_IFACE}-public.key"
   WG_PUBLIC_KEY="$(cat "${wg_conf_dir}/${WG_IFACE}-public.key")"
 
+  # Generated client configs use AllowedIPs = 0.0.0.0/0 (full-tunnel) - without IP
+  # forwarding + NAT on this box, a connected client gets a handshake but no actual
+  # internet access through the tunnel. This exact fix was applied to
+  # install-node.sh's setup_wireguard() earlier but missed here - this is install.sh's
+  # OWN separate, near-duplicate function for the self-registering core node flow,
+  # found live when a real client connected to a self-registered node and had no
+  # internet despite a successful handshake.
+  local egress_iface
+  egress_iface="$(ip route show default | awk '{print $5; exit}')"
+  if [[ -z "$egress_iface" ]]; then
+    warn "Could not detect a default route interface - full-tunnel client internet access won't work until you add NAT manually. Continuing without it."
+  fi
+
   cat > "$wg_conf" <<EOF
 [Interface]
 PrivateKey = $(cat "${wg_conf_dir}/${WG_IFACE}-private.key")
 Address = ${WG_IFACE_ADDR}
 ListenPort = ${WG_PORT}
 EOF
+  if [[ -n "$egress_iface" ]]; then
+    cat >> "$wg_conf" <<EOF
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o ${egress_iface} -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o ${egress_iface} -j MASQUERADE
+EOF
+  fi
   chmod 600 "$wg_conf"
+
+  echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-wgpanel-forward.conf
+  sysctl -p /etc/sysctl.d/99-wgpanel-forward.conf >/dev/null
 
   systemctl enable --now "wg-quick@${WG_IFACE}"
   log "WireGuard interface ${WG_IFACE} is up (public key: ${WG_PUBLIC_KEY})"
@@ -389,12 +427,22 @@ main() {
     warn "Self-node setup did not complete - the panel itself is still fully usable; add a node manually with install-node.sh whenever you're ready."
   fi
 
+  # Read back from the env file rather than reusing setup_files()'s PANEL_DOMAIN/
+  # PANEL_HTTPS_PORT variables directly - those are only ever set on a fresh
+  # install; setup_files() returns early without touching them at all when .env
+  # already existed, which under `set -u` would otherwise crash here exactly like
+  # cmd_backup's leaked RETURN trap did.
   PANEL_DOMAIN="$(grep '^PANEL_DOMAIN=' "$ENV_FILE" | cut -d= -f2)"
+  PANEL_HTTPS_PORT="$(grep '^PANEL_HTTPS_PORT=' "$ENV_FILE" | cut -d= -f2)"
+  panel_display_url="https://${PANEL_DOMAIN}"
+  if [[ -n "$PANEL_HTTPS_PORT" && "$PANEL_HTTPS_PORT" != "443" ]]; then
+    panel_display_url="${panel_display_url}:${PANEL_HTTPS_PORT}"
+  fi
   echo
   echo "=================================================================="
   echo " WGPanel install complete"
   echo "=================================================================="
-  echo "  Panel address:  https://${PANEL_DOMAIN}"
+  echo "  Panel address:  ${panel_display_url}"
   if [[ -n "$ADMIN_CREDS_BLOCK" ]]; then
     echo
     echo "  Login (save these now - shown only this once):"

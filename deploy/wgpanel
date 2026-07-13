@@ -23,7 +23,16 @@ env_get() { grep "^${1}=" "$ENV_FILE" | head -n1 | cut -d= -f2-; }
 
 api_port() { env_get API_PORT; }
 internal_token() { env_get INTERNAL_API_TOKEN; }
-panel_url() { echo "https://$(env_get PANEL_DOMAIN)"; }
+panel_url() {
+  local domain port
+  domain="$(env_get PANEL_DOMAIN)"
+  port="$(env_get PANEL_HTTPS_PORT)"
+  if [[ -z "$port" || "$port" == "443" ]]; then
+    echo "https://${domain}"
+  else
+    echo "https://${domain}:${port}"
+  fi
+}
 
 # curl wrapper for /internal/* calls: attaches the shared secret required by the API's
 # internal-token middleware (see docs/PRD-security-access-control.md §5) - loopback/Caddy
@@ -199,7 +208,11 @@ cmd_update() {
   docker compose pull
 
   log "Recreating containers..."
-  docker compose up -d
+  # --force-recreate: plain `up -d` skips a container whose service definition
+  # didn't change, even if a bind-mounted config file (Caddyfile, etc.) did -
+  # `wgpanel update` should always guarantee every container is running against
+  # whatever is on disk right now, not silently leave one stale.
+  docker compose up -d --force-recreate
 
   if wait_for_health "$HEALTH_TIMEOUT_SECONDS"; then
     log "Update successful. Current versions:"

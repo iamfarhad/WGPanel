@@ -100,8 +100,11 @@ services:
       frontend:
         condition: service_started
     ports:
-      - "80:80"
-      - "443:443"
+      # Host-side ports are configurable (PANEL_HTTP_PORT/PANEL_HTTPS_PORT in .env) -
+      # Caddy itself still binds :80/:443 inside the container either way, since
+      # that's what its automatic-HTTPS/ACME logic assumes internally.
+      - "${PANEL_HTTP_PORT:-80}:80"
+      - "${PANEL_HTTPS_PORT:-443}:443"
     environment:
       PANEL_DOMAIN: ${PANEL_DOMAIN}
       ADMIN_ACL_EMAIL: ${ADMIN_ACL_EMAIL}
