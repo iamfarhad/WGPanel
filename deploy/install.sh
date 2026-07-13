@@ -88,7 +88,23 @@ setup_files() {
   cp "$SCRIPT_SOURCE_DIR/Caddyfile" "$INSTALL_DIR/Caddyfile"
 
   if [[ -f "$ENV_FILE" ]]; then
-    warn ".env already exists at $ENV_FILE - leaving it untouched. Delete it first if you want a fresh setup."
+    warn ".env already exists at $ENV_FILE - leaving existing values untouched. Delete it first if you want a fresh setup."
+    # An existing .env predates whatever keys this script has added since it was
+    # first created (e.g. PANEL_HTTP_PORT/PANEL_HTTPS_PORT) - the fresh-install
+    # branch below prompts for these once, but "leave it untouched" then means the
+    # prompt is skipped forever on a pre-existing .env, silently falling back to
+    # docker-compose's :-80/:-443 defaults with no way to know that happened until
+    # a port conflict shows up. Found live: a second server's .env predated these
+    # keys, install.sh never asked, and Caddy failed to bind because 443 was
+    # already taken by something else on that host.
+    if ! grep -q '^PANEL_HTTP_PORT=' "$ENV_FILE"; then
+      read -rp "Public HTTP port [80]: " PANEL_HTTP_PORT
+      echo "PANEL_HTTP_PORT=${PANEL_HTTP_PORT:-80}" >> "$ENV_FILE"
+    fi
+    if ! grep -q '^PANEL_HTTPS_PORT=' "$ENV_FILE"; then
+      read -rp "Public HTTPS port [443]: " PANEL_HTTPS_PORT
+      echo "PANEL_HTTPS_PORT=${PANEL_HTTPS_PORT:-443}" >> "$ENV_FILE"
+    fi
     return
   fi
 
