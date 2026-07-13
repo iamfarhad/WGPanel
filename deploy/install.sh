@@ -320,9 +320,15 @@ Address = ${WG_IFACE_ADDR}
 ListenPort = ${WG_PORT}
 EOF
   if [[ -n "$egress_iface" ]]; then
+    # A plain `-A FORWARD` ACCEPT rule is not enough on this host: Docker (already
+    # installed by this point in main()) inserts its own DOCKER-USER/DOCKER-FORWARD
+    # chains ahead of it in FORWARD, and non-Docker interface traffic (wg0) gets
+    # intercepted there first - confirmed live, the wg0 ACCEPT rule showed 0 matched
+    # packets while DOCKER-FORWARD had already processed thousands. DOCKER-USER is
+    # the one chain Docker guarantees it will never overwrite.
     cat >> "$wg_conf" <<EOF
-PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o ${egress_iface} -j MASQUERADE
-PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o ${egress_iface} -j MASQUERADE
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -I DOCKER-USER -i %i -j ACCEPT; iptables -I DOCKER-USER -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o ${egress_iface} -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D DOCKER-USER -i %i -j ACCEPT; iptables -D DOCKER-USER -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o ${egress_iface} -j MASQUERADE
 EOF
   fi
   chmod 600 "$wg_conf"
