@@ -140,7 +140,16 @@ setup_firewall() {
   # Node agents connect back to the control plane on this port over the public internet.
   NODE_AGENT_PORT="$(grep '^NODE_AGENT_PORT=' "$ENV_FILE" | cut -d= -f2)"
   ufw allow "${NODE_AGENT_PORT}/tcp"
+  # ufw's own default FORWARD policy is DROP - that overrides setup_self_wireguard's
+  # PostUp FORWARD ACCEPT rule regardless of NAT being configured correctly, which is
+  # the other half of why a self-registered node's full-tunnel client traffic can
+  # still go nowhere even with NAT set up. Same fix as install-node.sh's
+  # setup_firewall - found live, missed here originally.
+  if [[ -f /etc/default/ufw ]]; then
+    sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
+  fi
   yes | ufw enable >/dev/null 2>&1 || true
+  ufw reload >/dev/null 2>&1 || true
 }
 
 start_stack() {
