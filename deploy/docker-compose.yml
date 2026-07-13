@@ -1,0 +1,120 @@
+name: wgpanel
+
+services:
+  db:
+    # Pinned rather than :latest-pg16 - migration 0011 is the first one to depend on
+    # specific TimescaleDB hypertable/retention-policy behavior (0001 only ever did
+    # CREATE EXTENSION), so a floating tag silently changing that behavior under an
+    # already-tested schema is a real risk now in a way it wasn't before. Pinned to
+    # the exact digest resolved from :latest-pg16 at the time this was added
+    # (TimescaleDB 2.28.2 on PostgreSQL 16.14) - bump deliberately, not by surprise.
+    image: timescale/timescaledb@sha256:ba149561ad4ddff5940d6eb0a0df60aefd1355cee1a450928f271267038fc888
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - wgpanel_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - wgpanel_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    image: ${API_IMAGE}
+    build: ../backend  # local dev/smoke-test only; `docker compose pull` uses API_IMAGE in prod once CI publishes it
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      POSTGRES_DSN: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      JWT_SECRET: ${JWT_SECRET}
+      API_HMAC_MASTER_KEY: ${API_HMAC_MASTER_KEY}
+      NODE_AGENT_PORT: ${NODE_AGENT_PORT}
+      NODE_AGENT_JOIN_TOKEN_TTL_MIN: ${NODE_AGENT_JOIN_TOKEN_TTL_MIN}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      ACCOUNT_KEY_ENCRYPTION_KEY: ${ACCOUNT_KEY_ENCRYPTION_KEY}
+      ADMIN_BOOTSTRAP_USERNAME: ${ADMIN_BOOTSTRAP_USERNAME:-admin}
+      # docs/STORY-10-monitoring-and-domain-management.md, Part 2 - live domain push
+      # via Caddy's admin API over the shared wgpanel_caddy_admin volume below.
+      ADMIN_ACL_EMAIL: ${ADMIN_ACL_EMAIL}
+      CADDY_ADMIN_SOCKET: /admin/caddy-admin.sock
+    ports:
+      # Not reachable from the public internet (127.0.0.1-only + Caddy doesn't proxy /internal/*),
+      # but that alone doesn't stop a sibling container (frontend, caddy) on this same compose
+      # network from calling api:8080/internal/* directly - the real gate is INTERNAL_API_TOKEN,
+      # checked by the middleware on every /internal/* request regardless of caller.
+      - "127.0.0.1:${API_PORT}:8080"
+      - "${NODE_AGENT_PORT}:${NODE_AGENT_PORT}" # node agents connect here over the public internet (mTLS)
+    volumes:
+      - wgpanel_api_data:/data
+      # Shared ONLY with caddy below (never frontend - a meaningfully weaker trust
+      # boundary since it just serves static assets) - see internal/caddyadmin's doc
+      # comment for why this needs to be a Unix socket, not Caddy's TCP admin default.
+      - wgpanel_caddy_admin:/admin
+    healthcheck:
+      # Native subcommand on the same binary (backend/cmd/api/main.go) - avoids depending on
+      # wget/curl existing in the distroless final image. Hits the public, unauthenticated
+      # GET /healthz (docs/PRD-security-access-control.md §5), not /internal/healthz - no
+      # X-Internal-Token is available to Docker's healthcheck runner anyway.
+      test: ["CMD", "/wgpanel-api", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  frontend:
+    image: ${FRONTEND_IMAGE}
+    build: ../frontend  # local dev/smoke-test only; `docker compose pull` uses FRONTEND_IMAGE in prod once CI publishes it
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:80"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PANEL_DOMAIN: ${PANEL_DOMAIN}
+      ADMIN_ACL_EMAIL: ${ADMIN_ACL_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - wgpanel_caddy_data:/data
+      - wgpanel_caddy_config:/config
+      - wgpanel_caddy_admin:/admin
+
+volumes:
+  wgpanel_db_data:
+  wgpanel_redis_data:
+  wgpanel_api_data:
+  wgpanel_caddy_data:
+  wgpanel_caddy_config:
+  wgpanel_caddy_admin:
