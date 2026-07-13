@@ -14,6 +14,17 @@ COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 ENV_FILE="$INSTALL_DIR/.env"
 SCRIPT_SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# The README's documented install method is `curl .../install.sh -o install.sh &&
+# sudo bash install.sh` - a single file, not a git clone - but setup_files() below
+# needs docker-compose.yml/Caddyfile/.env.example/wgpanel sitting right next to this
+# script. ensure_deploy_files (called from main, before anything reads
+# SCRIPT_SOURCE_DIR) detects that mismatch and fetches those companion files from
+# the same repo/branch into a temp dir, repointing SCRIPT_SOURCE_DIR there - a real
+# bug hit verifying the README's own instructions on a fresh server, not a
+# hypothetical.
+REPO_RAW_BASE="https://raw.githubusercontent.com/iamfarhad/WGPanel/main/deploy"
+DEPLOY_COMPANION_FILES=(docker-compose.yml Caddyfile .env.example wgpanel)
+
 # Same layout install-node.sh uses on a remote WireGuard node - this script can set
 # the panel's own server up exactly the same way (docs/STORY-09-multi-node-accounts.md).
 AGENT_BIN="/usr/local/bin/wgpanel-agent"
@@ -23,6 +34,21 @@ AGENT_ENV="$AGENT_DIR/agent.env"
 log()  { echo -e "\033[1;32m[wgpanel]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[wgpanel]\033[0m $*"; }
 err()  { echo -e "\033[1;31m[wgpanel]\033[0m $*" >&2; }
+
+ensure_deploy_files() {
+  local f
+  for f in "${DEPLOY_COMPANION_FILES[@]}"; do
+    if [[ ! -f "$SCRIPT_SOURCE_DIR/$f" ]]; then
+      log "Running as a standalone script - downloading companion files (docker-compose.yml, Caddyfile, .env.example, wgpanel) from GitHub..."
+      local tmpdir; tmpdir="$(mktemp -d)"
+      for f in "${DEPLOY_COMPANION_FILES[@]}"; do
+        curl -fsSL "$REPO_RAW_BASE/$f" -o "$tmpdir/$f"
+      done
+      SCRIPT_SOURCE_DIR="$tmpdir"
+      return
+    fi
+  done
+}
 
 require_root() {
   if [[ "$EUID" -ne 0 ]]; then
@@ -325,6 +351,7 @@ EOF
 main() {
   require_root
   detect_os
+  ensure_deploy_files
   install_prereqs
   install_docker
   setup_files
