@@ -218,8 +218,20 @@ setup_self_node() {
   WG_PORT=${WG_PORT:-51820}
   read -rp "WireGuard interface name [wg0]: " WG_IFACE
   WG_IFACE=${WG_IFACE:-wg0}
-  read -rp "WireGuard subnet for peer IPs, e.g. 10.66.0.0/24: " WG_SUBNET
-  read -rp "This node's own interface address, with prefix (the .1 address of that same subnet, e.g. 10.66.0.1/24): " WG_IFACE_ADDR
+  # Both of these used to have no default at all, unlike every other prompt in this
+  # flow - a real trap found on a live install: hitting Enter through the whole
+  # sequence (comfortable everywhere else, since every other prompt has one) left
+  # wg_subnet empty, which the API correctly 400'd on - but bootstrap_self_node's
+  # `curl -f` swallowed the actual error body, so the failure looked like a mystery
+  # blank response instead of "wg_subnet is required."
+  read -rp "WireGuard subnet for peer IPs [10.66.0.0/24]: " WG_SUBNET
+  WG_SUBNET=${WG_SUBNET:-10.66.0.0/24}
+  # Auto-derived as the subnet's .1 address (the convention used everywhere else in
+  # this project) rather than asking for genuinely redundant information a moment
+  # after WG_SUBNET - still overridable if you want something else.
+  default_iface_addr="$(echo "$WG_SUBNET" | sed -E 's#^([0-9]+\.[0-9]+\.[0-9]+)\.[0-9]+/([0-9]+)$#\1.1/\2#')"
+  read -rp "This node's own interface address, with prefix [${default_iface_addr}]: " WG_IFACE_ADDR
+  WG_IFACE_ADDR=${WG_IFACE_ADDR:-$default_iface_addr}
 
   local panel_domain node_agent_port
   panel_domain="$(grep '^PANEL_DOMAIN=' "$ENV_FILE" | cut -d= -f2)"
@@ -298,7 +310,12 @@ bootstrap_self_node() {
   api_port="$(grep '^API_PORT=' "$ENV_FILE" | cut -d= -f2)"
   token="$(grep '^INTERNAL_API_TOKEN=' "$ENV_FILE" | cut -d= -f2)"
 
-  resp=$(curl -fsS -X POST "http://127.0.0.1:${api_port}/internal/nodes/bootstrap-self" \
+  # No -f here (deliberately): it would swallow the response body on a non-2xx,
+  # turning a real error message (e.g. "wg_subnet is required") into an empty
+  # string - exactly what made an earlier real failure look like a mystery blank
+  # response instead of a diagnosable one. JOIN_TOKEN being empty below is what
+  # actually detects failure here.
+  resp=$(curl -sS -X POST "http://127.0.0.1:${api_port}/internal/nodes/bootstrap-self" \
     -H "X-Internal-Token: ${token}" \
     -H 'Content-Type: application/json' \
     -d "{\"name\":\"${NODE_NAME}\",\"node_group\":\"${NODE_GROUP}\",\"public_endpoint\":\"${panel_domain}:${WG_PORT}\",\"wg_subnet\":\"${WG_SUBNET}\",\"capacity_max_peers\":${NODE_CAPACITY},\"public_key\":\"${WG_PUBLIC_KEY}\"}")
