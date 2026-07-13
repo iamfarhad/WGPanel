@@ -195,6 +195,33 @@ cmd_restore() {
 
 # ---- update / rollback ----
 
+# sync_self_node_wireguard patches an already-existing wg0.conf (or any other
+# WireGuard interface config on this host, if the self-node setup used a custom
+# name) with NAT/forwarding fixes added to install.sh *after* that config was
+# first generated - install.sh's own setup_self_wireguard() explicitly leaves an
+# existing config untouched, so without this, a real fix (like the DOCKER-USER
+# chain fix below) never reaches a host that was set up before the fix existed,
+# and nothing short of a human manually re-diagnosing and re-patching it ever
+# would. Idempotent - checks for the marker string before appending again, so
+# running this on every update is safe.
+sync_self_node_wireguard() {
+  local wg_conf iface
+  for wg_conf in /etc/wireguard/*.conf; do
+    [[ -f "$wg_conf" ]] || continue
+    if ! grep -q 'DOCKER-USER' "$wg_conf"; then
+      iface="$(basename "$wg_conf" .conf)"
+      log "Applying a newer NAT/forwarding fix to ${iface}'s WireGuard config (Docker's own DOCKER-USER/DOCKER-FORWARD chains otherwise intercept forwarded traffic before a plain FORWARD-chain rule ever sees it)..."
+      cat >> "$wg_conf" <<'EOF'
+PostUp = iptables -I DOCKER-USER -i %i -j ACCEPT; iptables -I DOCKER-USER -o %i -j ACCEPT
+PostDown = iptables -D DOCKER-USER -i %i -j ACCEPT; iptables -D DOCKER-USER -o %i -j ACCEPT
+EOF
+      systemctl restart "wg-quick@${iface}" 2>/dev/null \
+        && log "${iface} restarted with the updated config." \
+        || warn "Could not restart wg-quick@${iface} automatically - restart it manually to apply: systemctl restart wg-quick@${iface}"
+    fi
+  done
+}
+
 cmd_update() {
   log "Taking a pre-update backup..."
   cmd_backup
@@ -217,6 +244,7 @@ cmd_update() {
   if wait_for_health "$HEALTH_TIMEOUT_SECONDS"; then
     log "Update successful. Current versions:"
     cmd_version
+    sync_self_node_wireguard
     log "Panel address: $(panel_url)"
   else
     err "Health check failed after update - rolling back to the previous known-good images."

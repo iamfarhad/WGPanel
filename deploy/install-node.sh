@@ -103,8 +103,20 @@ setup_wireguard() {
   chmod 700 "$wg_conf_dir"
 
   if [[ -f "$wg_conf" ]]; then
-    warn "${wg_conf} already exists - leaving the existing WireGuard interface config untouched."
+    warn "${wg_conf} already exists - leaving its identity (keys/address/port) untouched."
     WG_PUBLIC_KEY="$(wg pubkey < "${wg_conf_dir}/${WG_IFACE}-private.key" 2>/dev/null || true)"
+    # Still worth patching in NAT/forwarding fixes added to this script after this
+    # config was first generated - "leave it untouched" was never meant to mean
+    # "never benefit from a real bug fix again." Idempotent (checks the marker
+    # string first).
+    if ! grep -q 'DOCKER-USER' "$wg_conf"; then
+      log "Applying a newer NAT/forwarding fix to the existing ${WG_IFACE} config..."
+      cat >> "$wg_conf" <<'EOF'
+PostUp = iptables -I DOCKER-USER -i %i -j ACCEPT; iptables -I DOCKER-USER -o %i -j ACCEPT
+PostDown = iptables -D DOCKER-USER -i %i -j ACCEPT; iptables -D DOCKER-USER -o %i -j ACCEPT
+EOF
+      systemctl restart "wg-quick@${WG_IFACE}" 2>/dev/null || warn "Could not restart wg-quick@${WG_IFACE} automatically - restart it manually to apply."
+    fi
     return
   fi
 
