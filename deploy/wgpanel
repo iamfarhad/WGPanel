@@ -142,7 +142,13 @@ cmd_backup() {
   mkdir -p "$BACKUP_DIR"
   local ts; ts="$(date +%Y%m%d-%H%M%S)"
   local workdir; workdir="$(mktemp -d)"
-  trap 'rm -rf "$workdir"' RETURN
+  # `trap ... RETURN` is NOT scoped to this function - it stays armed for the
+  # RETURN of whatever function executes next in the same shell (e.g. cmd_update,
+  # which calls cmd_backup as one step among several). Without resetting it before
+  # returning, it re-fires later against a $workdir that's already out of scope,
+  # which under `set -u` is "workdir: unbound variable" - a real bug hit live,
+  # surfacing at a completely unrelated point later in the script.
+  trap 'rm -rf "$workdir"; trap - RETURN' RETURN
 
   log "Dumping database..."
   docker compose exec -T db pg_dump -U "$(env_get POSTGRES_USER)" "$(env_get POSTGRES_DB)" > "$workdir/db.sql"
@@ -167,7 +173,10 @@ cmd_restore() {
   [[ "$c" == "yes" ]] || { log "Aborted."; exit 0; }
 
   local workdir; workdir="$(mktemp -d)"
-  trap 'rm -rf "$workdir"' RETURN
+  # See cmd_backup's comment above - RETURN traps aren't function-scoped in bash, so
+  # this must reset itself before returning or it re-fires later against an
+  # out-of-scope $workdir.
+  trap 'rm -rf "$workdir"; trap - RETURN' RETURN
   tar xzf "$archive" -C "$workdir"
 
   log "Restoring database..."
