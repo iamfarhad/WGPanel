@@ -21,14 +21,14 @@ var (
 const ipHoldAfterDelete = 24 * time.Hour
 
 type Account struct {
-	ID                string
-	ExternalRef       *string
-	Label             string
-	PublicKey         string
-	DataQuotaBytes    *int64
-	DataUsedBytes     int64
-	ExpiryAt          *time.Time
-	DeviceLimit       *int
+	ID             string
+	ExternalRef    *string
+	Label          string
+	PublicKey      string
+	DataQuotaBytes *int64
+	DataUsedBytes  int64
+	ExpiryAt       *time.Time
+	DeviceLimit    *int
 	// DeviceLimitHardEnforce upgrades device-limit detection to an automatic suspend
 	// (PRD-account-management.md §6.4's per-account toggle); DeviceLimitExceededAt is
 	// the standing "currently over the limit" flag, set/cleared by heartbeat ingest.
