@@ -10,30 +10,6 @@ WGPanel is a self-hosted admin panel for running your own WireGuard VPN service.
 - **Role-based admin accounts** — super admin, operator, and read-only support roles.
 - **A scoped API** for bots/resellers to provision accounts programmatically (e.g. from a Telegram sales bot), kept completely separate from WireGuard/infrastructure logic.
 
-## Screenshots
-
-The dashboard gives an at-a-glance view of the fleet — nodes online, accounts, data transferred, and live node capacity. Light and dark themes are both built in (switchable per-user):
-
-| Light | Dark |
-| --- | --- |
-| ![Dashboard, light theme](docs/screenshots/dashboard.png) | ![Dashboard, dark theme](docs/screenshots/dashboard-dark.png) |
-
-**Accounts** — search, per-account usage with quota bars, and live connection status:
-
-![Accounts list](docs/screenshots/accounts.png)
-
-**Account detail** — a tabbed view for overview, devices, usage charts, and inline editing (quota, device limit, bandwidth, expiry), plus the subscription URL and per-node config/QR:
-
-![Account detail](docs/screenshots/account-detail.png)
-
-**Nodes** — every WireGuard server in the fleet, with status, region, endpoint, and capacity. Adding a node offers a curated list of peer subnets (already-used ranges are disabled) so you never collide with another node or a client's home LAN:
-
-| Nodes | New node |
-| --- | --- |
-| ![Nodes list](docs/screenshots/nodes.png) | ![New node dialog with subnet picker](docs/screenshots/new-node.png) |
-
-<p align="center"><img src="docs/screenshots/login.png" alt="Sign-in screen" width="420"></p>
-
 ## Requirements
 
 - A Linux server (Ubuntu/Debian) with a public IP, for the panel itself.
@@ -76,6 +52,30 @@ Every node — including the panel's own server — is added the same way:
 The node will appear as **online** in the panel within a few seconds, and every existing account automatically gets a peer on it — no manual sync step.
 
 > Re-registering a node's agent (rebuilt server, replaced hardware)? Generate an **unlimited** join token instead of a normal one (checkbox in the Join token dialog) so you don't have to reset anything manually.
+
+## Screenshots
+
+The dashboard gives an at-a-glance view of the fleet — nodes online, accounts, data transferred, and live node capacity. Light and dark themes are both built in (switchable per-user):
+
+| Light | Dark |
+| --- | --- |
+| ![Dashboard, light theme](docs/screenshots/dashboard.png) | ![Dashboard, dark theme](docs/screenshots/dashboard-dark.png) |
+
+**Accounts** — search, per-account usage with quota bars, and live connection status:
+
+![Accounts list](docs/screenshots/accounts.png)
+
+**Account detail** — a tabbed view for overview, devices, usage charts, and inline editing (quota, device limit, bandwidth, expiry), plus the subscription URL and per-node config/QR:
+
+![Account detail](docs/screenshots/account-detail.png)
+
+**Nodes** — every WireGuard server in the fleet, with status, region, endpoint, and capacity. Adding a node offers a curated list of peer subnets (already-used ranges are disabled) so you never collide with another node or a client's home LAN:
+
+| Nodes | New node |
+| --- | --- |
+| ![Nodes list](docs/screenshots/nodes.png) | ![New node dialog with subnet picker](docs/screenshots/new-node.png) |
+
+<p align="center"><img src="docs/screenshots/login.png" alt="Sign-in screen" width="420"></p>
 
 ## Managing the stack
 
