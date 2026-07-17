@@ -14,6 +14,7 @@ type settingsResponse struct {
 	DefaultNodeCapacity int      `json:"default_node_capacity"`
 	SupportContact      *string  `json:"support_contact"`
 	PanelDomain         *string  `json:"panel_domain"`
+	ClientDNS           string   `json:"client_dns"`
 }
 
 func toSettingsResponse(p store.PanelSettings) settingsResponse {
@@ -24,6 +25,7 @@ func toSettingsResponse(p store.PanelSettings) settingsResponse {
 		DefaultNodeCapacity: p.DefaultNodeCapacity,
 		SupportContact:      p.SupportContact,
 		PanelDomain:         p.PanelDomain,
+		ClientDNS:           p.ClientDNS,
 	}
 }
 
@@ -49,6 +51,10 @@ type updateSettingsRequest struct {
 	// Caddy's admin API (docs/STORY-10-monitoring-and-domain-management.md) - see
 	// domain_live_applied/domain_apply_error on the response.
 	PanelDomain *string `json:"panel_domain"`
+	// ClientDNS is the DNS = line baked into generated wg-quick configs (migration
+	// 0018). Non-nil/non-empty replaces it; takes effect on the next config download,
+	// not retroactively for configs already handed out.
+	ClientDNS *string `json:"client_dns"`
 }
 
 type updateSettingsResponse struct {
@@ -79,6 +85,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "panel_domain must not be empty")
 		return
 	}
+	if req.ClientDNS != nil && *req.ClientDNS == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "client_dns must not be empty")
+		return
+	}
 
 	ctx := r.Context()
 	settings, err := s.Store.UpdateSettings(ctx, store.UpdateSettingsParams{
@@ -88,6 +98,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		DefaultNodeCapacity: req.DefaultNodeCapacity,
 		SupportContact:      req.SupportContact,
 		PanelDomain:         req.PanelDomain,
+		ClientDNS:           req.ClientDNS,
 	})
 	if err != nil {
 		s.Logger.Error("update_settings_failed", "error", err)

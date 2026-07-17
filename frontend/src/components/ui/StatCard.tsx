@@ -1,6 +1,14 @@
 import type { LucideIcon } from 'lucide-react'
 import { Card } from './Card'
 
+const toneClasses: Record<string, string> = {
+  slate: 'bg-inset text-muted',
+  green: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+  red: 'bg-rose-500/10 text-rose-600 dark:text-rose-400',
+  amber: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+  blue: 'bg-sky-500/10 text-sky-600 dark:text-sky-400',
+}
+
 export function StatCard({
   icon: Icon,
   label,
@@ -12,23 +20,15 @@ export function StatCard({
   value: string | number
   tone?: 'slate' | 'green' | 'red' | 'amber' | 'blue'
 }) {
-  const toneClasses: Record<string, string> = {
-    slate: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
-    green: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
-    red: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
-    amber: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
-    blue: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
-  }
-
   return (
-    <Card className="flex items-center gap-4 p-5">
-      <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg ${toneClasses[tone]}`}>
-        <Icon className="h-5 w-5" />
+    <Card className="p-5">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-[13px] font-medium text-muted">{label}</p>
+        <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${toneClasses[tone]}`}>
+          <Icon className="h-4 w-4" />
+        </div>
       </div>
-      <div>
-        <p className="text-2xl font-semibold text-slate-900 dark:text-slate-100">{value}</p>
-        <p className="text-sm text-slate-500 dark:text-slate-400">{label}</p>
-      </div>
+      <p className="mt-2 text-2xl font-semibold tracking-tight text-fg tabular-nums">{value}</p>
     </Card>
   )
 }

@@ -43,6 +43,13 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/refresh", s.handleRefresh)
 	mux.HandleFunc("POST /api/v1/nodes/join", s.handleRedeemJoinToken)
 
+	// Subscription endpoints are deliberately unauthenticated: the 192-bit random
+	// token in the path IS the credential (a capability URL), so client apps can
+	// poll for their current config with no panel account. loggingMiddleware redacts
+	// the token from access logs (see redactPath).
+	mux.HandleFunc("GET /api/v1/sub/{token}", s.handleSubscriptionConfig)
+	mux.HandleFunc("GET /api/v1/sub/{token}/nodes", s.handleSubscriptionNodes)
+
 	mux.Handle("GET /internal/healthz", s.internalOnly(http.HandlerFunc(s.handleInternalHealthz)))
 	mux.Handle("POST /internal/admins", s.internalOnly(http.HandlerFunc(s.handleCreateAdmin)))
 	// install.sh's core-server self-registration (docs/STORY-09-multi-node-accounts.md) -
@@ -79,6 +86,12 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /api/v1/accounts/{id}/config", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleGetAccountConfig))))
 	// docs/STORY-10-monitoring-and-domain-management.md - account usage-over-time chart.
 	mux.Handle("GET /api/v1/accounts/{id}/usage", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleGetAccountUsage))))
+	// Device tracking (PRD-account-management.md §6.4) and node steering - read-tier,
+	// shared with bot API keys like every other account read.
+	mux.Handle("GET /api/v1/accounts/{id}/devices", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleListAccountDevices))))
+	mux.Handle("GET /api/v1/accounts/{id}/steer", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleSteerAccount))))
+	// Rotating the subscription URL is an account mutation, same tier as PATCH.
+	mux.Handle("POST /api/v1/accounts/{id}/subscription/rotate", s.requireAdminOrAPIKey(s.requirePermission("update", http.HandlerFunc(s.handleRotateSubscriptionToken))))
 
 	// API key issuance is super-admin-only, same reasoning as join-token generation above.
 	mux.Handle("POST /api/v1/api-keys", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleCreateAPIKey))))

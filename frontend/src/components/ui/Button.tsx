@@ -1,20 +1,29 @@
 import type { ButtonHTMLAttributes } from 'react'
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: 'primary' | 'secondary'
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger'
+  size?: 'md' | 'sm' | 'icon'
 }
 
 const variants = {
   primary:
-    'bg-slate-900 text-white hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white',
+    'bg-accent text-white shadow-sm hover:bg-accent-hover active:bg-accent-hover',
   secondary:
-    'bg-slate-100 text-slate-900 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700',
+    'border border-edge-strong/70 bg-surface text-fg shadow-xs hover:bg-inset hover:border-edge-strong',
+  ghost: 'text-muted hover:bg-inset hover:text-fg',
+  danger: 'bg-rose-600 text-white shadow-sm hover:bg-rose-500 active:bg-rose-500',
 }
 
-export function Button({ variant = 'primary', className = '', ...props }: ButtonProps) {
+const sizes = {
+  md: 'h-9 px-4 text-sm',
+  sm: 'h-8 px-2.5 text-xs',
+  icon: 'h-8 w-8',
+}
+
+export function Button({ variant = 'primary', size = 'md', className = '', ...props }: ButtonProps) {
   return (
     <button
-      className={`inline-flex items-center justify-center rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${variants[variant]} ${className}`}
+      className={`inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-lg font-medium transition-[background-color,border-color,box-shadow] outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:pointer-events-none disabled:opacity-50 ${variants[variant]} ${sizes[size]} ${className}`}
       {...props}
     />
   )

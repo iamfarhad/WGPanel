@@ -16,7 +16,9 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/wgpanel-agent ./cm
 # (65532:65532, distroless's fixed UID/GID) rather than being created/chowned later.
 RUN mkdir -p /out/data && chown 65532:65532 /out/data
 
-FROM gcr.io/distroless/static-debian12:nonroot
+# Runtime base pinned to a digest (resolved from :nonroot) so the shipped image is
+# reproducible and can't drift under an unattended CI rebuild - bump deliberately.
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b
 COPY --from=build /out/wgpanel-api /wgpanel-api
 COPY --from=build /out/wgpanel-agent /wgpanel-agent
 COPY --from=build --chown=65532:65532 /out/data /data

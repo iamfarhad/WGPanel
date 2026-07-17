@@ -15,6 +15,7 @@ import (
 type createNodeRequest struct {
 	Name             string  `json:"name"`
 	NodeGroup        string  `json:"node_group"`
+	Region           string  `json:"region"` // optional steering label, e.g. "eu" / "us-east" (migration 0017)
 	PublicEndpoint   string  `json:"public_endpoint"`
 	WGSubnet         string  `json:"wg_subnet"`
 	CapacityMaxPeers int     `json:"capacity_max_peers"`
@@ -25,6 +26,7 @@ type nodeResponse struct {
 	ID               string  `json:"id"`
 	Name             string  `json:"name"`
 	NodeGroup        string  `json:"node_group"`
+	Region           string  `json:"region"`
 	PublicEndpoint   string  `json:"public_endpoint"`
 	WGSubnet         string  `json:"wg_subnet"`
 	CapacityMaxPeers int     `json:"capacity_max_peers"`
@@ -38,6 +40,7 @@ func toNodeResponse(n store.Node) nodeResponse {
 		ID:               n.ID,
 		Name:             n.Name,
 		NodeGroup:        n.NodeGroup,
+		Region:           n.Region,
 		PublicEndpoint:   n.PublicEndpoint,
 		WGSubnet:         n.WGSubnet,
 		CapacityMaxPeers: n.CapacityMaxPeers,
@@ -66,7 +69,7 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	node, err := s.Store.CreateNode(ctx, req.Name, req.NodeGroup, req.PublicEndpoint, req.WGSubnet, req.CapacityMaxPeers, req.PublicKey)
+	node, err := s.Store.CreateNode(ctx, req.Name, req.NodeGroup, req.Region, req.PublicEndpoint, req.WGSubnet, req.CapacityMaxPeers, req.PublicKey)
 	if errors.Is(err, store.ErrNodeNameTaken) {
 		writeJSONError(w, http.StatusConflict, "node_name_taken", "a node with this name already exists")
 		return
@@ -89,6 +92,7 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 type updateNodeRequest struct {
 	Name             *string `json:"name"`
 	NodeGroup        *string `json:"node_group"`
+	Region           *string `json:"region"` // "" explicitly clears the region label
 	PublicEndpoint   *string `json:"public_endpoint"`
 	CapacityMaxPeers *int    `json:"capacity_max_peers"`
 }
@@ -122,6 +126,7 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	node, err := s.Store.UpdateNode(ctx, id, store.UpdateNodeParams{
 		Name:             req.Name,
 		NodeGroup:        req.NodeGroup,
+		Region:           req.Region,
 		PublicEndpoint:   req.PublicEndpoint,
 		CapacityMaxPeers: req.CapacityMaxPeers,
 	})

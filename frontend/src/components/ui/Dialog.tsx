@@ -1,6 +1,5 @@
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import { X } from 'lucide-react'
-import { Card } from './Card'
 
 interface DialogProps {
   open: boolean
@@ -14,35 +13,53 @@ interface DialogProps {
 }
 
 export function Dialog({ open, onClose, title, children, maxWidthClassName = 'max-w-md' }: DialogProps) {
+  // Escape closes; page behind the overlay stays put instead of scrolling.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prevOverflow
+    }
+  }, [open, onClose])
+
   if (!open) return null
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center overflow-y-auto bg-black/40 p-4"
+      className="animate-backdrop-in fixed inset-0 z-40 flex items-center justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-[2px]"
       onClick={onClose}
     >
       {/* flex-col + max-h caps the dialog to the viewport and keeps the header
-          (title/close button) always reachable - previously an unbounded Card grew
+          (title/close button) always reachable - previously an unbounded panel grew
           taller than the viewport with nothing scrollable, pushing the header and
           the content's own bottom action buttons off-screen with no way to reach
           either (see the account detail dialog with 5 node peers + chart + QR). */}
-      <Card
-        className={`flex max-h-[85vh] w-full flex-col ${maxWidthClassName}`}
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className={`animate-dialog-in flex max-h-[85vh] w-full flex-col rounded-2xl border border-edge bg-surface shadow-2xl shadow-slate-950/20 ${maxWidthClassName}`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex shrink-0 items-center justify-between border-b border-slate-100 p-6 pb-4 dark:border-slate-800">
-          <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">{title}</h2>
+        <div className="flex shrink-0 items-center justify-between border-b border-edge px-6 py-4">
+          <h2 className="text-base font-semibold tracking-tight text-fg">{title}</h2>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
+            className="-mr-1.5 cursor-pointer rounded-lg p-1.5 text-faint transition-colors hover:bg-inset hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
             aria-label="Close"
           >
-            <X className="h-5 w-5" />
+            <X className="h-4.5 w-4.5" />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-6 pt-4">{children}</div>
-      </Card>
+        <div className="min-h-0 flex-1 overflow-y-auto p-6">{children}</div>
+      </div>
     </div>
   )
 }

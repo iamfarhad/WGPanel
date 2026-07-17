@@ -3,7 +3,7 @@ import type { InputHTMLAttributes } from 'react'
 export function Input({ className = '', ...props }: InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
-      className={`w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 ${className}`}
+      className={`h-9 w-full rounded-lg border border-edge-strong/70 bg-transparent px-3 text-sm text-fg shadow-xs transition-[border-color,box-shadow] placeholder:text-faint hover:border-edge-strong focus:border-accent focus:ring-2 focus:ring-accent/25 focus:outline-none disabled:cursor-not-allowed disabled:bg-inset disabled:text-muted ${className}`}
       {...props}
     />
   )

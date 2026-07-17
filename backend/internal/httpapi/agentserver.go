@@ -114,6 +114,10 @@ type agentHeartbeatTraffic struct {
 	ReceiveBytes  int64      `json:"rx_bytes"`
 	TransmitBytes int64      `json:"tx_bytes"`
 	LastHandshake *time.Time `json:"last_handshake"`
+	// Endpoint is the peer's current client source "ip:port" from the kernel, "" if
+	// unknown - device tracking input (PRD-account-management.md §6.4). Absent from
+	// older agents' reports, which simply means no device sightings from that node.
+	Endpoint string `json:"endpoint"`
 }
 
 type agentHeartbeatRequest struct {
@@ -128,6 +132,10 @@ type agentHeartbeatRequest struct {
 type agentHeartbeatPeer struct {
 	PublicKey  string   `json:"public_key"`
 	AllowedIPs []string `json:"allowed_ips"`
+	// BandwidthLimitMbps rides along with the desired peer so the agent can apply tc
+	// shaping in the same reconcile pass; nil/omitted = unshaped. Older agents ignore
+	// the field entirely (peers still sync, just without rate enforcement).
+	BandwidthLimitMbps *int `json:"bandwidth_limit_mbps,omitempty"`
 }
 
 type agentHeartbeatResponse struct {
@@ -185,6 +193,7 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 				ReceiveBytes:  t.ReceiveBytes,
 				TransmitBytes: t.TransmitBytes,
 				LastHandshake: t.LastHandshake,
+				Endpoint:      t.Endpoint,
 			})
 		}
 		var metrics *store.NodeMetricsReport
@@ -208,7 +217,11 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	peers := make([]agentHeartbeatPeer, 0, len(desired))
 	for _, p := range desired {
-		peers = append(peers, agentHeartbeatPeer{PublicKey: p.PublicKey, AllowedIPs: []string{p.AssignedIP + "/32"}})
+		peers = append(peers, agentHeartbeatPeer{
+			PublicKey:          p.PublicKey,
+			AllowedIPs:         []string{p.AssignedIP + "/32"},
+			BandwidthLimitMbps: p.BandwidthLimitMbps,
+		})
 	}
 
 	writeJSON(w, http.StatusOK, agentHeartbeatResponse{Status: "ok", Peers: peers})

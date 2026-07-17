@@ -25,11 +25,13 @@ SCRIPT_SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_RAW_BASE="https://raw.githubusercontent.com/iamfarhad/WGPanel/main/deploy"
 DEPLOY_COMPANION_FILES=(docker-compose.yml Caddyfile .env.example wgpanel)
 
-# Same layout install-node.sh uses on a remote WireGuard node - this script can set
-# the panel's own server up exactly the same way (docs/STORY-09-multi-node-accounts.md).
-AGENT_BIN="/usr/local/bin/wgpanel-agent"
-AGENT_DIR="/etc/wgpanel"
-AGENT_ENV="$AGENT_DIR/agent.env"
+# The panel's own server can optionally run as this WGPanel's first WireGuard node,
+# the same way install-node.sh sets up a remote one: a production Docker container
+# (NODE_IMAGE) managed by compose under NODE_DIR (docs/STORY-09-multi-node-accounts.md).
+NODE_DIR="/opt/wgpanel-node"
+NODE_COMPOSE_FILE="$NODE_DIR/docker-compose.yml"
+NODE_ENV_FILE="$NODE_DIR/.env"
+WGPANEL_REPO_URL="${WGPANEL_REPO_URL:-https://github.com/iamfarhad/WGPanel.git}"
 
 log()  { echo -e "\033[1;32m[wgpanel]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[wgpanel]\033[0m $*"; }
@@ -67,7 +69,8 @@ detect_os() {
 install_prereqs() {
   log "Installing base packages..."
   apt-get update -y
-  apt-get install -y curl ca-certificates gnupg lsb-release ufw openssl
+  # git is only used by the self-node's build-from-source fallback (ensure_self_node_image).
+  apt-get install -y curl ca-certificates gnupg lsb-release ufw openssl git
 }
 
 install_docker() {
@@ -156,11 +159,10 @@ setup_firewall() {
   # Node agents connect back to the control plane on this port over the public internet.
   NODE_AGENT_PORT="$(grep '^NODE_AGENT_PORT=' "$ENV_FILE" | cut -d= -f2)"
   ufw allow "${NODE_AGENT_PORT}/tcp"
-  # ufw's own default FORWARD policy is DROP - that overrides setup_self_wireguard's
-  # PostUp FORWARD ACCEPT rule regardless of NAT being configured correctly, which is
-  # the other half of why a self-registered node's full-tunnel client traffic can
-  # still go nowhere even with NAT set up. Same fix as install-node.sh's
-  # setup_firewall - found live, missed here originally.
+  # ufw's default FORWARD policy is DROP, which also drops the traffic Docker forwards
+  # for the self-node container's clients. Setting it to ACCEPT lets Docker's own
+  # per-bridge FORWARD rules govern forwarding (they're specific, not blanket), which
+  # is what the containerized node relies on for full-tunnel client internet.
   if [[ -f /etc/default/ufw ]]; then
     sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
   fi
@@ -232,15 +234,15 @@ wgpanel_wait_for_health() {
 
 # ---- core server as a node (docs/STORY-09-multi-node-accounts.md) ----
 #
-# Sets this same server up as this WGPanel's first WireGuard node, exactly the way
-# install-node.sh would on a remote server - so a single-server install can create
-# accounts immediately, with no separate "add a node" step. Guarded by the same
-# idempotency check cmd/agent itself already uses for reusing a prior registration
-# (state files under $AGENT_DIR/state) - re-running install.sh never creates a
-# second/duplicate node for this same box.
+# Sets this same server up as this WGPanel's first WireGuard node - as a production
+# Docker container (the same NODE_IMAGE install-node.sh uses on remote nodes), so a
+# single-server install can create accounts immediately with no separate "add a node"
+# step. The node container joins the panel's own compose network so its agent dials
+# the API directly at api:NODE_AGENT_PORT. Idempotent: the presence of NODE_COMPOSE_FILE
+# means this box is already set up, so re-running install.sh never creates a second node.
 setup_self_node() {
-  if [[ -f "${AGENT_DIR}/state/node-id.txt" ]]; then
-    warn "This server is already registered as a node (found ${AGENT_DIR}/state/node-id.txt) - skipping."
+  if [[ -f "$NODE_COMPOSE_FILE" ]]; then
+    warn "This server is already set up as a node (found ${NODE_COMPOSE_FILE}) - skipping."
     return 0
   fi
 
@@ -250,7 +252,7 @@ setup_self_node() {
     return 0
   fi
 
-  log "Configuring this server as a WireGuard node..."
+  log "Configuring this server as a WireGuard node (Docker)..."
   read -rp "A name for this node [core]: " NODE_NAME
   NODE_NAME=${NODE_NAME:-core}
   read -rp "Node group [default]: " NODE_GROUP
@@ -261,149 +263,62 @@ setup_self_node() {
   WG_PORT=${WG_PORT:-51820}
   read -rp "WireGuard interface name [wg0]: " WG_IFACE
   WG_IFACE=${WG_IFACE:-wg0}
-  # Both of these used to have no default at all, unlike every other prompt in this
-  # flow - a real trap found on a live install: hitting Enter through the whole
-  # sequence (comfortable everywhere else, since every other prompt has one) left
-  # wg_subnet empty, which the API correctly 400'd on - but bootstrap_self_node's
-  # `curl -f` swallowed the actual error body, so the failure looked like a mystery
-  # blank response instead of "wg_subnet is required."
+  # Every prompt has a default so hitting Enter through the whole sequence produces a
+  # valid config (an empty wg_subnet used to reach the API and 400).
   read -rp "WireGuard subnet for peer IPs [10.66.0.0/24]: " WG_SUBNET
   WG_SUBNET=${WG_SUBNET:-10.66.0.0/24}
-  # Auto-derived as the subnet's .1 address (the convention used everywhere else in
-  # this project) rather than asking for genuinely redundant information a moment
-  # after WG_SUBNET - still overridable if you want something else.
+  # Auto-derived as the subnet's .1 (the convention used everywhere else here), still overridable.
   default_iface_addr="$(echo "$WG_SUBNET" | sed -E 's#^([0-9]+\.[0-9]+\.[0-9]+)\.[0-9]+/([0-9]+)$#\1.1/\2#')"
   read -rp "This node's own interface address, with prefix [${default_iface_addr}]: " WG_IFACE_ADDR
   WG_IFACE_ADDR=${WG_IFACE_ADDR:-$default_iface_addr}
 
-  local panel_domain node_agent_port
+  local panel_domain node_agent_port node_image
   panel_domain="$(grep '^PANEL_DOMAIN=' "$ENV_FILE" | cut -d= -f2)"
   node_agent_port="$(grep '^NODE_AGENT_PORT=' "$ENV_FILE" | cut -d= -f2)"
+  node_image="$(grep '^NODE_IMAGE=' "$ENV_FILE" | cut -d= -f2)"
+  node_image="${node_image:-ghcr.io/iamfarhad/wgpanel-node:latest}"
 
-  setup_self_wireguard || return 1
-  extract_agent_binary || return 1
-  bootstrap_self_node "$panel_domain" "$node_agent_port" || return 1
-  configure_self_agent "$node_agent_port" || return 1
-  install_self_systemd_service || return 1
+  setup_self_node_host || return 1
+  bootstrap_self_node "$panel_domain" || return 1
+  write_self_node_files "$node_image" "$node_agent_port" || return 1
+  ensure_self_node_image "$node_image" || return 1
+  (cd "$NODE_DIR" && docker compose up -d) || return 1
   ufw allow "${WG_PORT}/udp" >/dev/null 2>&1 || true
 
-  sleep 2
-  if systemctl is-active --quiet wgpanel-agent; then
+  sleep 3
+  if (cd "$NODE_DIR" && docker compose ps --status running --format '{{.Name}}' | grep -q .); then
     log "This server is now registered as node '${NODE_NAME}' and should show 'online' in the panel shortly."
   else
-    err "Agent service failed to start. Check logs with: journalctl -u wgpanel-agent -e"
+    err "Node container failed to start. Check logs with: cd ${NODE_DIR} && docker compose logs"
   fi
 }
 
-# Same as install-node.sh's setup_wireguard(), run against this same box.
-setup_self_wireguard() {
-  local wg_conf_dir="/etc/wireguard"
-  local wg_conf="${wg_conf_dir}/${WG_IFACE}.conf"
-  apt-get install -y wireguard wireguard-tools >/dev/null
-  modprobe wireguard 2>/dev/null || warn "Could not load the wireguard kernel module directly - continuing (may already be built in)."
-
-  mkdir -p "$wg_conf_dir"
-  chmod 700 "$wg_conf_dir"
-
-  if [[ -f "$wg_conf" ]]; then
-    warn "${wg_conf} already exists - leaving its identity (keys/address/port) untouched."
-    WG_PUBLIC_KEY="$(wg pubkey < "${wg_conf_dir}/${WG_IFACE}-private.key" 2>/dev/null || true)"
-    # Still worth patching in NAT/forwarding fixes added to this script after this
-    # config was first generated - "leave it untouched" was never meant to mean
-    # "never benefit from a real bug fix again." Idempotent (checks the marker
-    # string first) - same fix wgpanel's own sync_self_node_wireguard applies on
-    # every `wgpanel update`, duplicated here for the case of re-running this
-    # script instead.
-    if ! grep -q 'DOCKER-USER' "$wg_conf"; then
-      log "Applying a newer NAT/forwarding fix to the existing ${WG_IFACE} config..."
-      cat >> "$wg_conf" <<'EOF'
-PostUp = iptables -I DOCKER-USER -i %i -j ACCEPT; iptables -I DOCKER-USER -o %i -j ACCEPT
-PostDown = iptables -D DOCKER-USER -i %i -j ACCEPT; iptables -D DOCKER-USER -o %i -j ACCEPT
-EOF
-      systemctl restart "wg-quick@${WG_IFACE}" 2>/dev/null || warn "Could not restart wg-quick@${WG_IFACE} automatically - restart it manually to apply."
-    fi
-    return
-  fi
-
-  umask 077
-  wg genkey > "${wg_conf_dir}/${WG_IFACE}-private.key"
-  wg pubkey < "${wg_conf_dir}/${WG_IFACE}-private.key" > "${wg_conf_dir}/${WG_IFACE}-public.key"
-  WG_PUBLIC_KEY="$(cat "${wg_conf_dir}/${WG_IFACE}-public.key")"
-
-  # Generated client configs use AllowedIPs = 0.0.0.0/0 (full-tunnel) - without IP
-  # forwarding + NAT on this box, a connected client gets a handshake but no actual
-  # internet access through the tunnel. This exact fix was applied to
-  # install-node.sh's setup_wireguard() earlier but missed here - this is install.sh's
-  # OWN separate, near-duplicate function for the self-registering core node flow,
-  # found live when a real client connected to a self-registered node and had no
-  # internet despite a successful handshake.
-  local egress_iface
-  egress_iface="$(ip route show default | awk '{print $5; exit}')"
-  if [[ -z "$egress_iface" ]]; then
-    warn "Could not detect a default route interface - full-tunnel client internet access won't work until you add NAT manually. Continuing without it."
-  fi
-
-  cat > "$wg_conf" <<EOF
-[Interface]
-PrivateKey = $(cat "${wg_conf_dir}/${WG_IFACE}-private.key")
-Address = ${WG_IFACE_ADDR}
-ListenPort = ${WG_PORT}
-EOF
-  if [[ -n "$egress_iface" ]]; then
-    # A plain `-A FORWARD` ACCEPT rule is not enough on this host: Docker (already
-    # installed by this point in main()) inserts its own DOCKER-USER/DOCKER-FORWARD
-    # chains ahead of it in FORWARD, and non-Docker interface traffic (wg0) gets
-    # intercepted there first - confirmed live, the wg0 ACCEPT rule showed 0 matched
-    # packets while DOCKER-FORWARD had already processed thousands. DOCKER-USER is
-    # the one chain Docker guarantees it will never overwrite.
-    cat >> "$wg_conf" <<EOF
-PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -I DOCKER-USER -i %i -j ACCEPT; iptables -I DOCKER-USER -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o ${egress_iface} -j MASQUERADE
-PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D DOCKER-USER -i %i -j ACCEPT; iptables -D DOCKER-USER -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o ${egress_iface} -j MASQUERADE
-EOF
-  fi
-  chmod 600 "$wg_conf"
-
-  echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-wgpanel-forward.conf
-  sysctl -p /etc/sysctl.d/99-wgpanel-forward.conf >/dev/null
-
-  systemctl enable --now "wg-quick@${WG_IFACE}"
-  log "WireGuard interface ${WG_IFACE} is up (public key: ${WG_PUBLIC_KEY})"
+# Host prep for running WireGuard in a container: the kernel module (the container's
+# wg-quick drives the host kernel), loaded now and on every boot. IP forwarding for
+# the container's internet egress is handled by the Docker daemon itself.
+setup_self_node_host() {
+  apt-get install -y wireguard >/dev/null 2>&1 || true
+  modprobe wireguard 2>/dev/null || warn "Could not load the wireguard kernel module - continuing (may be built in)."
+  echo wireguard > /etc/modules-load.d/wireguard.conf
 }
 
-# Extracts the wgpanel-agent binary from the already-built/pulled API image via
-# `docker create`+`docker cp` (never started) - avoids depending on
-# install-node.sh's separate, currently-unpublished release-download URL, and
-# guarantees an architecture match since Docker itself already resolved the correct
-# image for this host.
-extract_agent_binary() {
-  mkdir -p "$AGENT_DIR" "${AGENT_DIR}/state"
-  local api_image cid
-  api_image="$(grep '^API_IMAGE=' "$ENV_FILE" | cut -d= -f2)"
-  log "Extracting the node agent binary from ${api_image}..."
-  cid="$(docker create "$api_image")"
-  docker cp "${cid}:/wgpanel-agent" "$AGENT_BIN"
-  docker rm "$cid" >/dev/null
-  chmod +x "$AGENT_BIN"
-}
-
-# Calls the internal bootstrap-self endpoint (combines CreateNode + join-token
-# generation in one call - see backend/internal/httpapi/nodes_bootstrap.go) using
-# the token already available in this script.
+# Creates the node record and returns a join token via the internal bootstrap-self
+# endpoint (CreateNode + join-token in one call - nodes_bootstrap.go). No public_key
+# is sent: the container generates its keypair on first boot and submits the public
+# key when its agent registers (agentserver.go's SetNodePublicKey), same as a remote
+# node installed with install-node.sh.
 bootstrap_self_node() {
-  local panel_domain="$1" node_agent_port="$2"
+  local panel_domain="$1"
   local api_port token resp
   api_port="$(grep '^API_PORT=' "$ENV_FILE" | cut -d= -f2)"
   token="$(grep '^INTERNAL_API_TOKEN=' "$ENV_FILE" | cut -d= -f2)"
 
-  # No -f here (deliberately): it would swallow the response body on a non-2xx,
-  # turning a real error message (e.g. "wg_subnet is required") into an empty
-  # string - exactly what made an earlier real failure look like a mystery blank
-  # response instead of a diagnosable one. JOIN_TOKEN being empty below is what
-  # actually detects failure here.
+  # No -f (deliberately): it would swallow a non-2xx body, turning a real error (e.g.
+  # "wg_subnet is required") into an empty string. An empty JOIN_TOKEN detects failure.
   resp=$(curl -sS -X POST "http://127.0.0.1:${api_port}/internal/nodes/bootstrap-self" \
     -H "X-Internal-Token: ${token}" \
     -H 'Content-Type: application/json' \
-    -d "{\"name\":\"${NODE_NAME}\",\"node_group\":\"${NODE_GROUP}\",\"public_endpoint\":\"${panel_domain}:${WG_PORT}\",\"wg_subnet\":\"${WG_SUBNET}\",\"capacity_max_peers\":${NODE_CAPACITY},\"public_key\":\"${WG_PUBLIC_KEY}\"}")
+    -d "{\"name\":\"${NODE_NAME}\",\"node_group\":\"${NODE_GROUP}\",\"public_endpoint\":\"${panel_domain}:${WG_PORT}\",\"wg_subnet\":\"${WG_SUBNET}\",\"capacity_max_peers\":${NODE_CAPACITY}}")
 
   JOIN_TOKEN="$(echo "$resp" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)"
   if [[ -z "$JOIN_TOKEN" ]]; then
@@ -412,42 +327,83 @@ bootstrap_self_node() {
   fi
 }
 
-configure_self_agent() {
-  local node_agent_port="$1"
-  cat > "$AGENT_ENV" <<EOF
-WGPANEL_PANEL_ADDR=127.0.0.1:${node_agent_port}
+# Writes the node's compose + env under NODE_DIR. Bridge networking (the container
+# NATs client traffic in its own netns, so no host DOCKER-USER handling is needed),
+# but attached to the panel's existing compose network so the agent reaches the API at
+# api:NODE_AGENT_PORT with no public hairpin. Only the WireGuard UDP port is published.
+write_self_node_files() {
+  local node_image="$1" node_agent_port="$2"
+  mkdir -p "$NODE_DIR"
+
+  cat > "$NODE_ENV_FILE" <<EOF
+NODE_IMAGE=${node_image}
+WGPANEL_PANEL_ADDR=api:${node_agent_port}
 WGPANEL_JOIN_TOKEN=${JOIN_TOKEN}
 WGPANEL_NODE_NAME=${NODE_NAME}
 WGPANEL_WG_INTERFACE=${WG_IFACE}
-WGPANEL_WG_PUBLIC_KEY=${WG_PUBLIC_KEY}
-WGPANEL_STATE_DIR=${AGENT_DIR}/state
+WGPANEL_WG_PORT=${WG_PORT}
+WG_IFACE_ADDR=${WG_IFACE_ADDR}
 EOF
-  chmod 600 "$AGENT_ENV"
+  chmod 600 "$NODE_ENV_FILE"
+
+  cat > "$NODE_COMPOSE_FILE" <<'EOF'
+name: wgpanel-node
+
+services:
+  node:
+    image: ${NODE_IMAGE}
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    cap_add:
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    sysctls:
+      - net.ipv4.ip_forward=1
+    env_file:
+      - .env
+    networks:
+      - panel
+    ports:
+      - "${WGPANEL_WG_PORT:-51820}:${WGPANEL_WG_PORT:-51820}/udp"
+    volumes:
+      - node_wg_state:/etc/wireguard
+      - node_agent_state:/etc/wgpanel/state
+    deploy:
+      resources:
+        limits:
+          memory: ${NODE_MEM_LIMIT:-256m}
+
+networks:
+  panel:
+    # The panel stack (name: wgpanel) creates this; the node joins it to reach api:PORT.
+    external: true
+    name: wgpanel_default
+
+volumes:
+  node_wg_state:
+  node_agent_state:
+EOF
 }
 
-install_self_systemd_service() {
-  cat > /etc/systemd/system/wgpanel-agent.service <<EOF
-[Unit]
-Description=WGPanel node agent (self-registered core node)
-After=network-online.target wg-quick@${WG_IFACE}.service
-Wants=network-online.target
-Requires=wg-quick@${WG_IFACE}.service
-
-[Service]
-Type=simple
-EnvironmentFile=${AGENT_ENV}
-ExecStart=${AGENT_BIN}
-Restart=always
-RestartSec=3
-AmbientCapabilities=CAP_NET_ADMIN
-CapabilityBoundingSet=CAP_NET_ADMIN
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  systemctl daemon-reload
-  systemctl enable --now wgpanel-agent
+# Pulls the node image; falls back to building it from source if the pull fails
+# (private GHCR package, or before CI has published it) - mirrors install-node.sh.
+ensure_self_node_image() {
+  local node_image="$1"
+  if (cd "$NODE_DIR" && docker compose pull); then
+    return 0
+  fi
+  warn "Could not pull ${node_image} - building the node image from source instead."
+  local src="/tmp/wgpanel-src.$$"
+  rm -rf "$src"
+  git clone --depth 1 "$WGPANEL_REPO_URL" "$src" || return 1
+  docker build -f "$src/deploy/node.Dockerfile" -t wgpanel-node:local "$src" || { rm -rf "$src"; return 1; }
+  rm -rf "$src"
+  sed -i 's#^NODE_IMAGE=.*#NODE_IMAGE=wgpanel-node:local#' "$NODE_ENV_FILE"
 }
 
 main() {

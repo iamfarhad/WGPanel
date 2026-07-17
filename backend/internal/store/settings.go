@@ -11,6 +11,10 @@ type PanelSettings struct {
 	DefaultDeviceLimit  *int
 	DefaultNodeCapacity int
 	SupportContact      *string
+	// ClientDNS is the DNS = line written into every generated wg-quick config
+	// (migration 0018). Comma-separated; defaults to Cloudflare, overridable when the
+	// node's egress can't reach that (see the migration's comment).
+	ClientDNS string
 	// PanelDomain (migration 0012) is the live-managed TLS domain, distinct from
 	// PublicBaseURL which stays purely informational (see migration 0009's comment).
 	// Changing this triggers a live push to Caddy's admin API (docs/STORY-10-
@@ -25,9 +29,9 @@ type PanelSettings struct {
 func (s *Store) GetSettings(ctx context.Context) (PanelSettings, error) {
 	var p PanelSettings
 	err := s.pool.QueryRow(ctx, `
-		SELECT public_base_url, default_data_quota_gb, default_device_limit, default_node_capacity, support_contact, panel_domain
+		SELECT public_base_url, default_data_quota_gb, default_device_limit, default_node_capacity, support_contact, panel_domain, client_dns
 		FROM panel_settings WHERE id = 1
-	`).Scan(&p.PublicBaseURL, &p.DefaultDataQuotaGB, &p.DefaultDeviceLimit, &p.DefaultNodeCapacity, &p.SupportContact, &p.PanelDomain)
+	`).Scan(&p.PublicBaseURL, &p.DefaultDataQuotaGB, &p.DefaultDeviceLimit, &p.DefaultNodeCapacity, &p.SupportContact, &p.PanelDomain, &p.ClientDNS)
 	return p, err
 }
 
@@ -43,6 +47,7 @@ type UpdateSettingsParams struct {
 	DefaultNodeCapacity *int
 	SupportContact      *string
 	PanelDomain         *string
+	ClientDNS           *string
 }
 
 func (s *Store) UpdateSettings(ctx context.Context, p UpdateSettingsParams) (PanelSettings, error) {
@@ -54,9 +59,10 @@ func (s *Store) UpdateSettings(ctx context.Context, p UpdateSettingsParams) (Pan
 			default_node_capacity = COALESCE($4, default_node_capacity),
 			support_contact = COALESCE($5, support_contact),
 			panel_domain = COALESCE($6, panel_domain),
+			client_dns = COALESCE($7, client_dns),
 			updated_at = now()
 		WHERE id = 1
-	`, p.PublicBaseURL, p.DefaultDataQuotaGB, p.DefaultDeviceLimit, p.DefaultNodeCapacity, p.SupportContact, p.PanelDomain)
+	`, p.PublicBaseURL, p.DefaultDataQuotaGB, p.DefaultDeviceLimit, p.DefaultNodeCapacity, p.SupportContact, p.PanelDomain, p.ClientDNS)
 	if err != nil {
 		return PanelSettings{}, err
 	}

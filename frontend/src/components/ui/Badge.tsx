@@ -3,23 +3,36 @@ import type { HTMLAttributes } from 'react'
 type Tone = 'green' | 'red' | 'amber' | 'slate' | 'blue'
 
 const tones: Record<Tone, string> = {
-  green: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
-  red: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
-  amber: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-  slate: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
-  blue: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+  green: 'bg-emerald-500/10 text-emerald-700 ring-emerald-600/25 dark:text-emerald-400 dark:ring-emerald-400/25',
+  red: 'bg-rose-500/10 text-rose-700 ring-rose-600/25 dark:text-rose-400 dark:ring-rose-400/25',
+  amber: 'bg-amber-500/10 text-amber-700 ring-amber-600/30 dark:text-amber-400 dark:ring-amber-400/25',
+  slate: 'bg-inset text-muted ring-edge-strong/60',
+  blue: 'bg-sky-500/10 text-sky-700 ring-sky-600/25 dark:text-sky-400 dark:ring-sky-400/25',
+}
+
+const dots: Record<Tone, string> = {
+  green: 'bg-emerald-500',
+  red: 'bg-rose-500',
+  amber: 'bg-amber-500',
+  slate: 'bg-faint',
+  blue: 'bg-sky-500',
 }
 
 export function Badge({
   tone = 'slate',
+  dot = false,
+  children,
   className = '',
   ...props
-}: HTMLAttributes<HTMLSpanElement> & { tone?: Tone }) {
+}: HTMLAttributes<HTMLSpanElement> & { tone?: Tone; dot?: boolean }) {
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${tones[tone]} ${className}`}
+      className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${tones[tone]} ${className}`}
       {...props}
-    />
+    >
+      {dot && <span className={`h-1.5 w-1.5 rounded-full ${dots[tone]}`} />}
+      {children}
+    </span>
   )
 }
 

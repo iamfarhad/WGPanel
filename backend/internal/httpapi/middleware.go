@@ -119,12 +119,27 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 		s.Logger.Info("http_request",
 			"method", r.Method,
-			"path", r.URL.Path,
+			"path", redactPath(r.URL.Path),
 			"status", sw.status,
 			"duration_ms", time.Since(start).Milliseconds(),
 			"remote_addr", r.RemoteAddr,
 		)
 	})
+}
+
+// redactPath masks capability tokens that are part of the URL path itself - the
+// subscription endpoints are the one route family where the credential IS a path
+// segment, so the body-never-logged guarantee above isn't enough on its own.
+func redactPath(path string) string {
+	const subPrefix = "/api/v1/sub/"
+	rest, ok := strings.CutPrefix(path, subPrefix)
+	if !ok || rest == "" {
+		return path
+	}
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return subPrefix + "[redacted]" + rest[i:]
+	}
+	return subPrefix + "[redacted]"
 }
 
 type statusCapturingWriter struct {

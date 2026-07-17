@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,10 @@ type heartbeatPeerTraffic struct {
 	ReceiveBytes  int64      `json:"rx_bytes"`
 	TransmitBytes int64      `json:"tx_bytes"`
 	LastHandshake *time.Time `json:"last_handshake,omitempty"`
+	// Endpoint is the peer's current client source "ip:port" from the same kernel
+	// snapshot as the counters - the control plane's device-tracking input
+	// (PRD-account-management.md §6.4). Omitted when the peer has never connected.
+	Endpoint string `json:"endpoint,omitempty"`
 }
 
 type heartbeatRequest struct {
@@ -47,6 +52,9 @@ type heartbeatRequest struct {
 type heartbeatPeer struct {
 	PublicKey  string   `json:"public_key"`
 	AllowedIPs []string `json:"allowed_ips"`
+	// BandwidthLimitMbps: per-account rate limit the control plane wants enforced on
+	// this peer via tc (see tc.go); nil = unshaped.
+	BandwidthLimitMbps *int `json:"bandwidth_limit_mbps"`
 }
 
 type heartbeatResponse struct {
@@ -115,6 +123,9 @@ func (s *heartbeatState) tick(ctx context.Context, cfg config, client *http.Clie
 				hs := p.LastHandshakeTime
 				t.LastHandshake = &hs
 			}
+			if p.Endpoint != nil {
+				t.Endpoint = p.Endpoint.String()
+			}
 			traffic = append(traffic, t)
 		}
 	}
@@ -145,6 +156,13 @@ func (s *heartbeatState) tick(ctx context.Context, cfg config, client *http.Clie
 		logger.Warn("reconcile_peers_failed", "error", err)
 		return
 	}
+	// Shaping failure (e.g. no tc binary on an old bare-metal install) must not hold
+	// the signature back: that would force reconcilePeers to reapply ReplacePeers
+	// every 10s - exactly the handshake-resetting behavior peerSignature exists to
+	// prevent. Peers stay correct, just without rate enforcement, and the warn says so.
+	if err := applyShaping(cfg.WGInterface, resp.Peers, logger); err != nil {
+		logger.Warn("apply_shaping_failed", "error", err)
+	}
 	s.lastAppliedPeerSignature = sig
 }
 
@@ -170,7 +188,14 @@ func peerSignature(peers []heartbeatPeer) string {
 	for _, p := range peers {
 		allowedIPs := append([]string(nil), p.AllowedIPs...)
 		sort.Strings(allowedIPs)
-		entries = append(entries, p.PublicKey+"|"+strings.Join(allowedIPs, ","))
+		// The bandwidth limit is part of the signature so a limit change alone (same
+		// peers, new rate) still triggers a reconcile pass - tc shaping is applied in
+		// the same signature-gated step as ConfigureDevice.
+		limit := "-"
+		if p.BandwidthLimitMbps != nil {
+			limit = strconv.Itoa(*p.BandwidthLimitMbps)
+		}
+		entries = append(entries, p.PublicKey+"|"+strings.Join(allowedIPs, ",")+"|"+limit)
 	}
 	sort.Strings(entries)
 	return strings.Join(entries, "\n")
