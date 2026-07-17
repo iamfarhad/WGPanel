@@ -195,12 +195,14 @@ var confFilenameUnsafe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 // chars - keep the stem within that so imports don't fail or get truncated oddly.
 func confFilename(label string) string {
 	stem := confFilenameUnsafe.ReplaceAllString(strings.ToLower(label), "-")
+	if len(stem) > 15 {
+		stem = stem[:15]
+	}
+	// Trim AFTER truncating so a cut that lands on a separator doesn't leave a trailing
+	// "-"/"." right before the extension (e.g. "very-long-name-.conf").
 	stem = strings.Trim(stem, "-.")
 	if stem == "" {
 		stem = "wgpanel"
-	}
-	if len(stem) > 15 {
-		stem = stem[:15]
 	}
 	return stem + ".conf"
 }

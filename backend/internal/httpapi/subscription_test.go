@@ -9,6 +9,7 @@ func TestConfFilename(t *testing.T) {
 		"":                              "wgpanel.conf",
 		"!!!":                           "wgpanel.conf",
 		"a-very-long-account-label-xyz": "a-very-long-acc.conf", // wg-quick tunnel names cap at 15 chars
+		"abcdefghijklmn-xyz":            "abcdefghijklmn.conf",  // 15-char cut lands on a "-"; trimmed after truncation, no trailing separator
 	}
 	for label, want := range cases {
 		if got := confFilename(label); got != want {

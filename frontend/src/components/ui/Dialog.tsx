@@ -1,6 +1,30 @@
 import { useEffect, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 
+// Body-scroll lock is ref-counted at module scope so stacked dialogs (e.g. the delete
+// ConfirmDialog opened on top of an account detail Dialog) don't race on
+// document.body.style.overflow: the body stays locked until the LAST open dialog
+// closes, regardless of the order they unmount in. A single dialog restoring the
+// pre-lock value directly would otherwise re-enable scrolling while another is still
+// open, or leave the body permanently locked if the two unmount in the wrong order.
+let openDialogCount = 0
+let bodyOverflowBeforeLock = ''
+
+function lockBodyScroll() {
+  if (openDialogCount === 0) {
+    bodyOverflowBeforeLock = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+  }
+  openDialogCount++
+}
+
+function unlockBodyScroll() {
+  openDialogCount = Math.max(0, openDialogCount - 1)
+  if (openDialogCount === 0) {
+    document.body.style.overflow = bodyOverflowBeforeLock
+  }
+}
+
 interface DialogProps {
   open: boolean
   onClose: () => void
@@ -20,11 +44,10 @@ export function Dialog({ open, onClose, title, children, maxWidthClassName = 'ma
       if (e.key === 'Escape') onClose()
     }
     document.addEventListener('keydown', onKey)
-    const prevOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
+    lockBodyScroll()
     return () => {
       document.removeEventListener('keydown', onKey)
-      document.body.style.overflow = prevOverflow
+      unlockBodyScroll()
     }
   }, [open, onClose])
 

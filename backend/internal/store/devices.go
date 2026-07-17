@@ -42,15 +42,30 @@ func ingestDeviceEndpoints(ctx context.Context, tx pgx.Tx, nodeID string, observ
 		return nil, nil
 	}
 
-	accountIDs := make([]string, len(observations))
-	endpoints := make([]string, len(observations))
-	seenAts := make([]time.Time, len(observations))
-	touched := make(map[string]bool, len(observations))
-	for i, o := range observations {
-		accountIDs[i] = o.accountID
-		endpoints[i] = o.endpoint
-		seenAts[i] = o.seenAt
-		touched[o.accountID] = true
+	// Postgres rejects an INSERT ... ON CONFLICT DO UPDATE whose values would touch the
+	// same conflict-target row twice in one statement ("ON CONFLICT DO UPDATE command
+	// cannot affect row a second time"), which would roll back the whole heartbeat
+	// transaction. Two observations can share an (account_id, source_endpoint) - a
+	// duplicated peer in the kernel snapshot, or several devices behind one NAT reusing
+	// a source port - so collapse duplicates first, keeping the latest sighting.
+	type endpointKey struct{ accountID, endpoint string }
+	latest := make(map[endpointKey]time.Time, len(observations))
+	for _, o := range observations {
+		k := endpointKey{o.accountID, o.endpoint}
+		if prev, ok := latest[k]; !ok || o.seenAt.After(prev) {
+			latest[k] = o.seenAt
+		}
+	}
+
+	accountIDs := make([]string, 0, len(latest))
+	endpoints := make([]string, 0, len(latest))
+	seenAts := make([]time.Time, 0, len(latest))
+	touched := make(map[string]bool, len(latest))
+	for k, seenAt := range latest {
+		accountIDs = append(accountIDs, k.accountID)
+		endpoints = append(endpoints, k.endpoint)
+		seenAts = append(seenAts, seenAt)
+		touched[k.accountID] = true
 	}
 
 	// GREATEST guards against a delayed/re-ordered heartbeat moving last_seen_at

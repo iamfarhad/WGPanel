@@ -192,6 +192,12 @@ func applyShaping(iface string, peers []heartbeatPeer, logger *slog.Logger) erro
 	}
 	for _, cmd := range setup {
 		if out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput(); err != nil {
+			// A half-built qdisc tree is worse than none: tear the partial state back
+			// down so the interface is left cleanly unshaped (correct, just unlimited)
+			// rather than in a broken in-between state the signature gate may not revisit.
+			for _, td := range teardown {
+				_ = exec.Command(td[0], td[1:]...).Run()
+			}
 			return fmt.Errorf("%s: %w (%s)", strings.Join(cmd, " "), err, strings.TrimSpace(string(out)))
 		}
 	}
