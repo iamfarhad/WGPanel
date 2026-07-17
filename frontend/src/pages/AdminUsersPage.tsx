@@ -9,11 +9,13 @@ import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Select } from '../components/ui/Select'
+import { Field } from '../components/ui/Field'
 import { Dialog } from '../components/ui/Dialog'
 import { ConfirmDialog } from '../components/ui/ConfirmDialog'
 import { Badge } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
 import { TableSkeleton } from '../components/ui/Skeleton'
+import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 
 interface AdminUser {
   id: string
@@ -63,66 +65,64 @@ export function AdminUsersPage() {
         description="Panel operators with dashboard access. Role controls what they can change."
         action={
           <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="mr-2 h-4 w-4" />
+            <Plus className="h-4 w-4" />
             New admin
           </Button>
         }
       />
 
-      <Card>
+      <Card className="overflow-hidden">
         {adminsQuery.isLoading && <TableSkeleton cols={3} />}
-        {adminsQuery.isError && <p className="p-6 text-sm text-red-600 dark:text-red-400">Could not load admin users.</p>}
+        {adminsQuery.isError && <p className="p-6 text-sm text-rose-600 dark:text-rose-400">Could not load admin users.</p>}
         {!adminsQuery.isLoading && !adminsQuery.isError && admins.length === 0 && (
           <EmptyState icon={ShieldCheck} title="No admin users found" />
         )}
         {!adminsQuery.isLoading && !adminsQuery.isError && admins.length > 0 && (
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-slate-200 text-slate-500 dark:border-slate-800 dark:text-slate-400">
+          <Table>
+            <THead>
               <tr>
-                <th className="px-6 py-3 font-medium">Username</th>
-                <th className="px-6 py-3 font-medium">Role</th>
-                <th className="px-6 py-3 font-medium">Created</th>
-                <th className="px-6 py-3 font-medium">Actions</th>
+                <Th>Username</Th>
+                <Th>Role</Th>
+                <Th>Created</Th>
+                <Th className="text-right">Actions</Th>
               </tr>
-            </thead>
+            </THead>
             <tbody>
               {admins.map((a) => {
                 const isSelf = currentUser?.username === a.username
                 return (
-                  <tr
-                    key={a.id}
-                    onClick={() => setEditTarget(a)}
-                    className="cursor-pointer border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
-                  >
-                    <td className="px-6 py-3 text-slate-900 dark:text-slate-100">
+                  <Tr key={a.id} interactive onClick={() => setEditTarget(a)}>
+                    <Td className="font-medium text-fg">
                       {a.username}
-                      {isSelf && <span className="ml-2 text-xs text-slate-400">(you)</span>}
-                    </td>
-                    <td className="px-6 py-3">
+                      {isSelf && <span className="ml-2 text-xs font-normal text-faint">(you)</span>}
+                    </Td>
+                    <Td>
                       <Badge tone={ROLE_TONE[a.role] ?? 'slate'}>{a.role.replace('_', ' ')}</Badge>
-                    </td>
-                    <td className="px-6 py-3 text-slate-500 dark:text-slate-400">
-                      {new Date(a.created_at).toLocaleDateString()}
-                    </td>
-                    <td className="px-6 py-3">
+                    </Td>
+                    <Td className="text-muted">{new Date(a.created_at).toLocaleDateString()}</Td>
+                    <Td>
                       {!isSelf && (
-                        <Button
-                          variant="secondary"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setDeleteTarget(a)
-                          }}
-                        >
-                          <Trash2 className="mr-1 h-3.5 w-3.5" />
-                          Delete
-                        </Button>
+                        <div className="flex justify-end">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setDeleteTarget(a)
+                            }}
+                            className="text-rose-600 hover:border-rose-300 hover:bg-rose-500/10 dark:text-rose-400 dark:hover:border-rose-500/40"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Delete
+                          </Button>
+                        </div>
                       )}
-                    </td>
-                  </tr>
+                    </Td>
+                  </Tr>
                 )
               })}
             </tbody>
-          </table>
+          </Table>
         )}
       </Card>
 
@@ -209,16 +209,14 @@ function EditAdminDialog({
   return (
     <Dialog open onClose={onClose} title={`Edit ${admin.username}`}>
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Role</label>
+        <Field label="Role">
           <Select value={role} onChange={(e) => setRole(e.target.value)}>
             <option value="support">Support (read-only)</option>
             <option value="operator">Operator</option>
             <option value="super_admin">Super admin</option>
           </Select>
-        </div>
-        <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Reset password</label>
+        </Field>
+        <Field label="Reset password">
           <Input
             type="password"
             value={password}
@@ -226,8 +224,8 @@ function EditAdminDialog({
             placeholder="Leave blank to keep current password"
             autoComplete="new-password"
           />
-        </div>
-        {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+        </Field>
+        {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel
@@ -281,12 +279,10 @@ function CreateAdminDialog({
   return (
     <Dialog open={open} onClose={onClose} title="New admin user">
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Username</label>
+        <Field label="Username">
           <Input value={username} onChange={(e) => setUsername(e.target.value)} required autoComplete="off" />
-        </div>
-        <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Password</label>
+        </Field>
+        <Field label="Password">
           <Input
             type="password"
             value={password}
@@ -294,16 +290,15 @@ function CreateAdminDialog({
             required
             autoComplete="new-password"
           />
-        </div>
-        <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Role</label>
+        </Field>
+        <Field label="Role">
           <Select value={role} onChange={(e) => setRole(e.target.value)}>
             <option value="support">Support (read-only)</option>
             <option value="operator">Operator</option>
             <option value="super_admin">Super admin</option>
           </Select>
-        </div>
-        {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+        </Field>
+        {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel

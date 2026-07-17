@@ -7,6 +7,7 @@ import { Card } from '../components/ui/Card'
 import { Select } from '../components/ui/Select'
 import { EmptyState } from '../components/ui/EmptyState'
 import { TableSkeleton } from '../components/ui/Skeleton'
+import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 
 interface AuditLogEntry {
   id: number
@@ -43,62 +44,61 @@ export function AuditLogPage() {
         }
       />
 
-      <Card>
+      <Card className="overflow-hidden">
         {logQuery.isLoading && <TableSkeleton cols={4} />}
-        {logQuery.isError && <p className="p-6 text-sm text-red-600 dark:text-red-400">Could not load audit log.</p>}
+        {logQuery.isError && <p className="p-6 text-sm text-rose-600 dark:text-rose-400">Could not load audit log.</p>}
         {!logQuery.isLoading && !logQuery.isError && entries.length === 0 && (
           <EmptyState icon={ScrollText} title="No audit entries yet" />
         )}
         {!logQuery.isLoading && !logQuery.isError && entries.length > 0 && (
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-slate-200 text-slate-500 dark:border-slate-800 dark:text-slate-400">
+          <Table>
+            <THead>
               <tr>
-                <th className="w-8 px-6 py-3" />
-                <th className="px-6 py-3 font-medium">Time</th>
-                <th className="px-6 py-3 font-medium">Actor</th>
-                <th className="px-6 py-3 font-medium">Action</th>
-                <th className="px-6 py-3 font-medium">Target</th>
+                <Th className="w-8" />
+                <Th>Time</Th>
+                <Th>Actor</Th>
+                <Th>Action</Th>
+                <Th>Target</Th>
               </tr>
-            </thead>
+            </THead>
             <tbody>
               {entries.map((entry) => (
                 <Fragment key={entry.id}>
-                  <tr
-                    onClick={() => setExpanded(expanded === entry.id ? null : entry.id)}
-                    className="cursor-pointer border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
-                  >
-                    <td className="px-6 py-3 text-slate-400">
+                  <Tr interactive onClick={() => setExpanded(expanded === entry.id ? null : entry.id)}>
+                    <Td className="text-faint">
                       {expanded === entry.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                    </td>
-                    <td className="whitespace-nowrap px-6 py-3 text-slate-500 dark:text-slate-400">
+                    </Td>
+                    <Td className="whitespace-nowrap text-muted tabular-nums">
                       {new Date(entry.created_at).toLocaleString()}
-                    </td>
-                    <td className="px-6 py-3 text-slate-900 dark:text-slate-100">{entry.actor}</td>
-                    <td className="px-6 py-3 font-mono text-xs text-slate-600 dark:text-slate-300">{entry.action}</td>
-                    <td className="px-6 py-3 text-slate-500 dark:text-slate-400">{entry.target ?? '—'}</td>
-                  </tr>
+                    </Td>
+                    <Td className="font-medium text-fg">{entry.actor}</Td>
+                    <Td>
+                      <code className="rounded-md bg-inset px-1.5 py-0.5 font-mono text-xs text-fg">{entry.action}</code>
+                    </Td>
+                    <Td className="text-muted">{entry.target ?? '—'}</Td>
+                  </Tr>
                   {expanded === entry.id && (
-                    <tr className="border-b border-slate-100 bg-slate-50 dark:border-slate-800 dark:bg-slate-800/30">
-                      <td colSpan={5} className="px-6 py-4">
-                        <div className="grid grid-cols-2 gap-4 text-xs">
+                    <Tr className="bg-inset/40">
+                      <Td colSpan={5} className="py-4">
+                        <div className="grid grid-cols-1 gap-4 text-xs sm:grid-cols-2">
                           <div>
-                            <p className="mb-1 font-medium text-slate-500 dark:text-slate-400">IP address</p>
-                            <p className="font-mono text-slate-700 dark:text-slate-300">{entry.ip_address ?? 'unknown'}</p>
+                            <p className="mb-1.5 font-semibold tracking-wider text-faint uppercase">IP address</p>
+                            <p className="font-mono text-fg">{entry.ip_address ?? 'unknown'}</p>
                           </div>
                           <div>
-                            <p className="mb-1 font-medium text-slate-500 dark:text-slate-400">Detail</p>
-                            <pre className="whitespace-pre-wrap font-mono text-slate-700 dark:text-slate-300">
+                            <p className="mb-1.5 font-semibold tracking-wider text-faint uppercase">Detail</p>
+                            <pre className="font-mono leading-relaxed whitespace-pre-wrap text-fg">
                               {entry.detail ? JSON.stringify(entry.detail, null, 2) : '—'}
                             </pre>
                           </div>
                         </div>
-                      </td>
-                    </tr>
+                      </Td>
+                    </Tr>
                   )}
                 </Fragment>
               ))}
             </tbody>
-          </table>
+          </Table>
         )}
       </Card>
     </div>

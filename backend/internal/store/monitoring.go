@@ -18,6 +18,11 @@ type PeerTrafficReport struct {
 	ReceiveBytes  int64
 	TransmitBytes int64
 	LastHandshake *time.Time // nil if this peer has never completed a handshake
+	// Endpoint is the peer's current client source "ip:port" as the kernel reports
+	// it, or "" if unknown. Only trusted as a live device sighting when LastHandshake
+	// is inside deviceActiveWindow - the kernel remembers a peer's last endpoint
+	// indefinitely, long after that client disconnected (PRD §6.4 device tracking).
+	Endpoint string
 }
 
 // NodeMetricsReport is one node's best-effort CPU/RAM sample. All fields nil means
@@ -56,8 +61,35 @@ func (s *Store) IngestHeartbeatTelemetry(ctx context.Context, nodeID string, tra
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	var deviceEvents []deviceLimitEvent
 	if len(traffic) > 0 {
-		if err := ingestPeerTraffic(ctx, tx, nodeID, traffic); err != nil {
+		accountByKey, err := ingestPeerTraffic(ctx, tx, nodeID, traffic)
+		if err != nil {
+			return err
+		}
+
+		// Device tracking (PRD-account-management.md §6.4): a peer's reported endpoint
+		// only counts as a live device sighting when its handshake is inside the
+		// rolling window - see PeerTrafficReport.Endpoint's doc comment.
+		var observations []deviceObservation
+		for _, t := range traffic {
+			accountID, known := accountByKey[t.PublicKey]
+			if !known || t.Endpoint == "" || t.LastHandshake == nil {
+				continue
+			}
+			if time.Since(*t.LastHandshake) > deviceActiveWindow {
+				continue
+			}
+			observations = append(observations, deviceObservation{
+				accountID: accountID, endpoint: t.Endpoint, seenAt: *t.LastHandshake,
+			})
+		}
+		touchedAccounts, err := ingestDeviceEndpoints(ctx, tx, nodeID, observations)
+		if err != nil {
+			return err
+		}
+		deviceEvents, err = reconcileDeviceLimitsTx(ctx, tx, touchedAccounts)
+		if err != nil {
 			return err
 		}
 	}
@@ -70,10 +102,28 @@ func (s *Store) IngestHeartbeatTelemetry(ctx context.Context, nodeID string, tra
 		}
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	// Audit rows only after the transaction they describe actually committed -
+	// best-effort by design, same as every handler's InsertAuditLog call.
+	for _, ev := range deviceEvents {
+		detail := map[string]any{
+			"active_devices": ev.ActiveDevices,
+			"device_limit":   ev.DeviceLimit,
+			"hard_enforced":  ev.HardEnforced,
+		}
+		_ = s.InsertAuditLog(ctx, "system", ev.Action, ev.AccountID, detail, "")
+	}
+
+	return nil
 }
 
-func ingestPeerTraffic(ctx context.Context, tx pgx.Tx, nodeID string, traffic []PeerTrafficReport) error {
+// ingestPeerTraffic returns the node's publicKey -> accountID mapping it already had
+// to build for counter attribution, so the device-tracking pass that follows doesn't
+// re-query it.
+func ingestPeerTraffic(ctx context.Context, tx pgx.Tx, nodeID string, traffic []PeerTrafficReport) (map[string]string, error) {
 	type existingPeer struct {
 		id                string
 		accountID         string
@@ -89,7 +139,7 @@ func ingestPeerTraffic(ctx context.Context, tx pgx.Tx, nodeID string, traffic []
 		FOR UPDATE OF ap
 	`, nodeID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	byPublicKey := make(map[string]existingPeer)
 	for rows.Next() {
@@ -97,13 +147,13 @@ func ingestPeerTraffic(ctx context.Context, tx pgx.Tx, nodeID string, traffic []
 		var publicKey string
 		if err := rows.Scan(&p.id, &p.accountID, &publicKey, &p.lastReceiveBytes, &p.lastTransmitBytes); err != nil {
 			rows.Close()
-			return err
+			return nil, err
 		}
 		byPublicKey[publicKey] = p
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
 
 	var updateIDs []string
@@ -158,7 +208,7 @@ func ingestPeerTraffic(ctx context.Context, tx pgx.Tx, nodeID string, traffic []
 			) AS v
 			WHERE ap.id = v.id
 		`, updateIDs, updateRx, updateTx, updateHandshake); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -177,7 +227,7 @@ func ingestPeerTraffic(ctx context.Context, tx pgx.Tx, nodeID string, traffic []
 			[]string{"ts", "account_id", "node_id", "rx_delta", "tx_delta"},
 			pgx.CopyFromRows(rowsToCopy),
 		); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -193,11 +243,15 @@ func ingestPeerTraffic(ctx context.Context, tx pgx.Tx, nodeID string, traffic []
 			FROM (SELECT * FROM unnest($1::uuid[], $2::bigint[]) AS v(account_id, delta)) AS v
 			WHERE a.id = v.account_id
 		`, accountIDs, deltas); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	return nil
+	accountByKey := make(map[string]string, len(byPublicKey))
+	for publicKey, peer := range byPublicKey {
+		accountByKey[publicKey] = peer.accountID
+	}
+	return accountByKey, nil
 }
 
 // UsageSample is one time-bucketed point in an account's usage-over-time series.

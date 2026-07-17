@@ -15,6 +15,7 @@ import (
 type bootstrapSelfNodeRequest struct {
 	Name             string  `json:"name"`
 	NodeGroup        string  `json:"node_group"`
+	Region           string  `json:"region"`
 	PublicEndpoint   string  `json:"public_endpoint"`
 	WGSubnet         string  `json:"wg_subnet"`
 	CapacityMaxPeers int     `json:"capacity_max_peers"`
@@ -52,7 +53,7 @@ func (s *Server) handleBootstrapSelfNode(w http.ResponseWriter, r *http.Request)
 	}
 
 	ctx := r.Context()
-	node, err := s.Store.CreateNode(ctx, req.Name, req.NodeGroup, req.PublicEndpoint, req.WGSubnet, req.CapacityMaxPeers, req.PublicKey)
+	node, err := s.Store.CreateNode(ctx, req.Name, req.NodeGroup, req.Region, req.PublicEndpoint, req.WGSubnet, req.CapacityMaxPeers, req.PublicKey)
 	if errors.Is(err, store.ErrNodeNameTaken) {
 		writeJSONError(w, http.StatusConflict, "node_name_taken", "a node with this name already exists")
 		return

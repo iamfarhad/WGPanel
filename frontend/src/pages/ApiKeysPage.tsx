@@ -7,11 +7,13 @@ import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
+import { Field } from '../components/ui/Field'
 import { Dialog } from '../components/ui/Dialog'
 import { ConfirmDialog } from '../components/ui/ConfirmDialog'
 import { Badge } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
 import { TableSkeleton } from '../components/ui/Skeleton'
+import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 
 interface ApiKey {
   id: string
@@ -73,36 +75,46 @@ export function ApiKeysPage() {
         description="Credentials for the Telegram sales bot and other integrations to call this panel's API."
         action={
           <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="mr-2 h-4 w-4" />
+            <Plus className="h-4 w-4" />
             New API key
           </Button>
         }
       />
 
-      <Card>
+      <Card className="overflow-hidden">
         {keysQuery.isLoading && <TableSkeleton cols={5} />}
-        {keysQuery.isError && <p className="p-6 text-sm text-red-600 dark:text-red-400">Could not load API keys.</p>}
+        {keysQuery.isError && <p className="p-6 text-sm text-rose-600 dark:text-rose-400">Could not load API keys.</p>}
         {!keysQuery.isLoading && !keysQuery.isError && keys.length === 0 && (
-          <EmptyState icon={KeyRound} title="No API keys yet" description="Create one to let your Telegram bot talk to this panel." />
+          <EmptyState
+            icon={KeyRound}
+            title="No API keys yet"
+            description="Create one to let your Telegram bot talk to this panel."
+            action={
+              <Button variant="secondary" onClick={() => setCreateOpen(true)}>
+                <Plus className="h-4 w-4" />
+                New API key
+              </Button>
+            }
+          />
         )}
         {!keysQuery.isLoading && !keysQuery.isError && keys.length > 0 && (
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-slate-200 text-slate-500 dark:border-slate-800 dark:text-slate-400">
+          <Table>
+            <THead>
               <tr>
-                <th className="px-6 py-3 font-medium">Label</th>
-                <th className="px-6 py-3 font-medium">Key ID</th>
-                <th className="px-6 py-3 font-medium">Permissions</th>
-                <th className="px-6 py-3 font-medium">Node groups</th>
-                <th className="px-6 py-3 font-medium">Status</th>
-                <th className="px-6 py-3 font-medium">Actions</th>
+                <Th>Label</Th>
+                <Th>Key ID</Th>
+                <Th>Permissions</Th>
+                <Th>Node groups</Th>
+                <Th>Status</Th>
+                <Th className="text-right">Actions</Th>
               </tr>
-            </thead>
+            </THead>
             <tbody>
               {keys.map((k) => (
-                <tr key={k.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800">
-                  <td className="px-6 py-3 text-slate-900 dark:text-slate-100">{k.label}</td>
-                  <td className="px-6 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">{k.key_id}</td>
-                  <td className="px-6 py-3">
+                <Tr key={k.id}>
+                  <Td className="font-medium text-fg">{k.label}</Td>
+                  <Td className="font-mono text-xs text-muted">{k.key_id}</Td>
+                  <Td>
                     <div className="flex flex-wrap gap-1">
                       {k.permissions.map((p) => (
                         <Badge key={p} tone="blue">
@@ -110,35 +122,34 @@ export function ApiKeysPage() {
                         </Badge>
                       ))}
                     </div>
-                  </td>
-                  <td className="px-6 py-3 text-slate-500 dark:text-slate-400">
-                    {k.node_groups.length > 0 ? k.node_groups.join(', ') : 'all'}
-                  </td>
-                  <td className="px-6 py-3">
-                    <Badge tone={k.revoked ? 'red' : 'green'}>{k.revoked ? 'revoked' : 'active'}</Badge>
-                  </td>
-                  <td className="px-6 py-3">
+                  </Td>
+                  <Td className="text-muted">{k.node_groups.length > 0 ? k.node_groups.join(', ') : 'all'}</Td>
+                  <Td>
+                    <Badge dot tone={k.revoked ? 'red' : 'green'}>{k.revoked ? 'revoked' : 'active'}</Badge>
+                  </Td>
+                  <Td>
                     {!k.revoked && (
-                      <div className="flex gap-2">
-                        <Button variant="secondary" onClick={() => rotateMutation.mutate(k.id)} disabled={rotateMutation.isPending}>
-                          <RotateCw className="mr-1 h-3.5 w-3.5" />
+                      <div className="flex justify-end gap-1.5">
+                        <Button variant="secondary" size="sm" onClick={() => rotateMutation.mutate(k.id)} disabled={rotateMutation.isPending}>
+                          <RotateCw className="h-3.5 w-3.5" />
                           Rotate
                         </Button>
                         <Button
                           variant="secondary"
+                          size="sm"
                           onClick={() => setRevokeTarget(k)}
-                          className="text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
+                          className="text-rose-600 hover:border-rose-300 hover:bg-rose-500/10 dark:text-rose-400 dark:hover:border-rose-500/40"
                         >
-                          <Ban className="mr-1 h-3.5 w-3.5" />
+                          <Ban className="h-3.5 w-3.5" />
                           Revoke
                         </Button>
                       </div>
                     )}
-                  </td>
-                </tr>
+                  </Td>
+                </Tr>
               ))}
             </tbody>
-          </table>
+          </Table>
         )}
       </Card>
 
@@ -167,20 +178,20 @@ export function ApiKeysPage() {
 
       {revealedSecret && (
         <Dialog open onClose={() => setRevealedSecret(null)} title="Secret key">
-          <div className="mb-4 flex items-start gap-2 rounded-md bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+          <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700 dark:text-amber-400">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <span>This secret is shown once. Store it securely — it cannot be retrieved again.</span>
           </div>
           <div className="space-y-3">
             <div>
-              <p className="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400">Key ID</p>
-              <p className="rounded-md bg-slate-100 p-2 font-mono text-xs text-slate-800 dark:bg-slate-950 dark:text-slate-200">
+              <p className="mb-1.5 text-xs font-medium text-muted">Key ID</p>
+              <p className="rounded-lg border border-edge bg-inset p-2.5 font-mono text-xs text-fg">
                 {revealedSecret.keyId}
               </p>
             </div>
             <div>
-              <p className="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400">Secret</p>
-              <p className="break-all rounded-md bg-slate-100 p-2 font-mono text-xs text-slate-800 dark:bg-slate-950 dark:text-slate-200">
+              <p className="mb-1.5 text-xs font-medium text-muted">Secret</p>
+              <p className="break-all rounded-lg border border-edge bg-inset p-2.5 font-mono text-xs leading-relaxed text-fg">
                 {revealedSecret.secret}
               </p>
             </div>
@@ -193,7 +204,7 @@ export function ApiKeysPage() {
                 push('success', 'Secret copied to clipboard')
               }}
             >
-              <Copy className="mr-2 h-4 w-4" />
+              <Copy className="h-4 w-4" />
               Copy secret
             </Button>
           </div>
@@ -252,28 +263,25 @@ function CreateApiKeyDialog({
   return (
     <Dialog open={open} onClose={onClose} title="New API key">
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Label</label>
+        <Field label="Label">
           <Input value={label} onChange={(e) => setLabel(e.target.value)} required placeholder="e.g. telegram-sales-bot" />
-        </div>
-        <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-            Node groups <span className="font-normal text-slate-400">(comma-separated, blank = all)</span>
-          </label>
+        </Field>
+        <Field label="Node groups" labelSuffix="(comma-separated, blank = all)">
           <Input value={nodeGroups} onChange={(e) => setNodeGroups(e.target.value)} placeholder="eu-west, us-east" />
-        </div>
+        </Field>
         <div>
-          <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Permissions</label>
+          <p className="mb-2 block text-sm font-medium text-fg">Permissions</p>
           <div className="flex flex-wrap gap-2">
             {ALL_PERMISSIONS.map((perm) => (
               <button
                 type="button"
                 key={perm}
                 onClick={() => togglePermission(perm)}
-                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                aria-pressed={permissions.includes(perm)}
+                className={`cursor-pointer rounded-full border px-3 py-1 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none ${
                   permissions.includes(perm)
-                    ? 'border-slate-900 bg-slate-900 text-white dark:border-slate-100 dark:bg-slate-100 dark:text-slate-900'
-                    : 'border-slate-300 text-slate-600 hover:border-slate-400 dark:border-slate-700 dark:text-slate-400'
+                    ? 'border-accent bg-accent text-white'
+                    : 'border-edge-strong/70 text-muted hover:border-edge-strong hover:text-fg'
                 }`}
               >
                 {perm}
@@ -281,7 +289,7 @@ function CreateApiKeyDialog({
             ))}
           </div>
         </div>
-        {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+        {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel

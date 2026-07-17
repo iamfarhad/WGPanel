@@ -1,10 +1,14 @@
 import type { SelectHTMLAttributes } from 'react'
+import { ChevronDown } from 'lucide-react'
 
 export function Select({ className = '', ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
-    <select
-      className={`w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 ${className}`}
-      {...props}
-    />
+    <div className={`relative ${className}`}>
+      <select
+        className="h-9 w-full cursor-pointer appearance-none rounded-lg border border-edge-strong/70 bg-transparent py-0 pr-9 pl-3 text-sm text-fg shadow-xs transition-[border-color,box-shadow] hover:border-edge-strong focus:border-accent focus:ring-2 focus:ring-accent/25 focus:outline-none [&>option]:bg-surface [&>option]:text-fg"
+        {...props}
+      />
+      <ChevronDown className="pointer-events-none absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 text-faint" />
+    </div>
   )
 }

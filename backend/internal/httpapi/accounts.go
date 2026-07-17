@@ -3,7 +3,6 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,13 +13,18 @@ import (
 )
 
 type createAccountRequest struct {
-	ExternalRef *string  `json:"external_ref"`
-	Label       string   `json:"label"`
-	NodeID      *string  `json:"node_id"` // omitted/"auto" = every eligible node; a specific UUID pins to just that one
-	DataQuotaGB *float64 `json:"data_quota_gb"`
-	ExpiryAt    *string  `json:"expiry_at"` // RFC3339
-	DeviceLimit *int     `json:"device_limit"`
+	ExternalRef        *string  `json:"external_ref"`
+	Label              string   `json:"label"`
+	NodeID             *string  `json:"node_id"` // omitted/"auto" = every eligible node; a specific UUID pins to just that one
+	DataQuotaGB        *float64 `json:"data_quota_gb"`
+	ExpiryAt           *string  `json:"expiry_at"` // RFC3339
+	DeviceLimit        *int     `json:"device_limit"`
+	BandwidthLimitMbps *int     `json:"bandwidth_limit_mbps"` // omitted/null = unshaped
 }
+
+// maxBandwidthLimitMbps rejects obviously-nonsense rates (100 Gbps) before they
+// reach tc, which would accept and silently mangle them.
+const maxBandwidthLimitMbps = 100_000
 
 // peerOnlineWindow matches docs/PRD-monitoring-stats.md §5: a peer counts as
 // online iff its last reported WireGuard handshake was within this window.
@@ -44,10 +48,19 @@ type accountResponse struct {
 	DataUsedBytes  int64                 `json:"data_used_bytes"`
 	ExpiryAt       *string               `json:"expiry_at"`
 	DeviceLimit    *int                  `json:"device_limit"`
-	Status         string                `json:"status"`
-	SuspendReason  *string               `json:"suspend_reason"`
-	CreatedAt      string                `json:"created_at"`
-	UpdatedAt      string                `json:"updated_at"`
+	// DeviceLimitExceeded is PRD §6.4's standing soft-enforcement flag; HardEnforce is
+	// the per-account toggle that upgrades it to an automatic suspend.
+	DeviceLimitExceeded    bool `json:"device_limit_exceeded"`
+	DeviceLimitHardEnforce bool `json:"device_limit_hard_enforce"`
+	BandwidthLimitMbps     *int `json:"bandwidth_limit_mbps"`
+	// SubscriptionPath is the relative capability URL serving this account's current
+	// config (prepend the panel's public origin). The token is deliberately not
+	// exposed as a separate field - the path is the only shape clients need.
+	SubscriptionPath string  `json:"subscription_path"`
+	Status           string  `json:"status"`
+	SuspendReason    *string `json:"suspend_reason"`
+	CreatedAt        string  `json:"created_at"`
+	UpdatedAt        string  `json:"updated_at"`
 	// NodeID/AssignedIP are deprecated - kept for one release as a bot-integration
 	// compatibility bridge from the pre-multi-node single-peer model (see
 	// docs/STORY-09-multi-node-accounts.md). They mirror the account's first peer
@@ -89,21 +102,25 @@ func toAccountResponse(a store.Account, peers []store.AccountPeerWithNode) accou
 	}
 
 	return accountResponse{
-		ID:             a.ID,
-		ExternalRef:    a.ExternalRef,
-		Label:          a.Label,
-		PublicKey:      a.PublicKey,
-		Peers:          peerResponses,
-		DataQuotaBytes: a.DataQuotaBytes,
-		DataUsedBytes:  a.DataUsedBytes,
-		ExpiryAt:       expiryAt,
-		DeviceLimit:    a.DeviceLimit,
-		Status:         a.Status,
-		SuspendReason:  a.SuspendReason,
-		CreatedAt:      a.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:      a.UpdatedAt.Format(time.RFC3339),
-		NodeID:         deprecatedNodeID,
-		AssignedIP:     deprecatedAssignedIP,
+		ID:                     a.ID,
+		ExternalRef:            a.ExternalRef,
+		Label:                  a.Label,
+		PublicKey:              a.PublicKey,
+		Peers:                  peerResponses,
+		DataQuotaBytes:         a.DataQuotaBytes,
+		DataUsedBytes:          a.DataUsedBytes,
+		ExpiryAt:               expiryAt,
+		DeviceLimit:            a.DeviceLimit,
+		DeviceLimitExceeded:    a.DeviceLimitExceededAt != nil,
+		DeviceLimitHardEnforce: a.DeviceLimitHardEnforce,
+		BandwidthLimitMbps:     a.BandwidthLimitMbps,
+		SubscriptionPath:       "/api/v1/sub/" + a.SubscriptionToken,
+		Status:                 a.Status,
+		SuspendReason:          a.SuspendReason,
+		CreatedAt:              a.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:              a.UpdatedAt.Format(time.RFC3339),
+		NodeID:                 deprecatedNodeID,
+		AssignedIP:             deprecatedAssignedIP,
 	}
 }
 
@@ -162,6 +179,17 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		b := gbToBytes(*req.DataQuotaGB)
 		quotaBytes = &b
 	}
+	if req.BandwidthLimitMbps != nil && (*req.BandwidthLimitMbps < 1 || *req.BandwidthLimitMbps > maxBandwidthLimitMbps) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "bandwidth_limit_mbps must be between 1 and 100000 (omit for unlimited)")
+		return
+	}
+
+	subscriptionToken, err := newSubscriptionToken()
+	if err != nil {
+		s.Logger.Error("generate_subscription_token_failed", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not generate subscription token")
+		return
+	}
 
 	kp, err := wgkeys.GenerateKeyPair()
 	if err != nil {
@@ -201,6 +229,8 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		DataQuotaBytes:      quotaBytes,
 		ExpiryAt:            expiryAt,
 		DeviceLimit:         req.DeviceLimit,
+		BandwidthLimitMbps:  req.BandwidthLimitMbps,
+		SubscriptionToken:   subscriptionToken,
 		OwnerKeyNamespace:   ownerNamespace,
 		AllowedNodeGroups:   allowedGroups,
 	})
@@ -288,6 +318,9 @@ type updateAccountRequest struct {
 	DataQuotaGB *float64 `json:"data_quota_gb"`
 	ExpiryAt    *string  `json:"expiry_at"`
 	DeviceLimit *int     `json:"device_limit"`
+	// BandwidthLimitMbps: omitted = unchanged, 0 = remove the limit (unshaped).
+	BandwidthLimitMbps     *int  `json:"bandwidth_limit_mbps"`
+	DeviceLimitHardEnforce *bool `json:"device_limit_hard_enforce"`
 }
 
 func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
@@ -311,15 +344,21 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		b := gbToBytes(*req.DataQuotaGB)
 		quotaBytes = &b
 	}
+	if req.BandwidthLimitMbps != nil && (*req.BandwidthLimitMbps < 0 || *req.BandwidthLimitMbps > maxBandwidthLimitMbps) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "bandwidth_limit_mbps must be between 1 and 100000, or 0 to remove the limit")
+		return
+	}
 
 	ctx := r.Context()
 	identity, _ := callerIdentityFromContext(ctx)
 	ns := callerNamespaceArg(identity)
 	account, err := s.Store.UpdateAccount(ctx, r.PathValue("id"), ns, store.UpdateAccountParams{
-		Label:          req.Label,
-		DataQuotaBytes: quotaBytes,
-		ExpiryAt:       expiryAt,
-		DeviceLimit:    req.DeviceLimit,
+		Label:                  req.Label,
+		DataQuotaBytes:         quotaBytes,
+		ExpiryAt:               expiryAt,
+		DeviceLimit:            req.DeviceLimit,
+		BandwidthLimitMbps:     req.BandwidthLimitMbps,
+		DeviceLimitHardEnforce: req.DeviceLimitHardEnforce,
 	})
 	if errors.Is(err, store.ErrAccountNotFound) {
 		writeJSONError(w, http.StatusNotFound, "account_not_found", "no account with that id")
@@ -531,53 +570,19 @@ func (s *Server) handleGetAccountConfig(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	if target.NodePublicKey == nil || *target.NodePublicKey == "" {
+	// Rendering (including the hard-won DNS and MTU=1280 choices) lives in
+	// renderPeerConfig, shared with the subscription endpoint so the two config
+	// surfaces can never drift apart.
+	config, err := s.renderPeerConfig(ctx, id, ns, target)
+	if errors.Is(err, errNodeMissingPublicKey) {
 		writeJSONError(w, http.StatusConflict, "node_missing_public_key", "the node this account is on has no public key set yet")
 		return
 	}
-
-	encryptedPriv, err := s.Store.GetAccountPrivateKey(ctx, id, ns)
 	if err != nil {
-		s.Logger.Error("get_account_private_key_failed", "error", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not fetch private key")
+		s.Logger.Error("render_account_config_failed", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not render config")
 		return
 	}
-	privateKey, err := wgkeys.Decrypt(s.AccountKeyEncryptionKey, encryptedPriv)
-	if err != nil {
-		s.Logger.Error("decrypt_private_key_failed", "error", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not decrypt private key")
-		return
-	}
-
-	// DNS is required here, not optional: AllowedIPs = 0.0.0.0/0 below is a full
-	// tunnel, so once connected the client's original (e.g. LAN router) resolver is
-	// no longer reachable - without an explicit DNS server the client silently loses
-	// name resolution while the tunnel itself works fine, which looks exactly like
-	// "no internet" to a user (found verifying a real client connection, not just
-	// server-side handshake state). Cloudflare's public resolver, reachable through
-	// the same NAT'd tunnel as everything else.
-	// MTU 1280 (not WireGuard's usual default of ~1420) trades a little throughput
-	// for avoiding black-hole fragmentation: 1420 assumes a clean 1500-MTU path
-	// end-to-end, which real-world paths (double-NAT, PPPoE, and - what we hit
-	// verifying this against a real client - a WireGuard server running inside
-	// Docker Desktop's own virtualized networking, itself already encapsulated)
-	// often don't have. When a path's actual MTU is smaller and ICMP "fragmentation
-	// needed" is dropped somewhere along it (very common), symptoms are exactly
-	// "handshake succeeds, small packets work, but real page loads hang" - because
-	// only packets near WireGuard's default assumed MTU actually get lost. 1280 is
-	// the safe floor (IPv6's guaranteed minimum MTU) that sidesteps this everywhere.
-	config := fmt.Sprintf(`[Interface]
-PrivateKey = %s
-Address = %s/32
-DNS = 1.1.1.1, 1.0.0.1
-MTU = 1280
-
-[Peer]
-PublicKey = %s
-Endpoint = %s
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25
-`, privateKey, target.AssignedIP, *target.NodePublicKey, target.NodePublicEndpoint)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)

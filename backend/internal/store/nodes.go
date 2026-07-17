@@ -20,6 +20,7 @@ type Node struct {
 	ID                  string
 	Name                string
 	NodeGroup           string
+	Region              string // free-form steering label (migration 0017); "" = unassigned
 	PublicEndpoint      string
 	WGSubnet            string
 	CapacityMaxPeers    int
@@ -31,23 +32,23 @@ type Node struct {
 	CreatedAt           time.Time
 }
 
-const nodeColumns = `id, name, node_group, public_endpoint, wg_subnet, capacity_max_peers, status, public_key, join_token_expires_at, mtls_cert_fingerprint, last_heartbeat_at, created_at`
+const nodeColumns = `id, name, node_group, region, public_endpoint, wg_subnet, capacity_max_peers, status, public_key, join_token_expires_at, mtls_cert_fingerprint, last_heartbeat_at, created_at`
 
 func scanNode(row pgx.Row, n *Node) error {
 	return row.Scan(
-		&n.ID, &n.Name, &n.NodeGroup, &n.PublicEndpoint, &n.WGSubnet,
+		&n.ID, &n.Name, &n.NodeGroup, &n.Region, &n.PublicEndpoint, &n.WGSubnet,
 		&n.CapacityMaxPeers, &n.Status, &n.PublicKey, &n.JoinTokenExpiresAt,
 		&n.MTLSCertFingerprint, &n.LastHeartbeatAt, &n.CreatedAt,
 	)
 }
 
-func (s *Store) CreateNode(ctx context.Context, name, nodeGroup, publicEndpoint, wgSubnet string, capacityMaxPeers int, publicKey *string) (Node, error) {
+func (s *Store) CreateNode(ctx context.Context, name, nodeGroup, region, publicEndpoint, wgSubnet string, capacityMaxPeers int, publicKey *string) (Node, error) {
 	var n Node
 	err := scanNode(s.pool.QueryRow(ctx, `
-		INSERT INTO nodes (name, node_group, public_endpoint, wg_subnet, capacity_max_peers, public_key)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO nodes (name, node_group, region, public_endpoint, wg_subnet, capacity_max_peers, public_key)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING `+nodeColumns,
-		name, nodeGroup, publicEndpoint, wgSubnet, capacityMaxPeers, publicKey,
+		name, nodeGroup, region, publicEndpoint, wgSubnet, capacityMaxPeers, publicKey,
 	), &n)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -66,6 +67,7 @@ func (s *Store) CreateNode(ctx context.Context, name, nodeGroup, publicEndpoint,
 type UpdateNodeParams struct {
 	Name             *string
 	NodeGroup        *string
+	Region           *string // pointer-to-"" explicitly clears the region (unlike the other fields, "" is a meaningful value here)
 	PublicEndpoint   *string
 	CapacityMaxPeers *int
 }
@@ -76,11 +78,12 @@ func (s *Store) UpdateNode(ctx context.Context, id string, p UpdateNodeParams) (
 		UPDATE nodes SET
 			name = COALESCE($2, name),
 			node_group = COALESCE($3, node_group),
-			public_endpoint = COALESCE($4, public_endpoint),
-			capacity_max_peers = COALESCE($5, capacity_max_peers)
+			region = COALESCE($4, region),
+			public_endpoint = COALESCE($5, public_endpoint),
+			capacity_max_peers = COALESCE($6, capacity_max_peers)
 		WHERE id = $1
 		RETURNING `+nodeColumns,
-		id, p.Name, p.NodeGroup, p.PublicEndpoint, p.CapacityMaxPeers,
+		id, p.Name, p.NodeGroup, p.Region, p.PublicEndpoint, p.CapacityMaxPeers,
 	), &n)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Node{}, ErrNodeNotFound

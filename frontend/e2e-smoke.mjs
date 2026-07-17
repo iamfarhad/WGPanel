@@ -64,6 +64,9 @@ try {
   await page.getByRole('button', { name: /new node/i }).click();
   await page.getByPlaceholder('e.g. eu-west-1').fill(NODE_NAME);
   await page.getByPlaceholder('vpn1.example.com:51820').fill(`${NODE_NAME}.example.com:51820`);
+  // Subnet is now a curated dropdown with a "Custom…" escape hatch; the random test
+  // subnet isn't one of the presets, so pick Custom then type it into the revealed field.
+  await page.locator('form select').selectOption('custom');
   await page.getByPlaceholder('10.66.0.0/24').fill(NODE_SUBNET);
   await page.getByRole('button', { name: /^create node$/i }).click();
   await page.waitForSelector(`td:has-text("${NODE_NAME}")`, { timeout: 5000 });

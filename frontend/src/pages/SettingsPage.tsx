@@ -1,12 +1,14 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Save, ShieldCheck } from 'lucide-react'
+import { Save, ShieldCheck, SlidersHorizontal } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { apiFetch, ApiError } from '../lib/api'
 import { useToast } from '../lib/toast'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
+import { Field } from '../components/ui/Field'
 import { Skeleton } from '../components/ui/Skeleton'
 
 interface Settings {
@@ -16,11 +18,26 @@ interface Settings {
   default_node_capacity: number
   support_contact: string | null
   panel_domain: string | null
+  client_dns: string
 }
 
 interface UpdateSettingsResult extends Settings {
   domain_live_applied: boolean
   domain_apply_error: string | null
+}
+
+function SectionHeader({ icon: Icon, title, description }: { icon: LucideIcon; title: string; description: string }) {
+  return (
+    <div className="flex items-start gap-3 border-b border-edge px-6 py-4">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent-fg">
+        <Icon className="h-4 w-4" />
+      </div>
+      <div>
+        <h2 className="text-sm font-semibold tracking-tight text-fg">{title}</h2>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted">{description}</p>
+      </div>
+    </div>
+  )
 }
 
 export function SettingsPage() {
@@ -37,6 +54,7 @@ export function SettingsPage() {
   const [defaultDeviceLimit, setDefaultDeviceLimit] = useState('')
   const [defaultNodeCapacity, setDefaultNodeCapacity] = useState('250')
   const [supportContact, setSupportContact] = useState('')
+  const [clientDns, setClientDns] = useState('1.1.1.1, 1.0.0.1')
   const [panelDomain, setPanelDomain] = useState('')
   const [domainApplyError, setDomainApplyError] = useState<string | null>(null)
   const [domainLiveApplied, setDomainLiveApplied] = useState(false)
@@ -48,6 +66,7 @@ export function SettingsPage() {
     setDefaultDeviceLimit(settingsQuery.data.default_device_limit?.toString() ?? '')
     setDefaultNodeCapacity(settingsQuery.data.default_node_capacity.toString())
     setSupportContact(settingsQuery.data.support_contact ?? '')
+    setClientDns(settingsQuery.data.client_dns)
     setPanelDomain(settingsQuery.data.panel_domain ?? '')
   }, [settingsQuery.data])
 
@@ -61,6 +80,7 @@ export function SettingsPage() {
           default_device_limit: defaultDeviceLimit ? Number(defaultDeviceLimit) : null,
           default_node_capacity: Number(defaultNodeCapacity),
           support_contact: supportContact || null,
+          client_dns: clientDns || null,
         }),
       }),
     onSuccess: (settings) => {
@@ -104,134 +124,140 @@ export function SettingsPage() {
     <div>
       <PageHeader title="Settings" description="Panel-wide configuration and defaults." />
 
-      <Card className="mb-6 max-w-2xl p-6">
-        {settingsQuery.isLoading ? (
-          <Skeleton className="h-10" />
-        ) : (
-          <form onSubmit={handleDomainSubmit} className="space-y-4">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="h-4 w-4 text-slate-500 dark:text-slate-400" />
-              <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Domain &amp; TLS</h2>
+      <div className="max-w-2xl space-y-6">
+        <Card className="overflow-hidden">
+          <SectionHeader
+            icon={ShieldCheck}
+            title="Domain & TLS"
+            description="The domain Caddy serves the panel on and automatically provisions a Let's Encrypt certificate for. Changing this takes effect live via Caddy's admin API - no restart or redeploy needed. Requires DNS for the domain to already point at this server."
+          />
+          {settingsQuery.isLoading ? (
+            <div className="p-6">
+              <Skeleton className="h-10" />
             </div>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              The domain Caddy serves the panel on and automatically provisions a Let's Encrypt certificate for.
-              Unlike public base URL above, changing this takes effect live via Caddy's admin API - no restart or
-              redeploy needed. Requires DNS for the domain to already point at this server.
-            </p>
-            <div>
-              <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">Domain</label>
-              <Input value={panelDomain} onChange={(e) => setPanelDomain(e.target.value)} placeholder="panel.example.com" required />
-            </div>
-            {domainLiveApplied && !domainApplyError && (
-              <p className="text-sm text-emerald-600 dark:text-emerald-400">Applied live - Caddy is now serving this domain.</p>
-            )}
-            {domainApplyError && (
-              <p className="text-sm text-amber-600 dark:text-amber-400">
-                Domain saved, but the live push to Caddy failed: {domainApplyError}. It will take effect after Caddy
-                is next restarted with a matching PANEL_DOMAIN.
-              </p>
-            )}
-            <div className="flex justify-end border-t border-slate-100 pt-4 dark:border-slate-800">
-              <Button type="submit" disabled={domainMutation.isPending || !panelDomain}>
-                <ShieldCheck className="mr-2 h-4 w-4" />
-                {domainMutation.isPending ? 'Applying…' : 'Apply domain'}
-              </Button>
-            </div>
-          </form>
-        )}
-      </Card>
-
-      <Card className="max-w-2xl p-6">
-        {settingsQuery.isLoading ? (
-          <div className="space-y-4">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <Skeleton key={i} className="h-10" />
-            ))}
-          </div>
-        ) : settingsQuery.isError ? (
-          <p className="text-sm text-red-600 dark:text-red-400">Could not load settings.</p>
-        ) : (
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div>
-              <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Public base URL
-              </label>
-              <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
-                The domain this panel is served on (e.g. https://panel.example.com). Informational -
-                changing it here does not move DNS/TLS, which is still configured in deploy/.env's
-                PANEL_DOMAIN and requires a redeploy to actually change.
-              </p>
-              <Input
-                value={publicBaseUrl}
-                onChange={(e) => setPublicBaseUrl(e.target.value)}
-                placeholder="https://panel.example.com"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                  Default account data quota (GB)
-                </label>
-                <Input
-                  type="number"
-                  min="0"
-                  step="0.1"
-                  value={defaultQuotaGb}
-                  onChange={(e) => setDefaultQuotaGb(e.target.value)}
-                  placeholder="Unlimited"
-                />
+          ) : (
+            <form onSubmit={handleDomainSubmit} className="space-y-4 p-6">
+              <Field label="Domain">
+                <Input value={panelDomain} onChange={(e) => setPanelDomain(e.target.value)} placeholder="panel.example.com" required />
+              </Field>
+              {domainLiveApplied && !domainApplyError && (
+                <p className="text-sm text-emerald-600 dark:text-emerald-400">Applied live - Caddy is now serving this domain.</p>
+              )}
+              {domainApplyError && (
+                <p className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-sm leading-relaxed text-amber-700 dark:text-amber-400">
+                  Domain saved, but the live push to Caddy failed: {domainApplyError}. It will take effect after Caddy
+                  is next restarted with a matching PANEL_DOMAIN.
+                </p>
+              )}
+              <div className="flex justify-end border-t border-edge pt-4">
+                <Button type="submit" disabled={domainMutation.isPending || !panelDomain}>
+                  <ShieldCheck className="h-4 w-4" />
+                  {domainMutation.isPending ? 'Applying…' : 'Apply domain'}
+                </Button>
               </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                  Default account device limit
-                </label>
+            </form>
+          )}
+        </Card>
+
+        <Card className="overflow-hidden">
+          <SectionHeader
+            icon={SlidersHorizontal}
+            title="Defaults & panel info"
+            description="Baseline values applied to new nodes and accounts, plus what other admins see about this panel."
+          />
+          {settingsQuery.isLoading ? (
+            <div className="space-y-4 p-6">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} className="h-10" />
+              ))}
+            </div>
+          ) : settingsQuery.isError ? (
+            <p className="p-6 text-sm text-rose-600 dark:text-rose-400">Could not load settings.</p>
+          ) : (
+            <form onSubmit={handleSubmit} className="space-y-6 p-6">
+              <Field
+                label="Public base URL"
+                hint="The domain this panel is served on (e.g. https://panel.example.com). Informational - changing it here does not move DNS/TLS, which is still configured in deploy/.env's PANEL_DOMAIN and requires a redeploy to actually change."
+              >
+                <Input
+                  value={publicBaseUrl}
+                  onChange={(e) => setPublicBaseUrl(e.target.value)}
+                  placeholder="https://panel.example.com"
+                />
+              </Field>
+
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Default account data quota (GB)">
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={defaultQuotaGb}
+                    onChange={(e) => setDefaultQuotaGb(e.target.value)}
+                    placeholder="Unlimited"
+                  />
+                </Field>
+                <Field label="Default account device limit">
+                  <Input
+                    type="number"
+                    min="1"
+                    value={defaultDeviceLimit}
+                    onChange={(e) => setDefaultDeviceLimit(e.target.value)}
+                    placeholder="Unlimited"
+                  />
+                </Field>
+              </div>
+
+              <Field label="Default node capacity (max peers)">
                 <Input
                   type="number"
                   min="1"
-                  value={defaultDeviceLimit}
-                  onChange={(e) => setDefaultDeviceLimit(e.target.value)}
-                  placeholder="Unlimited"
+                  value={defaultNodeCapacity}
+                  onChange={(e) => setDefaultNodeCapacity(e.target.value)}
+                  required
                 />
+              </Field>
+
+              <Field
+                label="Client DNS server(s)"
+                hint={
+                  <>
+                    Written into every generated WireGuard config's <code>DNS =</code> line (comma-separated). Since clients
+                    full-tunnel, they can only resolve names through this server - if it's unreachable from where your nodes
+                    egress, clients connect but have "no internet". The Cloudflare default is blocked on some networks; use a
+                    resolver you've confirmed works from the node. Takes effect on the next config download.
+                  </>
+                }
+              >
+                <Input
+                  value={clientDns}
+                  onChange={(e) => setClientDns(e.target.value)}
+                  placeholder="1.1.1.1, 1.0.0.1"
+                  required
+                />
+              </Field>
+
+              <Field
+                label="Support contact"
+                hint="Shown to other admins who need help (e.g. an email address or Telegram handle)."
+              >
+                <Input
+                  value={supportContact}
+                  onChange={(e) => setSupportContact(e.target.value)}
+                  placeholder="ops@example.com"
+                />
+              </Field>
+
+              <div className="flex justify-end border-t border-edge pt-4">
+                <Button type="submit" disabled={saveMutation.isPending}>
+                  <Save className="h-4 w-4" />
+                  {saveMutation.isPending ? 'Saving…' : 'Save settings'}
+                </Button>
               </div>
-            </div>
-
-            <div>
-              <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Default node capacity (max peers)
-              </label>
-              <Input
-                type="number"
-                min="1"
-                value={defaultNodeCapacity}
-                onChange={(e) => setDefaultNodeCapacity(e.target.value)}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Support contact
-              </label>
-              <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
-                Shown to other admins who need help (e.g. an email address or Telegram handle).
-              </p>
-              <Input
-                value={supportContact}
-                onChange={(e) => setSupportContact(e.target.value)}
-                placeholder="ops@example.com"
-              />
-            </div>
-
-            <div className="flex justify-end border-t border-slate-100 pt-4 dark:border-slate-800">
-              <Button type="submit" disabled={saveMutation.isPending}>
-                <Save className="mr-2 h-4 w-4" />
-                {saveMutation.isPending ? 'Saving…' : 'Save settings'}
-              </Button>
-            </div>
-          </form>
-        )}
-      </Card>
+            </form>
+          )}
+        </Card>
+      </div>
     </div>
   )
 }

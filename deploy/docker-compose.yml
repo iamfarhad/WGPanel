@@ -1,5 +1,21 @@
 name: wgpanel
 
+# Production compose. Dev-only concerns (building the api/frontend images from local
+# source, and the in-Docker WireGuard test node) live in docker-compose.override.yml,
+# which `docker compose` auto-merges ONLY when run from this repo's deploy/ dir. A
+# production host installs just this file (see install.sh's setup_files), so it never
+# builds images or runs the dev node - it pulls the CI-published images named by
+# API_IMAGE/FRONTEND_IMAGE and runs exactly the five services below.
+
+# Bounded container logs so a chatty or looping service can never fill the host disk -
+# the single most common unattended-server outage. Applied to every service via the
+# YAML anchor below. 10m x 5 = 50MB max per container.
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   db:
     # Pinned rather than :latest-pg16 - migration 0011 is the first one to depend on
@@ -10,6 +26,10 @@ services:
     # (TimescaleDB 2.28.2 on PostgreSQL 16.14) - bump deliberately, not by surprise.
     image: timescale/timescaledb@sha256:ba149561ad4ddff5940d6eb0a0df60aefd1355cee1a450928f271267038fc888
     restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -21,11 +41,36 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          # Ceiling only (not a reservation) - protects the host from a runaway query.
+          # Tune via DB_MEM_LIMIT in .env on larger deployments.
+          memory: ${DB_MEM_LIMIT:-1g}
 
   redis:
-    image: redis:7-alpine
+    # Pinned to the tested digest (redis:7-alpine at time of writing) so an unattended
+    # `wgpanel update` can't pull a surprise minor - bump deliberately.
+    image: redis:7-alpine@sha256:ee64a64eaab618d88051c3ade8f6352d11531fcf79d9a4818b9b183d8c1d18ba
     restart: unless-stopped
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    # maxmemory caps host impact; the policy is deliberately `noeviction`, NOT an LRU:
+    # Redis here stores refresh tokens (authcrypto/jwt.go), so evicting keys under
+    # pressure would silently sign admins out. noeviction instead fails new writes if
+    # the (generous) ceiling is ever hit - which for a token store it never should be.
+    # Persistence is left at the image default (RDB snapshots to the volume, plus a
+    # final save on graceful shutdown) so tokens survive restarts.
+    command:
+      - "redis-server"
+      - "--requirepass"
+      - "${REDIS_PASSWORD}"
+      - "--maxmemory"
+      - "${REDIS_MAXMEMORY:-256mb}"
+      - "--maxmemory-policy"
+      - "noeviction"
     volumes:
       - wgpanel_redis_data:/data
     healthcheck:
@@ -33,11 +78,22 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_MEM_LIMIT:-384m}
 
   api:
     image: ${API_IMAGE}
-    build: ../backend  # local dev/smoke-test only; `docker compose pull` uses API_IMAGE in prod once CI publishes it
     restart: unless-stopped
+    logging: *default-logging
+    # The api is a static Go binary running as a non-root distroless user on high ports
+    # (8080, NODE_AGENT_PORT) - it needs no Linux capabilities at all, so drop them all.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       db:
         condition: service_healthy
@@ -80,25 +136,47 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: ${API_MEM_LIMIT:-512m}
 
   frontend:
     image: ${FRONTEND_IMAGE}
-    build: ../frontend  # local dev/smoke-test only; `docker compose pull` uses FRONTEND_IMAGE in prod once CI publishes it
     restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       api:
         condition: service_healthy
     ports:
       - "127.0.0.1:3000:80"
+    healthcheck:
+      # busybox wget ships in nginx:alpine; a 200 on / (the SPA index) means nginx is
+      # serving. Lets caddy wait on service_healthy instead of just service_started.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: ${FRONTEND_MEM_LIMIT:-128m}
 
   caddy:
-    image: caddy:2-alpine
+    # Pinned to the tested digest (caddy:2-alpine at time of writing) - bump deliberately.
+    image: caddy:2-alpine@sha256:e2e3a089760c453bc51c4e718342bd7032d6714f15b437db7121bfc2de2654a6
     restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       api:
         condition: service_healthy
       frontend:
-        condition: service_started
+        condition: service_healthy
     ports:
       # Host-side ports are configurable (PANEL_HTTP_PORT/PANEL_HTTPS_PORT in .env) -
       # Caddy itself still binds :80/:443 inside the container either way, since
@@ -113,6 +191,10 @@ services:
       - wgpanel_caddy_data:/data
       - wgpanel_caddy_config:/config
       - wgpanel_caddy_admin:/admin
+    deploy:
+      resources:
+        limits:
+          memory: ${CADDY_MEM_LIMIT:-256m}
 
 volumes:
   wgpanel_db_data:
