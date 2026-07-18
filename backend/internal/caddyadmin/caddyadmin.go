@@ -10,7 +10,7 @@
 // reachability to filesystem/mount permissions instead of "anything on the compose
 // network can do this."
 //
-// SetDomain re-POSTs Caddy's *entire* config via its documented config-adapter
+// Apply re-POSTs Caddy's *entire* config via its documented config-adapter
 // support on /load (Content-Type: text/caddyfile lets Caddy's own Caddyfile adapter
 // convert it, the same mechanism `caddy reload` uses) rather than surgically
 // patching a JSON path - Caddy diffs the new config against the running one and only
@@ -29,9 +29,17 @@ import (
 	"time"
 )
 
-// caddyfileTemplate mirrors deploy/Caddyfile's structure exactly (proxy targets are
-// fixed - only the domain and ACME account email are ever pushed live). Keep the two
-// in sync if either changes.
+// caddyfileTemplate mirrors deploy/Caddyfile's structure exactly for the panel site
+// block (proxy targets are fixed - only the domains, port and ACME account email are
+// ever pushed live). Keep the two in sync if either changes. The subscription block
+// has no static-Caddyfile counterpart: it exists only in the database, so it is
+// pushed live on settings changes and re-applied from the DB on API startup (see
+// httpapi.ReapplyDomainConfig).
+//
+// The subscription block deliberately serves ONLY /api/v1/sub/* and 404s everything
+// else: the whole point of a separate subscription origin is that the links handed
+// to end users neither reveal nor expose the admin panel, so nothing but the
+// capability endpoints may answer on it.
 var caddyfileTemplate = template.Must(template.New("caddyfile").Parse(`{
 	admin unix/{{.AdminSocket}}|0666
 }
@@ -47,7 +55,19 @@ var caddyfileTemplate = template.Must(template.New("caddyfile").Parse(`{
 		reverse_proxy frontend:80
 	}
 }
-`))
+{{if .SubAddress}}
+{{.SubAddress}} {
+	tls {{.Email}}
+
+	handle /api/v1/sub/* {
+		reverse_proxy api:8080
+	}
+
+	handle {
+		respond 404
+	}
+}
+{{end}}`))
 
 // Client talks to Caddy's admin API over a Unix domain socket.
 type Client struct {
@@ -56,7 +76,7 @@ type Client struct {
 }
 
 // New builds a Client for the admin API socket at socketPath. It does not verify
-// the socket exists yet - SetDomain's caller is expected to treat a dial failure as
+// the socket exists yet - Apply's caller is expected to treat a dial failure as
 // "Caddy isn't wired up in this deployment" and degrade gracefully, not fatally.
 func New(socketPath string) *Client {
 	return &Client{
@@ -73,21 +93,50 @@ func New(socketPath string) *Client {
 	}
 }
 
-// SetDomain pushes a full Caddyfile-derived config for the given domain/ACME email
-// live via Caddy's /load endpoint. Returns an error if the socket is unreachable or
-// Caddy rejects the config - callers should log this, not fail the whole settings
-// update (the domain is still persisted in panel_settings either way; a later
-// successful call, or a container restart picking up PANEL_DOMAIN, would apply it).
-func (c *Client) SetDomain(ctx context.Context, domain, email string) error {
-	if domain == "" {
+// Config is what Apply renders into a full Caddyfile: the panel's domain plus the
+// optional separate subscription origin.
+type Config struct {
+	Domain string
+	Email  string
+	// SubDomain, when non-empty, adds a second site block serving only the
+	// subscription capability endpoints (/api/v1/sub/*) on its own domain, with its
+	// own automatically-provisioned certificate.
+	SubDomain string
+	// SubPort is the public HTTPS port for the subscription block. 0 and 443 both
+	// mean the default (no explicit port in the site address, so it shares :443 with
+	// the panel block via SNI). Any other port must also be published host-side -
+	// see deploy/docker-compose.yml's SUB_PORT mapping.
+	SubPort int
+}
+
+// subAddress is the Caddy site address for the subscription block, or "" when the
+// feature is off.
+func (c Config) subAddress() string {
+	if c.SubDomain == "" {
+		return ""
+	}
+	if c.SubPort != 0 && c.SubPort != 443 {
+		return fmt.Sprintf("%s:%d", c.SubDomain, c.SubPort)
+	}
+	return c.SubDomain
+}
+
+// Apply pushes a full Caddyfile-derived config live via Caddy's /load endpoint.
+// Returns an error if the socket is unreachable or Caddy rejects the config -
+// callers should log this, not fail the whole settings update (the values are still
+// persisted in panel_settings either way; a later successful call, or the API's
+// startup re-apply, would apply them).
+func (c *Client) Apply(ctx context.Context, cfg Config) error {
+	if cfg.Domain == "" {
 		return fmt.Errorf("domain must not be empty")
 	}
 
 	var body bytes.Buffer
-	if err := caddyfileTemplate.Execute(&body, struct{ AdminSocket, Domain, Email string }{
+	if err := caddyfileTemplate.Execute(&body, struct{ AdminSocket, Domain, Email, SubAddress string }{
 		AdminSocket: c.socketPath,
-		Domain:      domain,
-		Email:       email,
+		Domain:      cfg.Domain,
+		Email:       cfg.Email,
+		SubAddress:  cfg.subAddress(),
 	}); err != nil {
 		return fmt.Errorf("render caddyfile: %w", err)
 	}

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -56,8 +57,13 @@ type accountResponse struct {
 	// SubscriptionPath is the relative capability URL serving this account's current
 	// config (prepend the panel's public origin). The token is deliberately not
 	// exposed as a separate field - the path is the only shape clients need.
-	SubscriptionPath string  `json:"subscription_path"`
-	Status           string  `json:"status"`
+	SubscriptionPath string `json:"subscription_path"`
+	// SubscriptionURL is the absolute form of SubscriptionPath on the separate
+	// subscription origin (Settings' sub_domain/sub_port, migration 0019), or null
+	// when no separate origin is configured - callers should then fall back to
+	// prepending the panel's own origin to SubscriptionPath, as before.
+	SubscriptionURL *string `json:"subscription_url"`
+	Status          string  `json:"status"`
 	SuspendReason    *string `json:"suspend_reason"`
 	CreatedAt        string  `json:"created_at"`
 	UpdatedAt        string  `json:"updated_at"`
@@ -70,7 +76,33 @@ type accountResponse struct {
 	AssignedIP *string `json:"assigned_ip"`
 }
 
-func toAccountResponse(a store.Account, peers []store.AccountPeerWithNode) accountResponse {
+// subscriptionBaseURL is the origin to prepend to subscription paths when a
+// separate subscription domain is configured, e.g. "https://sub.example.com:8443" -
+// nil when the feature is off. Pure so it's testable without a store.
+func subscriptionBaseURL(settings store.PanelSettings) *string {
+	if settings.SubDomain == nil || *settings.SubDomain == "" {
+		return nil
+	}
+	base := "https://" + *settings.SubDomain
+	if settings.SubPort != nil && *settings.SubPort != 443 {
+		base += ":" + strconv.Itoa(*settings.SubPort)
+	}
+	return &base
+}
+
+// subscriptionBaseURLFromStore fetches settings and derives the subscription
+// origin. Best-effort: a settings read failure degrades to "no separate origin"
+// (clients fall back to SubscriptionPath) rather than failing account responses.
+func (s *Server) subscriptionBaseURLFromStore(ctx context.Context) *string {
+	settings, err := s.Store.GetSettings(ctx)
+	if err != nil {
+		s.Logger.Warn("get_settings_for_subscription_url_failed", "error", err)
+		return nil
+	}
+	return subscriptionBaseURL(settings)
+}
+
+func toAccountResponse(a store.Account, peers []store.AccountPeerWithNode, subBase *string) accountResponse {
 	var expiryAt *string
 	if a.ExpiryAt != nil {
 		s := a.ExpiryAt.Format(time.RFC3339)
@@ -101,6 +133,13 @@ func toAccountResponse(a store.Account, peers []store.AccountPeerWithNode) accou
 		deprecatedAssignedIP = &peers[0].AssignedIP
 	}
 
+	subscriptionPath := "/api/v1/sub/" + a.SubscriptionToken
+	var subscriptionURL *string
+	if subBase != nil {
+		u := *subBase + subscriptionPath
+		subscriptionURL = &u
+	}
+
 	return accountResponse{
 		ID:                     a.ID,
 		ExternalRef:            a.ExternalRef,
@@ -114,7 +153,8 @@ func toAccountResponse(a store.Account, peers []store.AccountPeerWithNode) accou
 		DeviceLimitExceeded:    a.DeviceLimitExceededAt != nil,
 		DeviceLimitHardEnforce: a.DeviceLimitHardEnforce,
 		BandwidthLimitMbps:     a.BandwidthLimitMbps,
-		SubscriptionPath:       "/api/v1/sub/" + a.SubscriptionToken,
+		SubscriptionPath:       subscriptionPath,
+		SubscriptionURL:        subscriptionURL,
 		Status:                 a.Status,
 		SuspendReason:          a.SuspendReason,
 		CreatedAt:              a.CreatedAt.Format(time.RFC3339),
@@ -147,7 +187,7 @@ func (s *Server) respondWithAccount(w http.ResponseWriter, r *http.Request, stat
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not fetch account peers")
 		return
 	}
-	writeJSON(w, status, toAccountResponse(account, peers))
+	writeJSON(w, status, toAccountResponse(account, peers, s.subscriptionBaseURLFromStore(r.Context())))
 }
 
 // handleCreateAccount serves both admin and API-key callers (requireAdminOrAPIKey).
@@ -284,6 +324,7 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	subBase := s.subscriptionBaseURLFromStore(ctx)
 	out := make([]accountResponse, 0, len(accounts))
 	for _, a := range accounts {
 		peers, err := s.Store.ListAccountPeersWithNode(ctx, a.ID, ns)
@@ -292,7 +333,7 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not fetch account peers")
 			return
 		}
-		out = append(out, toAccountResponse(a, peers))
+		out = append(out, toAccountResponse(a, peers, subBase))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
 }

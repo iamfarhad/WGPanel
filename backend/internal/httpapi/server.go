@@ -29,6 +29,12 @@ type Server struct {
 	// changes still persist, just without the live push (see handleUpdateSettings).
 	CaddyAdmin    *caddyadmin.Client
 	AdminACLEmail string
+	// BootPanelDomain is the PANEL_DOMAIN env the stack was started with - the
+	// fallback panel domain for rendering a complete Caddy config when
+	// panel_settings.panel_domain was never set from the UI (a pushed config must
+	// always include the panel site block, e.g. when only a subscription domain is
+	// being configured). See domainConfigFromSettings.
+	BootPanelDomain string
 }
 
 // Routes builds the full handler tree: public routes (proxied by Caddy), the

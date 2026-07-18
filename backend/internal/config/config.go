@@ -25,6 +25,10 @@ type Config struct {
 	// before this feature existed. Neither is in `required` below.
 	CaddyAdminSocket string
 	AdminACLEmail    string
+	// PanelDomain is the boot-time domain Caddy was started with, used only as the
+	// fallback for rendering a complete config on live domain pushes (see
+	// httpapi.Server.BootPanelDomain). Optional for the same reason as the two above.
+	PanelDomain string
 }
 
 // Load reads and validates configuration from the environment. It fails fast on
@@ -43,6 +47,7 @@ func Load() (Config, error) {
 		AdminBootstrapUsername:   envOrDefault("ADMIN_BOOTSTRAP_USERNAME", "admin"),
 		CaddyAdminSocket:         envOrDefault("CADDY_ADMIN_SOCKET", "/admin/caddy-admin.sock"),
 		AdminACLEmail:            os.Getenv("ADMIN_ACL_EMAIL"),
+		PanelDomain:              os.Getenv("PANEL_DOMAIN"),
 	}
 
 	required := map[string]string{

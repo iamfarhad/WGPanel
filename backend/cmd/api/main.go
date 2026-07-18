@@ -92,8 +92,9 @@ func run(logger *slog.Logger) error {
 		// Always constructed - caddyadmin.Client only fails at call time (a dial
 		// against a socket that doesn't exist), not at construction, so this is safe
 		// even in deployments with no Caddy/no shared admin-socket volume.
-		CaddyAdmin:    caddyadmin.New(cfg.CaddyAdminSocket),
-		AdminACLEmail: cfg.AdminACLEmail,
+		CaddyAdmin:      caddyadmin.New(cfg.CaddyAdminSocket),
+		AdminACLEmail:   cfg.AdminACLEmail,
+		BootPanelDomain: cfg.PanelDomain,
 	}
 
 	httpServer := &http.Server{
@@ -114,6 +115,10 @@ func run(logger *slog.Logger) error {
 	}
 
 	go srv.RunOfflineSweepLoop(ctx)
+	// Re-push any UI-managed domain config (panel domain changed from Settings, or
+	// the DB-only subscription origin) to Caddy, which always boots from the static
+	// Caddyfile - see ReapplyDomainConfig for why this must happen on every start.
+	go srv.ReapplyDomainConfig(ctx)
 
 	errCh := make(chan error, 1)
 	go func() {

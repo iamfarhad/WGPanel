@@ -19,6 +19,8 @@ interface Settings {
   support_contact: string | null
   panel_domain: string | null
   client_dns: string
+  sub_domain: string | null
+  sub_port: number | null
 }
 
 interface UpdateSettingsResult extends Settings {
@@ -56,6 +58,8 @@ export function SettingsPage() {
   const [supportContact, setSupportContact] = useState('')
   const [clientDns, setClientDns] = useState('1.1.1.1, 1.0.0.1')
   const [panelDomain, setPanelDomain] = useState('')
+  const [subDomain, setSubDomain] = useState('')
+  const [subPort, setSubPort] = useState('')
   const [domainApplyError, setDomainApplyError] = useState<string | null>(null)
   const [domainLiveApplied, setDomainLiveApplied] = useState(false)
 
@@ -68,6 +72,8 @@ export function SettingsPage() {
     setSupportContact(settingsQuery.data.support_contact ?? '')
     setClientDns(settingsQuery.data.client_dns)
     setPanelDomain(settingsQuery.data.panel_domain ?? '')
+    setSubDomain(settingsQuery.data.sub_domain ?? '')
+    setSubPort(settingsQuery.data.sub_port?.toString() ?? '')
   }, [settingsQuery.data])
 
   const saveMutation = useMutation({
@@ -94,19 +100,26 @@ export function SettingsPage() {
     mutationFn: () =>
       apiFetch<UpdateSettingsResult>('/api/v1/settings', {
         method: 'PATCH',
-        body: JSON.stringify({ panel_domain: panelDomain }),
+        body: JSON.stringify({
+          panel_domain: panelDomain,
+          // Empty field = feature off / default port: the API treats "" and 0 as an
+          // explicit reset to NULL (unlike omitting the key, which means unchanged).
+          sub_domain: subDomain,
+          sub_port: subPort ? Number(subPort) : 0,
+        }),
       }),
     onSuccess: (settings) => {
       setDomainLiveApplied(settings.domain_live_applied)
       setDomainApplyError(settings.domain_apply_error)
       if (settings.domain_live_applied) {
-        push('success', `Domain updated - Caddy is provisioning a certificate for ${panelDomain}`)
+        const domains = settings.sub_domain ? `${panelDomain} and ${settings.sub_domain}` : panelDomain
+        push('success', `Domains updated - Caddy is provisioning certificates for ${domains}`)
       } else {
-        push('error', settings.domain_apply_error ?? 'Domain saved, but could not push it to Caddy live')
+        push('error', settings.domain_apply_error ?? 'Domains saved, but could not push them to Caddy live')
       }
       queryClient.setQueryData(['settings'], settings)
     },
-    onError: (err) => push('error', err instanceof ApiError ? err.message : 'Failed to update domain'),
+    onError: (err) => push('error', err instanceof ApiError ? err.message : 'Failed to update domains'),
   })
 
   function handleSubmit(e: FormEvent) {
@@ -129,7 +142,7 @@ export function SettingsPage() {
           <SectionHeader
             icon={ShieldCheck}
             title="Domain & TLS"
-            description="The domain Caddy serves the panel on and automatically provisions a Let's Encrypt certificate for. Changing this takes effect live via Caddy's admin API - no restart or redeploy needed. Requires DNS for the domain to already point at this server."
+            description="The domains Caddy serves and automatically provisions Let's Encrypt certificates for. Changes take effect live via Caddy's admin API - no restart or redeploy needed. Requires DNS for each domain to already point at this server."
           />
           {settingsQuery.isLoading ? (
             <div className="p-6">
@@ -137,22 +150,43 @@ export function SettingsPage() {
             </div>
           ) : (
             <form onSubmit={handleDomainSubmit} className="space-y-4 p-6">
-              <Field label="Domain">
+              <Field label="Panel domain">
                 <Input value={panelDomain} onChange={(e) => setPanelDomain(e.target.value)} placeholder="panel.example.com" required />
               </Field>
+              <div className="grid grid-cols-[1fr_8rem] gap-4">
+                <Field
+                  label="Subscription domain"
+                  hint="Optional separate domain for the subscription links handed to end users. It serves only the subscription endpoints - the admin panel is never reachable through it - with its own automatic certificate. Leave empty to keep subscription links on the panel domain."
+                >
+                  <Input value={subDomain} onChange={(e) => setSubDomain(e.target.value)} placeholder="sub.example.com" />
+                </Field>
+                <Field
+                  label="Subscription port"
+                  hint="Default 443 works with no extra setup. Any other port must match SUB_PORT in deploy/.env (default 8443) and be open in the firewall."
+                >
+                  <Input
+                    type="number"
+                    min="1"
+                    max="65535"
+                    value={subPort}
+                    onChange={(e) => setSubPort(e.target.value)}
+                    placeholder="443"
+                  />
+                </Field>
+              </div>
               {domainLiveApplied && !domainApplyError && (
-                <p className="text-sm text-emerald-600 dark:text-emerald-400">Applied live - Caddy is now serving this domain.</p>
+                <p className="text-sm text-emerald-600 dark:text-emerald-400">Applied live - Caddy is now serving with this configuration.</p>
               )}
               {domainApplyError && (
                 <p className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-sm leading-relaxed text-amber-700 dark:text-amber-400">
-                  Domain saved, but the live push to Caddy failed: {domainApplyError}. It will take effect after Caddy
-                  is next restarted with a matching PANEL_DOMAIN.
+                  Saved, but the live push to Caddy failed: {domainApplyError}. The API retries it automatically on its
+                  next restart.
                 </p>
               )}
               <div className="flex justify-end border-t border-edge pt-4">
                 <Button type="submit" disabled={domainMutation.isPending || !panelDomain}>
                   <ShieldCheck className="h-4 w-4" />
-                  {domainMutation.isPending ? 'Applying…' : 'Apply domain'}
+                  {domainMutation.isPending ? 'Applying…' : 'Apply domains'}
                 </Button>
               </div>
             </form>
