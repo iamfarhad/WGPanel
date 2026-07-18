@@ -236,7 +236,15 @@ start_stack() {
   # container can keep running against a stale file indefinitely. Found live: fixing
   # a real Caddyfile routing bug and updating the file on disk did nothing until the
   # container was explicitly force-recreated.
-  (cd "$INSTALL_DIR" && docker compose pull && docker compose up -d --force-recreate)
+  (cd "$INSTALL_DIR" && docker compose pull)
+  # Bring the stack up, but never let a slow first boot abort the whole install: the
+  # api's first start migrates a fresh DB before it reports healthy, and compose can
+  # return non-zero while waiting. show_first_admin_credentials waits for real health
+  # next, so treat a non-zero here as "keep going" rather than a fatal error (which,
+  # under `set -e`, would otherwise kill the script right at the finish line).
+  if ! (cd "$INSTALL_DIR" && docker compose up -d --force-recreate); then
+    warn "compose returned non-zero while starting (often just the api still migrating on first boot) - continuing and waiting for health below."
+  fi
 }
 
 install_cli() {
@@ -279,7 +287,11 @@ show_first_admin_credentials() {
 }
 
 wgpanel_wait_for_health() {
-  local api_port token timeout=90 waited=0
+  # 180s, not 90: a fresh DB's first-boot migration + admin bootstrap can legitimately
+  # run past 90s on a small/loaded VPS, and this wait is what surfaces the one-time
+  # admin password - timing out early makes install.sh claim failure on a panel that's
+  # actually still coming up.
+  local api_port token timeout=180 waited=0
   api_port="$(grep '^API_PORT=' "$ENV_FILE" | cut -d= -f2)"
   token="$(grep '^INTERNAL_API_TOKEN=' "$ENV_FILE" | cut -d= -f2)"
   while (( waited < timeout )); do

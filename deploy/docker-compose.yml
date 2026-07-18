@@ -135,7 +135,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      # Generous first-boot window: the very first start against a fresh database runs
+      # every migration (TimescaleDB extension + hypertable creation is not instant) and
+      # bootstraps the admin before /healthz goes green. On a small or loaded VPS that
+      # can take a while; a tight window here is what made `docker compose up` give up
+      # and report the api "unhealthy" mid-install. Failing checks during start_period
+      # don't count against `retries`, so this only delays the unhealthy verdict, never
+      # the healthy one.
+      start_period: 90s
     deploy:
       resources:
         limits:
@@ -148,8 +155,12 @@ services:
     security_opt:
       - no-new-privileges:true
     depends_on:
+      # service_started, NOT service_healthy: nginx serves static assets and just
+      # 502s /api until the api is up, so gating its start on the api being fully
+      # healthy only serves to make the whole `up` fail if the api's first boot is
+      # slow. The panel becomes usable the moment the api is ready, either way.
       api:
-        condition: service_healthy
+        condition: service_started
     ports:
       # Loopback-only; Caddy reaches the frontend over the compose network, not this.
       # High default port to avoid the very common :3000 clash (dev servers, Grafana, …).
@@ -175,10 +186,13 @@ services:
     security_opt:
       - no-new-privileges:true
     depends_on:
+      # Same reasoning as frontend: Caddy reverse-proxies to both and simply returns
+      # 502 until each backend is up, so it must not block the whole stack's `up` on
+      # the api's first-boot health. Caddy's own TLS provisioning proceeds regardless.
       api:
-        condition: service_healthy
+        condition: service_started
       frontend:
-        condition: service_healthy
+        condition: service_started
     ports:
       # Host-side ports are configurable (PANEL_HTTP_PORT/PANEL_HTTPS_PORT in .env) -
       # Caddy itself still binds :80/:443 inside the container either way, since
