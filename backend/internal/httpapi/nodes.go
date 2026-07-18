@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -216,17 +217,26 @@ type joinTokenResponse struct {
 }
 
 // controlPlaneAddr assembles the host:port a node agent must dial: the panel
-// domain (live setting, falling back to the boot-time PANEL_DOMAIN) plus the
-// agent listener's NODE_AGENT_PORT. Nil when either half is unknown.
-func (s *Server) controlPlaneAddr(ctx context.Context) *string {
+// domain (live setting, falling back to the boot-time PANEL_DOMAIN, falling back
+// to the Host the admin is browsing the panel on right now - an IP-only
+// deployment has no configured domain, but the browser's Host reaches this
+// server by definition) plus the agent listener's NODE_AGENT_PORT.
+func (s *Server) controlPlaneAddr(ctx context.Context, r *http.Request) *string {
 	host := s.BootPanelDomain
 	if settings, err := s.Store.GetSettings(ctx); err == nil && settings.PanelDomain != nil && *settings.PanelDomain != "" {
 		host = *settings.PanelDomain
 	}
+	if host == "" {
+		if h, _, err := net.SplitHostPort(r.Host); err == nil {
+			host = h
+		} else {
+			host = r.Host
+		}
+	}
 	if host == "" || s.NodeAgentPort == "" {
 		return nil
 	}
-	addr := host + ":" + s.NodeAgentPort
+	addr := net.JoinHostPort(host, s.NodeAgentPort)
 	return &addr
 }
 
@@ -300,7 +310,7 @@ func (s *Server) handleGenerateJoinToken(w http.ResponseWriter, r *http.Request)
 		Token:     rawToken,
 		ExpiresAt: expiresAt,
 		Unlimited: req.Unlimited,
-		PanelAddr: s.controlPlaneAddr(ctx),
+		PanelAddr: s.controlPlaneAddr(ctx, r),
 	})
 }
 
