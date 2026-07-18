@@ -237,17 +237,48 @@ MIN_TOTAL_MEM_MB=3072
 # little memory. It looks at RAM + swap together and, if the total is under the target,
 # offers to create a swap file sized to reach it (not a flat amount) so the install
 # actually completes instead of OOM-crashing the api / node / docker itself.
+# Disk headroom (MB) to always leave free after a swap file - for image layers, the
+# database volume, and growth. A swap file must never eat into this.
+MIN_DISK_HEADROOM_MB=5120
+
 preflight_resources() {
-  local mem_kb swap_kb total_mb need_mb swap_gb
+  local mem_kb swap_kb total_mb need_mb swap_gb avail_mb max_swap_mb
   mem_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
   swap_kb="$(awk '/^SwapTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
   total_mb=$(( (mem_kb + swap_kb) / 1024 ))
   (( total_mb > 0 )) || return 0
+
+  # Free disk where /swapfile lives (the root fs). Warn loudly if it's already tight -
+  # a full disk shows up as "no space left on device" from docker-proxy/runc mid-start.
+  avail_mb="$(df -Pm / 2>/dev/null | awk 'NR==2{print $4}')"
+  avail_mb="${avail_mb:-0}"
+  if (( avail_mb > 0 && avail_mb < MIN_DISK_HEADROOM_MB )); then
+    warn "Only ~${avail_mb} MB free disk. The images + database need room; a nearly-full"
+    warn "disk fails mid-start with 'no space left on device'. Free space (e.g. 'docker"
+    warn "system prune -af') or use a larger disk before continuing."
+  fi
+
   (( total_mb >= MIN_TOTAL_MEM_MB )) && return 0
 
   need_mb=$(( MIN_TOTAL_MEM_MB - total_mb ))
   swap_gb=$(( (need_mb + 1023) / 1024 ))   # round up to whole GB
   (( swap_gb < 2 )) && swap_gb=2
+
+  # Never let the swap file fill the disk: cap it so MIN_DISK_HEADROOM_MB stays free.
+  max_swap_mb=$(( avail_mb - MIN_DISK_HEADROOM_MB ))
+  if (( max_swap_mb < 1024 )); then
+    warn "Low memory (~${total_mb} MB RAM+swap) AND little free disk (~${avail_mb} MB) -"
+    warn "not enough room to safely add swap. This server is undersized for the stack;"
+    warn "it will likely crash with out-of-memory or out-of-disk errors. Use a server"
+    warn "with more RAM and disk (2 GB RAM / 20 GB disk+), or free space and re-run."
+    read -rp "Continue anyway? [y/N]: " CONT
+    [[ "${CONT:-N}" =~ ^[Yy] ]] || exit 1
+    return 0
+  fi
+  if (( swap_gb * 1024 > max_swap_mb )); then
+    swap_gb=$(( max_swap_mb / 1024 ))
+    warn "Capping swap to ${swap_gb} GB to keep ${MIN_DISK_HEADROOM_MB} MB disk free."
+  fi
 
   warn "Low memory: this server has only ~${total_mb} MB RAM+swap. This stack needs"
   warn "~${MIN_TOTAL_MEM_MB} MB to boot reliably - below it, TimescaleDB/the API/the node"
