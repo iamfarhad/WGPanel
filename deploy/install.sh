@@ -227,6 +227,48 @@ preflight_ports() {
   fi
 }
 
+# preflight_resources guards against the single most common small-VPS failure: too
+# little memory to run the stack (TimescaleDB especially). When RAM is low and there's
+# no swap, thread/stack allocation starts failing with "pthread_create: Resource
+# temporarily unavailable" - which crashes the api (and even docker itself) rather than
+# producing a clean error. Offer to add swap so the install actually succeeds.
+preflight_resources() {
+  local mem_kb swap_kb mem_mb
+  mem_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  swap_kb="$(awk '/^SwapTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  mem_mb=$((mem_kb / 1024))
+
+  if (( mem_mb > 0 && mem_mb < 2048 && swap_kb == 0 )); then
+    warn "This server has ~${mem_mb} MB RAM and no swap. The stack (TimescaleDB) can run"
+    warn "out of memory during startup, which surfaces as 'pthread_create: Resource"
+    warn "temporarily unavailable' and crashes the API (and sometimes docker itself)."
+    read -rp "Create a 2 GB swap file now to prevent that (recommended)? [Y/n]: " MKSWAP
+    if [[ ! "${MKSWAP:-Y}" =~ ^[Nn] ]]; then
+      create_swap
+    else
+      warn "Continuing without swap - if the API keeps crashing, add swap and re-run."
+    fi
+  fi
+}
+
+create_swap() {
+  if swapon --show 2>/dev/null | grep -q .; then
+    log "Swap already active - skipping."
+    return
+  fi
+  if [[ -f /swapfile ]]; then
+    warn "/swapfile already exists - enabling it."
+  else
+    log "Creating a 2 GB swap file at /swapfile..."
+    fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+  fi
+  chmod 600 /swapfile
+  mkswap /swapfile >/dev/null 2>&1 || true
+  swapon /swapfile
+  grep -q '^/swapfile ' /etc/fstab 2>/dev/null || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  log "Swap enabled ($(swapon --show=NAME,SIZE --noheadings 2>/dev/null | tr '\n' ' '))."
+}
+
 start_stack() {
   preflight_ports
   log "Pulling images and starting the stack..."
@@ -483,6 +525,7 @@ main() {
   ensure_deploy_files
   install_prereqs
   install_docker
+  preflight_resources
   fresh_reset
   setup_files
   setup_firewall
