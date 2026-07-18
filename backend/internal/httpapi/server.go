@@ -35,6 +35,10 @@ type Server struct {
 	// always include the panel site block, e.g. when only a subscription domain is
 	// being configured). See domainConfigFromSettings.
 	BootPanelDomain string
+	// CADataDir is where the node-mTLS CA keypair lives on disk (cmd/api's
+	// caDataDir) so backup can include it and restore can replace it. Empty
+	// disables the CA portion of backup/restore.
+	CADataDir string
 }
 
 // Routes builds the full handler tree: public routes (proxied by Caddy), the
@@ -120,6 +124,12 @@ func (s *Server) Routes() http.Handler {
 	// since these are panel-wide defaults, same trust tier as API keys/join tokens.
 	mux.Handle("GET /api/v1/settings", s.requireAdmin(http.HandlerFunc(s.handleGetSettings)))
 	mux.Handle("PATCH /api/v1/settings", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleUpdateSettings))))
+
+	// Backup & restore (see backup.go's doc comment) - both directions are
+	// super_admin-only: the file contains admin password hashes, the CA private
+	// key and every subscription token, and restore replaces ALL panel state.
+	mux.Handle("GET /api/v1/backup", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleDownloadBackup))))
+	mux.Handle("POST /api/v1/backup/restore", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleRestoreBackup))))
 
 	return s.loggingMiddleware(mux)
 }
