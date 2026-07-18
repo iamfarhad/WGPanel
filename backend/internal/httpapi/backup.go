@@ -1,13 +1,16 @@
-// Backup & restore via the panel (Settings -> Backup & restore): a single JSON
-// file containing every config table plus the node-mTLS CA keypair - everything
-// needed to rebuild the panel on a fresh server, EXCEPT deploy/.env. The backup is
-// deliberately useless without that .env: account private keys inside it are
-// still encrypted with ACCOUNT_KEY_ENCRYPTION_KEY (a key-canary field lets restore
-// detect a mismatch up front instead of every config download failing later).
+// Backup & restore via the panel (Settings -> Backup & restore): one
+// password-encrypted file (see internal/backupcrypto) containing every config
+// table, the node-mTLS CA keypair, AND the two .env keys the data is useless
+// without (ACCOUNT_KEY_ENCRYPTION_KEY, API_HMAC_MASTER_KEY). Embedding the keys
+// is what makes the backup survive total server loss - the original deploy/.env
+// no longer needs to exist. Restore onto a server with different keys transparently
+// re-encrypts every account private key and API-key secret to the new keys, so the
+// restored panel works with the new .env as-is.
 //
-// The file is as sensitive as the database itself (admin password hashes, the CA
-// private key, subscription tokens) - it is only ever produced for, and accepted
-// from, a super_admin, and both directions are audit-logged.
+// The decrypted contents are as sensitive as the database itself (admin password
+// hashes, the CA private key, subscription tokens, the encryption keys) - the file
+// is only ever produced for, and accepted from, a super_admin, is never readable
+// without the admin-chosen password, and both directions are audit-logged.
 package httpapi
 
 import (
@@ -21,34 +24,52 @@ import (
 	"slices"
 	"time"
 
+	"wgpanel-api/internal/backupcrypto"
 	"wgpanel-api/internal/wgkeys"
 )
 
-const backupFormat = "wgpanel-backup/1"
-
-// backupCanaryPlaintext is a fixed string encrypted with ACCOUNT_KEY_ENCRYPTION_KEY
-// into every backup; restore decrypts it to prove the current deployment holds the
-// same key the backed-up account private keys were encrypted with.
-const backupCanaryPlaintext = "wgpanel-key-canary"
+// backupPasswordMinLen guards against trivially brute-forceable backups; the
+// argon2id KDF does the heavy lifting beyond that.
+const backupPasswordMinLen = 8
 
 type backupCA struct {
 	CertPEM string `json:"cert_pem"`
 	KeyPEM  string `json:"key_pem"`
 }
 
-type backupFile struct {
-	Format     string                     `json:"format"`
-	CreatedAt  string                     `json:"created_at"`
+type backupSecrets struct {
+	AccountKeyEncryptionKey string `json:"account_key_encryption_key"`
+	APIHMACMasterKey        string `json:"api_hmac_master_key"`
+}
+
+// backupPayload is the plaintext sealed inside the backupcrypto envelope.
+type backupPayload struct {
 	Migrations []string                   `json:"migrations"`
-	KeyCanary  string                     `json:"key_canary"`
+	Secrets    backupSecrets              `json:"secrets"`
 	CA         *backupCA                  `json:"ca,omitempty"`
 	Tables     map[string]json.RawMessage `json:"tables"`
 }
 
-// handleDownloadBackup streams the full panel backup as an attachment.
-// super_admin-only (wired via requireRole in server.go).
+type downloadBackupRequest struct {
+	Password string `json:"password"`
+}
+
+// handleDownloadBackup streams the encrypted panel backup as an attachment. POST,
+// not GET, because the encryption password rides in the body. super_admin-only
+// (wired via requireRole in server.go).
 func (s *Server) handleDownloadBackup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	var req downloadBackupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+		return
+	}
+	if len(req.Password) < backupPasswordMinLen {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request",
+			fmt.Sprintf("password must be at least %d characters - it is the ONLY way to open the backup", backupPasswordMinLen))
+		return
+	}
 
 	migrations, err := s.Store.AppliedMigrations(ctx)
 	if err != nil {
@@ -62,20 +83,28 @@ func (s *Server) handleDownloadBackup(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not dump tables")
 		return
 	}
-	canary, err := wgkeys.Encrypt(s.AccountKeyEncryptionKey, backupCanaryPlaintext)
+
+	payload, err := json.Marshal(backupPayload{
+		Migrations: migrations,
+		Secrets: backupSecrets{
+			AccountKeyEncryptionKey: s.AccountKeyEncryptionKey,
+			APIHMACMasterKey:        s.APIHMACMasterKey,
+		},
+		CA:     s.readCAForBackup(),
+		Tables: tables,
+	})
 	if err != nil {
-		s.Logger.Error("backup_canary_failed", "error", err)
+		s.Logger.Error("backup_marshal_failed", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not build backup")
 		return
 	}
 
-	backup := backupFile{
-		Format:     backupFormat,
-		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
-		Migrations: migrations,
-		KeyCanary:  canary,
-		CA:         s.readCAForBackup(),
-		Tables:     tables,
+	createdAt := time.Now().UTC()
+	envelope, err := backupcrypto.Seal(req.Password, payload, createdAt.Format(time.RFC3339))
+	if err != nil {
+		s.Logger.Error("backup_seal_failed", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not encrypt backup")
+		return
 	}
 
 	if identity, ok := callerIdentityFromContext(ctx); ok {
@@ -84,11 +113,11 @@ func (s *Server) handleDownloadBackup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	filename := "wgpanel-backup-" + time.Now().UTC().Format("20060102T150405Z") + ".json"
+	filename := "wgpanel-backup-" + createdAt.Format("20060102T150405Z") + ".json"
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(backup); err != nil {
+	if err := json.NewEncoder(w).Encode(envelope); err != nil {
 		s.Logger.Error("backup_write_failed", "error", err)
 	}
 }
@@ -113,6 +142,11 @@ func (s *Server) readCAForBackup() *backupCA {
 	return &backupCA{CertPEM: string(cert), KeyPEM: string(key)}
 }
 
+type restoreBackupRequest struct {
+	Password string                `json:"password"`
+	Backup   backupcrypto.Envelope `json:"backup"`
+}
+
 type restoreBackupResponse struct {
 	Restored map[string]int `json:"restored"`
 	// CARestored is true when the backup carried a CA keypair and it was written
@@ -124,8 +158,8 @@ type restoreBackupResponse struct {
 }
 
 // handleRestoreBackup replaces ALL panel state with an uploaded backup file.
-// super_admin-only. The three validations happen before anything is touched, in
-// increasing order of specificity: file shape, schema version, encryption key.
+// super_admin-only. Everything is validated - password, schema version, key
+// re-encryption - before any state is touched.
 func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -133,19 +167,33 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	// realistic backup while still bounding a hostile upload.
 	r.Body = http.MaxBytesReader(w, r.Body, 256<<20)
 
-	var backup backupFile
-	if err := json.NewDecoder(r.Body).Decode(&backup); err != nil {
+	var req restoreBackupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "invalid_request", "backup file exceeds the 256MB limit")
 			return
 		}
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "not a valid JSON backup file")
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "not a valid backup upload")
 		return
 	}
-	if backup.Format != backupFormat {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request",
-			fmt.Sprintf("unrecognized backup format %q (expected %q)", backup.Format, backupFormat))
+
+	plaintext, err := backupcrypto.Open(req.Password, req.Backup)
+	if errors.Is(err, backupcrypto.ErrWrongPassword) {
+		writeJSONError(w, http.StatusBadRequest, "wrong_password", "wrong password or corrupted backup file")
+		return
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	var backup backupPayload
+	if err := json.Unmarshal(plaintext, &backup); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "backup contents are not valid JSON")
+		return
+	}
+	if backup.Secrets.AccountKeyEncryptionKey == "" || backup.Secrets.APIHMACMasterKey == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "backup is missing its embedded encryption keys")
 		return
 	}
 
@@ -164,10 +212,30 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if plaintext, err := wgkeys.Decrypt(s.AccountKeyEncryptionKey, backup.KeyCanary); err != nil || plaintext != backupCanaryPlaintext {
-		writeJSONError(w, http.StatusConflict, "encryption_key_mismatch",
-			"this backup's account keys were encrypted with a different ACCOUNT_KEY_ENCRYPTION_KEY - set the original key in deploy/.env before restoring")
-		return
+	// The backup carries the keys its ciphertext columns were encrypted with; if
+	// this deployment's keys differ (fresh .env after losing the old server),
+	// re-encrypt those columns to the current keys BEFORE restoring, so the
+	// restored panel works with the new .env as-is. Failures here abort before
+	// anything is touched.
+	if backup.Secrets.AccountKeyEncryptionKey != s.AccountKeyEncryptionKey {
+		reencrypted, err := reencryptRows(backup.Tables["accounts"], []string{"private_key_encrypted"},
+			backup.Secrets.AccountKeyEncryptionKey, s.AccountKeyEncryptionKey)
+		if err != nil {
+			s.Logger.Error("restore_reencrypt_accounts_failed", "error", err)
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", "could not re-encrypt account keys from this backup")
+			return
+		}
+		backup.Tables["accounts"] = reencrypted
+	}
+	if backup.Secrets.APIHMACMasterKey != s.APIHMACMasterKey {
+		reencrypted, err := reencryptRows(backup.Tables["api_keys"], []string{"secret_encrypted", "previous_secret_encrypted"},
+			backup.Secrets.APIHMACMasterKey, s.APIHMACMasterKey)
+		if err != nil {
+			s.Logger.Error("restore_reencrypt_api_keys_failed", "error", err)
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", "could not re-encrypt API key secrets from this backup")
+			return
+		}
+		backup.Tables["api_keys"] = reencrypted
 	}
 
 	counts, err := s.Store.RestoreTables(ctx, backup.Tables)
@@ -199,6 +267,38 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// reencryptRows rewrites the named wgkeys-encrypted columns in a json_agg rows
+// blob from oldKey to newKey. Null/absent/empty values pass through untouched
+// (previous_secret_encrypted is nullable). Missing/empty rows blobs (nothing to
+// re-encrypt) pass through as-is.
+func reencryptRows(rows json.RawMessage, columns []string, oldKey, newKey string) (json.RawMessage, error) {
+	if len(rows) == 0 {
+		return rows, nil
+	}
+	var list []map[string]any
+	if err := json.Unmarshal(rows, &list); err != nil {
+		return nil, err
+	}
+	for i, row := range list {
+		for _, col := range columns {
+			v, ok := row[col].(string)
+			if !ok || v == "" {
+				continue
+			}
+			plain, err := wgkeys.Decrypt(oldKey, v)
+			if err != nil {
+				return nil, fmt.Errorf("row %d, column %s: %w", i, col, err)
+			}
+			enc, err := wgkeys.Encrypt(newKey, plain)
+			if err != nil {
+				return nil, fmt.Errorf("row %d, column %s: %w", i, col, err)
+			}
+			row[col] = enc
+		}
+	}
+	return json.Marshal(list)
 }
 
 func (s *Server) writeRestoredCA(ca backupCA) error {

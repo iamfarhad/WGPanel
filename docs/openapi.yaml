@@ -1365,25 +1365,38 @@ paths:
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/backup:
-    get:
+    post:
       tags: [Backup]
-      summary: Download a full panel backup
+      summary: Download a full, password-encrypted panel backup
       description: >-
-        Requires role = `super_admin`. Streams a JSON attachment containing every
-        config table (admins, nodes, accounts, account_peers, account_devices,
-        api_keys, panel_settings, audit_log) plus the node-mTLS CA keypair.
-        Metrics history (TimescaleDB hypertables) is excluded - account usage
-        totals live on the accounts rows and are included. Account private keys
-        remain encrypted with the deployment's ACCOUNT_KEY_ENCRYPTION_KEY, so a
-        backup is only restorable alongside the original deploy/.env.
+        Requires role = `super_admin`. POST (not GET) because the encryption
+        password rides in the body. Streams a JSON attachment: an argon2id +
+        AES-256-GCM envelope sealing every config table (admins, nodes, accounts,
+        account_peers, account_devices, api_keys, panel_settings, audit_log), the
+        node-mTLS CA keypair, and the deployment's ACCOUNT_KEY_ENCRYPTION_KEY /
+        API_HMAC_MASTER_KEY - so the file plus its password is sufficient to
+        rebuild the panel on a brand-new server with a fresh deploy/.env. Metrics
+        history (TimescaleDB hypertables) is excluded - account usage totals live
+        on the accounts rows and are included. The password is the only way to
+        open the file and cannot be recovered.
       security:
         - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string, minLength: 8 }
       responses:
         "200":
-          description: The backup file (Content-Disposition attachment).
+          description: The encrypted backup file (Content-Disposition attachment).
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/BackupFile" }
+              schema: { $ref: "#/components/schemas/BackupEnvelope" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -1397,29 +1410,41 @@ paths:
         backed-up table with the file's rows (a table absent from the file is
         emptied, not skipped) and writes the CA keypair to disk - if that keypair
         differs from the running one, node-agent mTLS needs an api restart to pick
-        it up (`restart_required` on the response). Validated before anything is
-        touched: the file's schema version must exactly match this panel's
-        (`schema_mismatch`) and its key canary must decrypt with the current
-        ACCOUNT_KEY_ENCRYPTION_KEY (`encryption_key_mismatch`). Restoring replaces
-        admin users too - the caller's own login may change.
+        it up (`restart_required` on the response). If this deployment's
+        ACCOUNT_KEY_ENCRYPTION_KEY / API_HMAC_MASTER_KEY differ from the ones
+        embedded in the backup (disaster recovery onto a fresh .env), every
+        account private key and API-key secret is transparently re-encrypted to
+        the current keys. Validated before anything is touched: the password must
+        open the envelope (`wrong_password`) and the file's schema version must
+        exactly match this panel's (`schema_mismatch`). Restoring replaces admin
+        users too - the caller's own login may change.
       security:
         - BearerAuth: []
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/BackupFile" }
+            schema:
+              type: object
+              required: [password, backup]
+              properties:
+                password: { type: string }
+                backup: { $ref: "#/components/schemas/BackupEnvelope" }
       responses:
         "200":
           description: Restore succeeded.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/RestoreResult" }
-        "400": { $ref: "#/components/responses/BadRequest" }
+        "400":
+          description: "`invalid_request` or `wrong_password` - nothing was changed."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
-          description: "`schema_mismatch` or `encryption_key_mismatch` - nothing was changed."
+          description: "`schema_mismatch` - nothing was changed."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
@@ -1778,35 +1803,29 @@ components:
             the default.
       required: [default_node_capacity, client_dns]
 
-    BackupFile:
+    BackupEnvelope:
       type: object
       description: >-
-        The wgpanel-backup/1 format. `tables` maps each table name to its rows as
-        plain JSON objects (the exact json_agg of the table); `key_canary` is a
-        fixed string encrypted with ACCOUNT_KEY_ENCRYPTION_KEY so restore can
-        verify key compatibility up front; `ca` is the node-mTLS CA keypair (PEM),
-        omitted if the deployment has none.
-      required: [format, created_at, migrations, key_canary, tables]
+        The wgpanel-backup-enc/1 format: an argon2id + AES-256-GCM envelope. Only
+        format and created_at are readable without the password. `kdf` carries the
+        argon2id parameters the file was sealed with (salt base64, t/m/p costs);
+        `data` is the base64 ciphertext of the backup payload - config tables as
+        json_agg rows, the CA keypair (PEM), the applied-migrations list (restore
+        requires an exact match), and the deployment's encryption keys.
+      required: [format, created_at, kdf, nonce, data]
       properties:
-        format: { type: string, enum: [wgpanel-backup/1] }
+        format: { type: string, enum: [wgpanel-backup-enc/1] }
         created_at: { type: string, format: date-time }
-        migrations:
-          type: array
-          items: { type: string }
-          description: Applied migration filenames at backup time - restore requires an exact match.
-        key_canary: { type: string }
-        ca:
+        kdf:
           type: object
-          nullable: true
+          required: [salt, t, m, p]
           properties:
-            cert_pem: { type: string }
-            key_pem: { type: string }
-          required: [cert_pem, key_pem]
-        tables:
-          type: object
-          additionalProperties:
-            type: array
-            items: { type: object, additionalProperties: true }
+            salt: { type: string, description: base64 (raw, unpadded) }
+            t: { type: integer }
+            m: { type: integer, description: memory cost in KB }
+            p: { type: integer }
+        nonce: { type: string, description: base64 (raw, unpadded) }
+        data: { type: string, description: base64 (raw, unpadded) AES-256-GCM ciphertext }
 
     RestoreResult:
       type: object
