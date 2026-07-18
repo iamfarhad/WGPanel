@@ -61,7 +61,7 @@ info:
     1. **Main API** (`HTTP_PORT`, default `8080`) — everything under
        `/api/v1/*`, `/healthz`, and `/internal/*`. This is what admins, the
        Telegram bot, and `POST /api/v1/nodes/join` (install-node.sh) talk to.
-    2. **Node agent listener** (`NODE_AGENT_PORT`, default `9090`) — `/agent/register`
+    2. **Node agent listener** (`NODE_AGENT_PORT`, default `48443`) — `/agent/register`
        and `/agent/heartbeat` only, served over mTLS by this project's internal
        CA. `/agent/register` needs no client certificate (the one-time join
        token IS the credential); `/agent/heartbeat` requires a client
@@ -79,7 +79,7 @@ servers:
       Main API host. All paths below are absolute (e.g. /api/v1/nodes,
       /healthz, /internal/admins), matching the real Go net/http mux exactly -
       there is no shared path prefix across every route.
-  - url: https://node-agent.internal:9090
+  - url: https://node-agent.internal:48443
     description: >-
       Node agent mTLS listener (NODE_AGENT_PORT). Separate TLS listener, separate
       trust root (this project's internal CA) - not reachable through the main
@@ -1217,7 +1217,7 @@ paths:
 
   /agent/register:
     servers:
-      - url: https://node-agent.internal:9090
+      - url: https://node-agent.internal:48443
     post:
       tags: [Node Agent]
       summary: Redeem a join token for an mTLS client certificate
@@ -1269,7 +1269,7 @@ paths:
 
   /agent/heartbeat:
     servers:
-      - url: https://node-agent.internal:9090
+      - url: https://node-agent.internal:48443
     post:
       tags: [Node Agent]
       summary: Report liveness and peer count

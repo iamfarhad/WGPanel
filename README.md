@@ -34,6 +34,8 @@ The installer will ask for:
 
 When it finishes, your panel is live at `https://<your-domain>`. The auto-generated super-admin password is printed once at the end of the install — save it immediately, since it's never shown again (you can also recover it later with `wgpanel show-bootstrap-admin`, as long as the container's log history hasn't rotated it out).
 
+> **Starting over?** Re-running `install.sh` keeps your existing `.env` and data. To wipe everything (containers, data volumes, secrets, and the self-node) and install fresh, run `sudo bash install.sh --fresh`. The panel binds high, rarely-used host ports by default (e.g. the node-agent port is `48443`, not the old `9090` that clashes with Cockpit/Prometheus); the installer also fails fast with a clear message if that port is already taken.
+
 ## Adding more WireGuard servers
 
 Every node — including the panel's own server — is added the same way:
@@ -132,7 +134,7 @@ Optionally run a WireGuard node in Docker (handy on macOS, where `install-node.s
 docker compose --profile node up -d wg-node
 ```
 
-**Working on the frontend alone** — Vite's dev server proxies `/api` to the backend (default `http://127.0.0.1:8090`, override with `VITE_BACKEND_URL`), so you get HMR against the running API stack:
+**Working on the frontend alone** — Vite's dev server proxies `/api` to the backend (default `http://127.0.0.1:48080`, matching `API_PORT`; override with `VITE_BACKEND_URL`), so you get HMR against the running API stack:
 
 ```bash
 cd frontend

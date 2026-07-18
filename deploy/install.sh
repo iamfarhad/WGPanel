@@ -37,6 +37,44 @@ log()  { echo -e "\033[1;32m[wgpanel]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[wgpanel]\033[0m $*"; }
 err()  { echo -e "\033[1;31m[wgpanel]\033[0m $*" >&2; }
 
+# --fresh / --reset wipes any prior install (containers, volumes, secrets) for a
+# genuinely clean setup. Off by default so a normal re-run never destroys data.
+FRESH=0
+parse_args() {
+  for a in "$@"; do
+    case "$a" in
+      --fresh|--reset) FRESH=1 ;;
+      -h|--help)
+        echo "Usage: sudo bash install.sh [--fresh]"
+        echo "  --fresh   Remove any existing WGPanel stack, self-node, secrets, and data"
+        echo "            volumes first, then install cleanly. DESTROYS the database."
+        exit 0
+        ;;
+      *) err "Unknown argument: $a (try --help)"; exit 1 ;;
+    esac
+  done
+}
+
+# fresh_reset tears down a prior install so the run below starts from nothing. Runs
+# only under --fresh, and only after Docker is available (it uses docker compose to
+# remove the named volumes, which a plain `rm` can't touch).
+fresh_reset() {
+  [[ "$FRESH" -eq 1 ]] || return 0
+  warn "--fresh: removing any existing WGPanel install (containers, volumes, secrets, self-node)."
+  if [[ -f "$INSTALL_DIR/docker-compose.yml" ]]; then
+    (cd "$INSTALL_DIR" && docker compose down -v --remove-orphans 2>/dev/null) || true
+  fi
+  if [[ -f "$NODE_COMPOSE_FILE" ]]; then
+    (cd "$NODE_DIR" && docker compose down -v --remove-orphans 2>/dev/null) || true
+  fi
+  # Belt-and-suspenders for a stack whose compose file is already gone but whose
+  # volumes/containers linger from an older layout.
+  docker ps -aq --filter "name=^/wgpanel" | xargs -r docker rm -f >/dev/null 2>&1 || true
+  rm -f "$ENV_FILE"
+  rm -rf "$NODE_DIR" "$INSTALL_DIR/state"
+  log "Previous install removed - continuing with a clean setup."
+}
+
 ensure_deploy_files() {
   local f
   for f in "${DEPLOY_COMPANION_FILES[@]}"; do
@@ -91,7 +129,7 @@ setup_files() {
   cp "$SCRIPT_SOURCE_DIR/Caddyfile" "$INSTALL_DIR/Caddyfile"
 
   if [[ -f "$ENV_FILE" ]]; then
-    warn ".env already exists at $ENV_FILE - leaving existing values untouched. Delete it first if you want a fresh setup."
+    warn ".env already exists at $ENV_FILE - leaving existing values untouched. Re-run with --fresh (or delete it) for a clean setup."
     # An existing .env predates whatever keys this script has added since it was
     # first created (e.g. PANEL_HTTP_PORT/PANEL_HTTPS_PORT) - the fresh-install
     # branch below prompts for these once, but "leave it untouched" then means the
@@ -170,7 +208,27 @@ setup_firewall() {
   ufw reload >/dev/null 2>&1 || true
 }
 
+# preflight_ports fails fast with a clear message if a host port the stack must
+# publish is already taken - far friendlier than the mid-`docker compose up`
+# "failed to start userland proxy / docker-proxy" error you get otherwise. Only
+# checks the publicly-bound NODE_AGENT_PORT; the loopback API/frontend ports rarely
+# clash and Docker's own message for those is at least specific.
+preflight_ports() {
+  local port pid
+  port="$(grep '^NODE_AGENT_PORT=' "$ENV_FILE" | cut -d= -f2)"
+  [[ -n "$port" ]] || return 0
+  if command -v ss >/dev/null 2>&1 && ss -tlnH "sport = :${port}" 2>/dev/null | grep -q .; then
+    pid="$(ss -tlnpH "sport = :${port}" 2>/dev/null | grep -oE 'users:\(\("[^"]+"' | head -n1 | sed -E 's/.*"([^"]+)"/\1/')"
+    err "Port ${port} (NODE_AGENT_PORT) is already in use${pid:+ by \"${pid}\"} - the API container can't publish it."
+    err "  Common culprit: cockpit or prometheus (both default to 9090)."
+    err "  Fix: free the port (e.g. 'systemctl disable --now cockpit.socket'), or set a"
+    err "       different NODE_AGENT_PORT in ${ENV_FILE} and open it in the firewall, then re-run."
+    exit 1
+  fi
+}
+
 start_stack() {
+  preflight_ports
   log "Pulling images and starting the stack..."
   # --force-recreate: plain `up -d` only recreates a container when compose detects
   # its own service definition changed - it does NOT notice that a bind-mounted
@@ -407,11 +465,13 @@ ensure_self_node_image() {
 }
 
 main() {
+  parse_args "$@"
   require_root
   detect_os
   ensure_deploy_files
   install_prereqs
   install_docker
+  fresh_reset
   setup_files
   setup_firewall
   start_stack
