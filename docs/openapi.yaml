@@ -485,8 +485,9 @@ paths:
                     nullable: true
                     description: >-
                       The exact host:port to give install-node.sh as the control-plane
-                      address (panel domain + NODE_AGENT_PORT). Null when no panel
-                      domain is configured. This is NOT the panel's web/HTTPS port.
+                      address: the panel domain (falling back to the Host this request
+                      was made on, for IP-only deployments) + NODE_AGENT_PORT. This is
+                      NOT the panel's web/HTTPS port.
                     example: panel.example.com:48443
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
