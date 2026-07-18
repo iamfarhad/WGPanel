@@ -44,3 +44,11 @@
 		reverse_proxy frontend:80
 	}
 }
+
+# Note: there is deliberately NO site block here for the separate subscription
+# domain (Settings -> Subscription domain & port). That config lives only in the
+# database (panel_settings.sub_domain/sub_port) and is pushed live through the admin
+# socket - both on settings changes and by the api on every startup
+# (httpapi.ReapplyDomainConfig), since Caddy always boots from this static file. An
+# env-templated block can't work here: Caddyfile syntax has no conditionals, and an
+# empty site address (the feature-off case) is a config error.

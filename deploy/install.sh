@@ -227,46 +227,86 @@ preflight_ports() {
   fi
 }
 
+# Total RAM+swap (MB) this stack needs to boot reliably. TimescaleDB's first-boot plus
+# the api's migration, and optionally the self-node container, all allocate at once; on
+# a box below this the Go runtimes fail with "out of memory allocating heap arena map"
+# or "pthread_create: Resource temporarily unavailable" and crash mid-start.
+MIN_TOTAL_MEM_MB=3072
+
 # preflight_resources guards against the single most common small-VPS failure: too
-# little memory to run the stack (TimescaleDB especially). When RAM is low and there's
-# no swap, thread/stack allocation starts failing with "pthread_create: Resource
-# temporarily unavailable" - which crashes the api (and even docker itself) rather than
-# producing a clean error. Offer to add swap so the install actually succeeds.
+# little memory. It looks at RAM + swap together and, if the total is under the target,
+# offers to create a swap file sized to reach it (not a flat amount) so the install
+# actually completes instead of OOM-crashing the api / node / docker itself.
+# Disk headroom (MB) to always leave free after a swap file - for image layers, the
+# database volume, and growth. A swap file must never eat into this.
+MIN_DISK_HEADROOM_MB=5120
+
 preflight_resources() {
-  local mem_kb swap_kb mem_mb
+  local mem_kb swap_kb total_mb need_mb swap_gb avail_mb max_swap_mb
   mem_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
   swap_kb="$(awk '/^SwapTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-  mem_mb=$((mem_kb / 1024))
+  total_mb=$(( (mem_kb + swap_kb) / 1024 ))
+  (( total_mb > 0 )) || return 0
 
-  if (( mem_mb > 0 && mem_mb < 2048 && swap_kb == 0 )); then
-    warn "This server has ~${mem_mb} MB RAM and no swap. The stack (TimescaleDB) can run"
-    warn "out of memory during startup, which surfaces as 'pthread_create: Resource"
-    warn "temporarily unavailable' and crashes the API (and sometimes docker itself)."
-    read -rp "Create a 2 GB swap file now to prevent that (recommended)? [Y/n]: " MKSWAP
-    if [[ ! "${MKSWAP:-Y}" =~ ^[Nn] ]]; then
-      create_swap
-    else
-      warn "Continuing without swap - if the API keeps crashing, add swap and re-run."
-    fi
+  # Free disk where /swapfile lives (the root fs). Warn loudly if it's already tight -
+  # a full disk shows up as "no space left on device" from docker-proxy/runc mid-start.
+  avail_mb="$(df -Pm / 2>/dev/null | awk 'NR==2{print $4}')"
+  avail_mb="${avail_mb:-0}"
+  if (( avail_mb > 0 && avail_mb < MIN_DISK_HEADROOM_MB )); then
+    warn "Only ~${avail_mb} MB free disk. The images + database need room; a nearly-full"
+    warn "disk fails mid-start with 'no space left on device'. Free space (e.g. 'docker"
+    warn "system prune -af') or use a larger disk before continuing."
+  fi
+
+  (( total_mb >= MIN_TOTAL_MEM_MB )) && return 0
+
+  need_mb=$(( MIN_TOTAL_MEM_MB - total_mb ))
+  swap_gb=$(( (need_mb + 1023) / 1024 ))   # round up to whole GB
+  (( swap_gb < 2 )) && swap_gb=2
+
+  # Never let the swap file fill the disk: cap it so MIN_DISK_HEADROOM_MB stays free.
+  max_swap_mb=$(( avail_mb - MIN_DISK_HEADROOM_MB ))
+  if (( max_swap_mb < 1024 )); then
+    warn "Low memory (~${total_mb} MB RAM+swap) AND little free disk (~${avail_mb} MB) -"
+    warn "not enough room to safely add swap. This server is undersized for the stack;"
+    warn "it will likely crash with out-of-memory or out-of-disk errors. Use a server"
+    warn "with more RAM and disk (2 GB RAM / 20 GB disk+), or free space and re-run."
+    read -rp "Continue anyway? [y/N]: " CONT
+    [[ "${CONT:-N}" =~ ^[Yy] ]] || exit 1
+    return 0
+  fi
+  if (( swap_gb * 1024 > max_swap_mb )); then
+    swap_gb=$(( max_swap_mb / 1024 ))
+    warn "Capping swap to ${swap_gb} GB to keep ${MIN_DISK_HEADROOM_MB} MB disk free."
+  fi
+
+  warn "Low memory: this server has only ~${total_mb} MB RAM+swap. This stack needs"
+  warn "~${MIN_TOTAL_MEM_MB} MB to boot reliably - below it, TimescaleDB/the API/the node"
+  warn "crash mid-start with 'out of memory' / 'pthread_create: Resource temporarily"
+  warn "unavailable' (not a clean error). Adding swap fixes it on small VPSes."
+  read -rp "Create a ${swap_gb} GB swap file now (recommended)? [Y/n]: " MKSWAP
+  if [[ ! "${MKSWAP:-Y}" =~ ^[Nn] ]]; then
+    create_swap "$swap_gb"
+  else
+    warn "Continuing without swap - expect out-of-memory crashes if RAM is tight."
   fi
 }
 
+# create_swap makes (or resizes) /swapfile to <gb> GB and enables it persistently.
 create_swap() {
-  if swapon --show 2>/dev/null | grep -q .; then
-    log "Swap already active - skipping."
-    return
-  fi
-  if [[ -f /swapfile ]]; then
-    warn "/swapfile already exists - enabling it."
-  else
-    log "Creating a 2 GB swap file at /swapfile..."
-    fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
-  fi
+  local gb="${1:-2}"
+  log "Creating a ${gb} GB swap file at /swapfile..."
+  swapoff /swapfile 2>/dev/null || true
+  rm -f /swapfile
+  fallocate -l "${gb}G" /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=$(( gb * 1024 )) status=none
   chmod 600 /swapfile
-  mkswap /swapfile >/dev/null 2>&1 || true
+  mkswap /swapfile >/dev/null 2>&1
   swapon /swapfile
   grep -q '^/swapfile ' /etc/fstab 2>/dev/null || echo '/swapfile none swap sw 0 0' >> /etc/fstab
-  log "Swap enabled ($(swapon --show=NAME,SIZE --noheadings 2>/dev/null | tr '\n' ' '))."
+  # On a low-RAM box the kernel needs a nudge to actually lean on swap under pressure.
+  sysctl -w vm.swappiness=60 >/dev/null 2>&1 || true
+  grep -q '^vm.swappiness' /etc/sysctl.d/99-wgpanel.conf 2>/dev/null || echo 'vm.swappiness=60' > /etc/sysctl.d/99-wgpanel.conf
+  log "Swap enabled - total memory now $(awk '/^MemTotal:|^SwapTotal:/{s+=$2} END{printf "%d MB", s/1024}' /proc/meminfo)."
 }
 
 start_stack() {

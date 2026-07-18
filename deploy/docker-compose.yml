@@ -113,6 +113,12 @@ services:
       # via Caddy's admin API over the shared wgpanel_caddy_admin volume below.
       ADMIN_ACL_EMAIL: ${ADMIN_ACL_EMAIL}
       CADDY_ADMIN_SOCKET: /admin/caddy-admin.sock
+      # Boot-time fallback for those pushes: a pushed Caddy config must always
+      # include the panel site block, and on most installs the panel domain only
+      # lives here in .env (panel_settings.panel_domain stays NULL until it's ever
+      # changed from the UI) - e.g. configuring just a subscription domain from
+      # Settings still needs to know the panel's domain to render a full config.
+      PANEL_DOMAIN: ${PANEL_DOMAIN}
     ports:
       # Not reachable from the public internet (127.0.0.1-only + Caddy doesn't proxy /internal/*),
       # but that alone doesn't stop a sibling container (frontend, caddy) on this same compose
@@ -199,6 +205,15 @@ services:
       # that's what its automatic-HTTPS/ACME logic assumes internally.
       - "${PANEL_HTTP_PORT:-80}:80"
       - "${PANEL_HTTPS_PORT:-443}:443"
+      # Optional separate subscription port (Settings -> Subscription domain & port).
+      # Same number on both sides, because Caddy binds the UI-configured sub_port
+      # literally inside the container - so a non-443 subscription port only works
+      # when it matches SUB_PORT here (change SUB_PORT in .env and `docker compose
+      # up -d caddy` to move it). A sub_port of 443 needs none of this: the
+      # subscription domain then shares :443 with the panel via SNI. Until a
+      # subscription port is configured, nothing listens on this port in-container,
+      # so the published port just refuses connections.
+      - "${SUB_PORT:-8443}:${SUB_PORT:-8443}"
     environment:
       PANEL_DOMAIN: ${PANEL_DOMAIN}
       ADMIN_ACL_EMAIL: ${ADMIN_ACL_EMAIL}

@@ -54,6 +54,7 @@ interface Account {
   device_limit_hard_enforce: boolean
   bandwidth_limit_mbps: number | null
   subscription_path: string
+  subscription_url: string | null
   status: string
   suspend_reason: string | null
   created_at: string
@@ -570,7 +571,9 @@ function AccountDetailDialog({
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
   const [configLoading, setConfigLoading] = useState<string | null>(null)
 
-  const subscriptionUrl = `${window.location.origin}${account.subscription_path}`
+  // Prefer the separate subscription origin (Settings -> Subscription domain &
+  // port) when one is configured; otherwise the links live on the panel's origin.
+  const subscriptionUrl = account.subscription_url ?? `${window.location.origin}${account.subscription_path}`
 
   const usageQuery = useQuery({
     queryKey: ['account-usage', account.id],
