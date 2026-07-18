@@ -98,14 +98,26 @@ prompt_config() {
       warn "Expected host:port, e.g. panel.example.com:48443."
       continue
     fi
-    if timeout 5 bash -c ": </dev/tcp/${PANEL_ADDR%:*}/${PANEL_ADDR##*:}" 2>/dev/null; then
-      break
+    if ! timeout 5 bash -c ": </dev/tcp/${PANEL_ADDR%:*}/${PANEL_ADDR##*:}" 2>/dev/null; then
+      warn "Cannot reach ${PANEL_ADDR} over TCP. Check the address: the port must be the"
+      warn "panel's node-agent port (NODE_AGENT_PORT in the panel's .env, 48443 by default),"
+      warn "not the WireGuard port, and it must be open in the panel server's firewall."
+      read -rp "Use ${PANEL_ADDR} anyway? [y/N]: " CONFIRM
+      [[ "${CONFIRM,,}" == y* ]] && break
+      continue
     fi
-    warn "Cannot reach ${PANEL_ADDR} over TCP. Check the address: the port must be the"
-    warn "panel's node-agent port (NODE_AGENT_PORT in the panel's .env, 48443 by default),"
-    warn "not the WireGuard port, and it must be open in the panel server's firewall."
-    read -rp "Use ${PANEL_ADDR} anyway? [y/N]: " CONFIRM
-    [[ "${CONFIRM,,}" == y* ]] && break
+    # Reachable is not enough: the panel's WEB port (443) also answers TCP. The real
+    # agent endpoint replies with plain text/JSON, never HTML - an HTML answer means
+    # this is the web UI and registration would die with an nginx "405 Not Allowed".
+    if curl -skm 5 "https://${PANEL_ADDR}/agent/register" 2>/dev/null | grep -qiE '<html|<!doctype'; then
+      warn "${PANEL_ADDR} answers like the panel's WEB UI, not the node-agent API."
+      warn "Enter the panel's node-agent port instead: NODE_AGENT_PORT in the panel"
+      warn "server's /opt/wgpanel/.env (48443 by default) - e.g. ${PANEL_ADDR%:*}:48443."
+      read -rp "Use ${PANEL_ADDR} anyway? [y/N]: " CONFIRM
+      [[ "${CONFIRM,,}" == y* ]] && break
+      continue
+    fi
+    break
   done
 
   read_required "Join token (from admin panel -> Nodes -> Add Node): " JOIN_TOKEN

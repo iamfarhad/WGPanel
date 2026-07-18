@@ -96,6 +96,7 @@ func run(logger *slog.Logger) error {
 		AdminACLEmail:   cfg.AdminACLEmail,
 		BootPanelDomain: cfg.PanelDomain,
 		CADataDir:       caDataDir,
+		NodeAgentPort:   cfg.NodeAgentPort,
 	}
 
 	httpServer := &http.Server{

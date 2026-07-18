@@ -311,8 +311,32 @@ cmd_show_bootstrap_admin() {
 # ---- destructive ----
 
 cmd_uninstall() {
-  read -rp "This stops containers and DELETES all data volumes. Type 'yes' to confirm: " c
-  [[ "$c" == "yes" ]] && docker compose down -v
+  echo "This removes WGPanel from this server completely:"
+  echo "  - stops the panel stack and DELETES its data volumes (database, TLS certs, node CA)"
+  if [[ -f "$NODE_DIR/docker-compose.yml" ]]; then
+    echo "  - stops the self-node stack and deletes its volumes (WireGuard state)"
+  fi
+  echo "  - deletes ${INSTALL_DIR} (including .env and ALL backups) and ${NODE_DIR}"
+  echo "  - removes this CLI (/usr/local/bin/wgpanel)"
+  read -rp "Type 'yes' to confirm: " c
+  if [[ "$c" != "yes" ]]; then
+    log "Aborted - nothing was removed."
+    return 0
+  fi
+  # Tear the self-node down FIRST: its agent would otherwise keep hammering the
+  # just-removed control plane with re-registration attempts until reboot.
+  if [[ -f "$NODE_DIR/docker-compose.yml" ]]; then
+    log "Removing the self-node stack..."
+    (cd "$NODE_DIR" && docker compose down -v --remove-orphans) \
+      || warn "Self-node teardown failed - finish it manually: cd ${NODE_DIR} && docker compose down -v"
+  fi
+  log "Removing the panel stack..."
+  docker compose down -v --remove-orphans \
+    || warn "Panel teardown failed - finish it manually: cd ${INSTALL_DIR} && docker compose down -v"
+  cd /
+  rm -rf "$INSTALL_DIR" "$NODE_DIR"
+  rm -f /usr/local/bin/wgpanel
+  log "WGPanel uninstalled. Pulled images were kept - reclaim the space with: docker image prune -a"
 }
 
 usage() {
@@ -344,7 +368,8 @@ Admin accounts:
                           if still present in the API's log history
 
 Other:
-  uninstall               Stop and delete all data volumes (destructive, asks for confirmation)
+  uninstall               Remove WGPanel completely: panel + self-node stacks, volumes,
+                          /opt/wgpanel*, and this CLI (destructive, asks for confirmation)
 EOF
 }
 

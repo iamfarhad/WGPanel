@@ -478,7 +478,16 @@ paths:
                 type: object
                 properties:
                   token: { type: string }
-                  expires_at: { type: string, format: date-time }
+                  expires_at: { type: string, format: date-time, nullable: true }
+                  unlimited: { type: boolean }
+                  panel_addr:
+                    type: string
+                    nullable: true
+                    description: >-
+                      The exact host:port to give install-node.sh as the control-plane
+                      address (panel domain + NODE_AGENT_PORT). Null when no panel
+                      domain is configured. This is NOT the panel's web/HTTPS port.
+                    example: panel.example.com:48443
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
