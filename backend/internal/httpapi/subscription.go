@@ -150,7 +150,11 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	// application/octet-stream, NOT text/plain: this endpoint is downloaded straight
+	// from mobile browsers, and Android Chrome renames text/plain attachments whose
+	// extension it doesn't associate with that type - "x.conf" would land in Downloads
+	// as "x.conf.txt", which the WireGuard app refuses to import.
+	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", confFilename(account.Label)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(config))

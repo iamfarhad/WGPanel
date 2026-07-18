@@ -789,7 +789,11 @@ function AccountDetailDialog({
                 <Button
                   variant="secondary"
                   onClick={() => {
-                    const blob = new Blob([configText], { type: 'text/plain' })
+                    // application/octet-stream, NOT text/plain: Android Chrome renames
+                    // text/plain downloads whose extension it doesn't associate with
+                    // that type, so "x.conf" lands as "x.conf.txt" - which the WireGuard
+                    // app then refuses to import.
+                    const blob = new Blob([configText], { type: 'application/octet-stream' })
                     const url = URL.createObjectURL(blob)
                     const link = document.createElement('a')
                     link.href = url

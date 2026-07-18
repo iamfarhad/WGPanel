@@ -951,9 +951,13 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: wg-quick config text (Content-Disposition attachment).
+          description: >-
+            wg-quick config text (Content-Disposition attachment). Served as
+            `application/octet-stream` rather than `text/plain` so Android
+            Chrome keeps the `.conf` extension instead of renaming the
+            download to `.conf.txt`, which the WireGuard app can't import.
           content:
-            text/plain:
+            application/octet-stream:
               schema: { type: string }
         "403":
           description: "`account_suspended`"
