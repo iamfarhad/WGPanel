@@ -87,6 +87,19 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 ** i).toFixed(1)} ${units[i]}`
 }
 
+// Mirrors the backend's confFilename (subscription.go): WireGuard clients derive
+// the tunnel name from the imported file's name, and Android/wg-quick tunnel names
+// must be 1-15 chars of [a-zA-Z0-9_=+.-] - a raw account label (Unicode, spaces,
+// or just too long) makes the app reject the file with "Invalid name".
+function confFilename(label: string): string {
+  let stem = label.toLowerCase().replace(/[^a-z0-9._-]+/g, '-')
+  if (stem.length > 15) stem = stem.slice(0, 15)
+  // Trim AFTER truncating so a cut landing on a separator doesn't leave a
+  // trailing "-"/"." right before the extension.
+  stem = stem.replace(/^[-.]+|[-.]+$/g, '')
+  return `${stem === '' ? 'wgpanel' : stem}.conf`
+}
+
 // Mirrors the backend's peerOnlineWindow (180s) purely for display wording - the
 // authoritative online/offline bit itself always comes from the server's `online`
 // field, never recomputed here from last_handshake_at.
@@ -776,12 +789,11 @@ function AccountDetailDialog({
                 <Button
                   variant="secondary"
                   onClick={() => {
-                    const slug = (configNodeName ?? 'node').toLowerCase().replace(/[^a-z0-9]+/g, '-')
                     const blob = new Blob([configText], { type: 'text/plain' })
                     const url = URL.createObjectURL(blob)
                     const link = document.createElement('a')
                     link.href = url
-                    link.download = `${account.label}-${slug}.conf`
+                    link.download = confFilename(`${account.label}-${configNodeName ?? 'node'}`)
                     link.click()
                     URL.revokeObjectURL(url)
                   }}
