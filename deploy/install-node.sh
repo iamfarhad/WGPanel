@@ -13,7 +13,7 @@
 #   sudo bash install-node.sh
 #
 # You will be asked for:
-#   - the control-plane address (e.g. panel.example.com:9090)
+#   - the control-plane address (e.g. panel.example.com:48443)
 #   - a one-time join token, generated from the admin panel: Nodes -> Add Node -> Generate Token
 #   - this node's WireGuard subnet .1 address (must match the subnet you set in the panel)
 #
@@ -74,7 +74,7 @@ install_docker() {
 prompt_config() {
   mkdir -p "$NODE_DIR"
 
-  read -rp "Control plane address (host:port, e.g. panel.example.com:9090): " PANEL_ADDR
+  read -rp "Control plane address (host:port, e.g. panel.example.com:48443): " PANEL_ADDR
   read -rp "Join token (from admin panel -> Nodes -> Add Node): " JOIN_TOKEN
   read -rp "A name for this node (e.g. de-frankfurt-1): " NODE_NAME
   read -rp "WireGuard listen port [51820]: " WG_PORT

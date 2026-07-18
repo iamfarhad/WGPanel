@@ -151,7 +151,9 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "127.0.0.1:3000:80"
+      # Loopback-only; Caddy reaches the frontend over the compose network, not this.
+      # High default port to avoid the very common :3000 clash (dev servers, Grafana, …).
+      - "127.0.0.1:${FRONTEND_PORT:-48088}:80"
     healthcheck:
       # busybox wget ships in nginx:alpine; a 200 on / (the SPA index) means nginx is
       # serving. Lets caddy wait on service_healthy instead of just service_started.
