@@ -94,6 +94,11 @@ tags:
     description: WireGuard server (node) directory and lifecycle.
   - name: Accounts
     description: WireGuard peer provisioning and lifecycle.
+  - name: Subscription
+    description: >-
+      Unauthenticated capability-URL surface for client apps: the per-account
+      subscription token in the path is the credential. Serves the account's
+      current config with steering-based node selection.
   - name: API Keys
     description: Bot/reseller credentials for the HMAC-signed integration surface. super_admin only.
   - name: Admin Users
@@ -405,6 +410,43 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
+    patch:
+      tags: [Nodes]
+      summary: Update mutable node fields
+      description: >-
+        Admin session with role >= `operator`. All fields optional; only provided
+        fields change. `wg_subnet` is deliberately not editable (peers may already
+        be allocated from it). `region: ""` explicitly clears the steering label.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                node_group: { type: string }
+                region: { type: string }
+                public_endpoint: { type: string }
+                capacity_max_peers: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Updated node.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Node" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`node_name_taken`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/nodes/{id}/join-token:
     post:
@@ -550,6 +592,13 @@ paths:
                 data_quota_gb: { type: number, nullable: true }
                 expiry_at: { type: string, format: date-time, nullable: true }
                 device_limit: { type: integer, nullable: true }
+                bandwidth_limit_mbps:
+                  type: integer
+                  nullable: true
+                  description: 0 removes the limit (unshaped); omitted = unchanged; 1-100000 sets the rate in Mbps.
+                device_limit_hard_enforce:
+                  type: boolean
+                  description: Toggle auto-suspend on device-limit breach (PRD-account-management.md §6.4).
       responses:
         "200":
           description: Updated account.
@@ -738,6 +787,229 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "409":
           description: "`no_peers` (this account has no node peers yet) or `node_missing_public_key` (the target node has no WireGuard public key recorded yet)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/accounts/{id}/devices:
+    get:
+      tags: [Accounts]
+      summary: List distinct client devices observed for this account
+      description: >-
+        Device tracking per PRD-account-management.md §6.4 - a "device" is a
+        distinct source endpoint (IP:port) reported by node agents from live
+        WireGuard handshakes. `active` = handshaked within the rolling 5-minute
+        window, the same definition device-limit enforcement uses. Rows unseen
+        for 30 days are pruned. Admin session (any role) or API key with `read`
+        permission.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        source_endpoint: { type: string, example: "203.0.113.7:51843" }
+                        node_id: { type: string, format: uuid }
+                        node_name: { type: string }
+                        first_seen_at: { type: string, format: date-time }
+                        last_seen_at: { type: string, format: date-time }
+                        active: { type: boolean }
+                  active_devices: { type: integer }
+                  device_limit: { type: integer, nullable: true }
+                  device_limit_exceeded: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/accounts/{id}/steer:
+    get:
+      tags: [Accounts]
+      summary: Rank this account's nodes, best connection choice first
+      description: >-
+        Smart node steering - scores every node the account has a peer on by
+        current load (active peers / capacity) and recent average CPU, with
+        online nodes always ahead of offline ones and `?region=` matches ahead
+        of the rest. Exactly one entry is `recommended`. This is the same engine
+        the subscription endpoint uses for its default node choice. Admin
+        session (any role) or API key with `read` permission.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: region
+          in: query
+          required: false
+          schema: { type: string }
+          description: Prefer nodes whose region label matches (case-insensitive).
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Nodes ranked best-first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        node_id: { type: string, format: uuid }
+                        name: { type: string }
+                        region: { type: string }
+                        public_endpoint: { type: string }
+                        online: { type: boolean }
+                        active_peers: { type: integer }
+                        capacity: { type: integer }
+                        cpu_percent: { type: number, nullable: true, description: Recent average; null when the node has no samples in the window. }
+                        score: { type: number, description: Composite load/CPU score - lower is better. }
+                        region_match: { type: boolean }
+                        recommended: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/accounts/{id}/subscription/rotate:
+    post:
+      tags: [Accounts]
+      summary: Rotate the account's subscription URL
+      description: >-
+        Replaces the subscription token immediately - the old URL stops working,
+        the response carries the account with its new `subscription_path`. The
+        WireGuard keypair is untouched (existing device tunnels keep working;
+        only the config-fetch URL changes). Admin session (role >= `operator`)
+        or API key with `update` permission.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Account with the new subscription_path.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Account" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/sub/{token}:
+    get:
+      tags: [Subscription]
+      summary: Fetch the account's current wg-quick config via its subscription URL
+      description: >-
+        Unauthenticated by design - the 192-bit random token in the path is the
+        credential (capability URL), suitable for pasting into client apps that
+        poll for their latest config. By default the best node is chosen by the
+        steering engine; `?node_id=` pins one, `?region=` biases the choice.
+        Suspended/expired accounts get 403 `account_suspended` rather than a
+        config that would silently fail to handshake. The token never appears
+        in access logs (redacted by the logging middleware).
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+        - name: node_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: region
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: wg-quick config text (Content-Disposition attachment).
+          content:
+            text/plain:
+              schema: { type: string }
+        "403":
+          description: "`account_suspended`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: Unknown token, or `node_not_found` for an explicit `node_id` the account has no peer on.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`no_peers` or `node_missing_public_key`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/sub/{token}/nodes:
+    get:
+      tags: [Subscription]
+      summary: List the nodes available to this subscription, steering-ranked
+      description: >-
+        The machine-readable companion to the config endpoint, for client apps
+        that want to offer a node picker. Same token-as-credential model; each
+        entry carries a ready-to-fetch `config_path`.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+        - name: region
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Nodes ranked best-first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        node_id: { type: string, format: uuid }
+                        name: { type: string }
+                        region: { type: string }
+                        online: { type: boolean }
+                        recommended: { type: boolean }
+                        config_path: { type: string, example: "/api/v1/sub/<token>?node_id=<uuid>" }
+        "403":
+          description: "`account_suspended`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: Unknown token.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
@@ -1064,7 +1336,11 @@ paths:
         Requires an admin session with role = `super_admin` - these are panel-wide
         defaults, the same trust tier as API keys and join tokens. Omitted fields are
         left unchanged (same PATCH convention as `PATCH /api/v1/accounts/{id}` - a
-        nullable field can be set this way but not explicitly cleared back to null).
+        nullable field can be set this way but not explicitly cleared back to null,
+        with two exceptions: sub_domain "" and sub_port 0 explicitly clear those).
+        Including panel_domain, sub_domain or sub_port also pushes the new domain
+        config to Caddy live - see domain_live_applied/domain_apply_error on the
+        response.
       security:
         - BearerAuth: []
       requestBody:
@@ -1077,7 +1353,7 @@ paths:
           description: Updated settings.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Settings" }
+              schema: { $ref: "#/components/schemas/SettingsUpdateResult" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -1167,6 +1443,10 @@ components:
         id: { type: string, format: uuid }
         name: { type: string }
         node_group: { type: string, example: default }
+        region:
+          type: string
+          example: eu
+          description: Free-form steering label; "" = unassigned. Subscription/steer requests carrying ?region= prefer nodes whose region matches (case-insensitive).
         public_endpoint: { type: string, example: "vpn1.example.com:51820" }
         wg_subnet: { type: string, example: "10.66.0.0/24" }
         capacity_max_peers: { type: integer, example: 250 }
@@ -1191,6 +1471,7 @@ components:
       properties:
         name: { type: string }
         node_group: { type: string, default: default }
+        region: { type: string, default: "", description: Optional steering label, e.g. "eu" or "us-east". }
         public_endpoint: { type: string, example: "vpn1.example.com:51820" }
         wg_subnet: { type: string, example: "10.66.0.0/24" }
         capacity_max_peers: { type: integer, default: 250 }
@@ -1220,13 +1501,42 @@ components:
         data_used_bytes: { type: integer, format: int64 }
         expiry_at: { type: string, format: date-time, nullable: true, description: null = never expires }
         device_limit: { type: integer, nullable: true, description: null = unlimited }
+        device_limit_exceeded:
+          type: boolean
+          description: >-
+            True while distinct active source endpoints (rolling 5-minute window)
+            exceed device_limit - a detection signal, not a cutoff, unless
+            device_limit_hard_enforce is on. Cleared automatically once back under.
+        device_limit_hard_enforce:
+          type: boolean
+          description: When true, exceeding the device limit auto-suspends the account (suspend_reason = device_limit) instead of only flagging it.
+        bandwidth_limit_mbps:
+          type: integer
+          nullable: true
+          description: Per-account rate limit enforced by every node agent via tc; null = unshaped.
+        subscription_path:
+          type: string
+          example: /api/v1/sub/0a1b2c...
+          description: >-
+            Relative capability URL serving this account's current wg-quick config
+            with no further authentication - prepend the panel's public origin.
+            Rotate via POST .../subscription/rotate if it leaks.
+        subscription_url:
+          type: string
+          nullable: true
+          example: https://sub.example.com:8443/api/v1/sub/0a1b2c...
+          description: >-
+            Absolute form of subscription_path on the separate subscription origin
+            (Settings' sub_domain/sub_port), or null when no separate origin is
+            configured - fall back to prepending the panel's own origin to
+            subscription_path, as before.
         status:
           type: string
           enum: [active, suspended, deleted]
         suspend_reason:
           type: string
           nullable: true
-          enum: [manual, abuse_flag, expired]
+          enum: [manual, abuse_flag, expired, quota_exceeded, device_limit]
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         node_id:
@@ -1266,6 +1576,7 @@ components:
         data_quota_gb: { type: number, nullable: true }
         expiry_at: { type: string, format: date-time, nullable: true }
         device_limit: { type: integer, nullable: true }
+        bandwidth_limit_mbps: { type: integer, nullable: true, minimum: 1, maximum: 100000, description: Omit/null = unshaped. }
 
     ApiKey:
       type: object
@@ -1358,4 +1669,58 @@ components:
           type: string
           nullable: true
           description: Shown to other admins who need help (e.g. an email address or Telegram handle).
-      required: [default_node_capacity]
+        panel_domain:
+          type: string
+          nullable: true
+          example: panel.example.com
+          description: >-
+            The live-managed TLS domain Caddy serves the panel on (unlike
+            public_base_url, which is informational only). Setting it via PATCH
+            persists it AND pushes it to Caddy's admin API live - see
+            domain_live_applied/domain_apply_error on the PATCH response. null =
+            never set from the panel; Caddy runs the .env PANEL_DOMAIN it booted with.
+        client_dns:
+          type: string
+          example: "1.1.1.1, 1.0.0.1"
+          description: >-
+            The DNS = line written into every generated wg-quick config
+            (comma-separated). Takes effect on the next config download.
+        sub_domain:
+          type: string
+          nullable: true
+          example: sub.example.com
+          description: >-
+            Optional separate domain for subscription URLs. When set, Caddy serves
+            ONLY /api/v1/sub/* on it (with its own automatic certificate) and
+            account responses carry an absolute subscription_url built from it.
+            Live-pushed like panel_domain. On PATCH, "" explicitly clears it back
+            to off (unlike other nullable settings, which can't be cleared).
+        sub_port:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 65535
+          description: >-
+            Public HTTPS port for the subscription origin. null = 443 (shares the
+            panel's port via SNI, no extra setup). Any other port must match the
+            SUB_PORT published in deploy/.env. On PATCH, 0 explicitly resets to
+            the default.
+      required: [default_node_capacity, client_dns]
+
+    SettingsUpdateResult:
+      allOf:
+        - $ref: "#/components/schemas/Settings"
+        - type: object
+          properties:
+            domain_live_applied:
+              type: boolean
+              description: >-
+                Only meaningful when the request included panel_domain, sub_domain
+                or sub_port: true when the new config was pushed to Caddy live.
+            domain_apply_error:
+              type: string
+              nullable: true
+              description: >-
+                Why the live push failed, if it did. The values are still persisted
+                either way; the API re-applies them from the database on its next
+                startup.

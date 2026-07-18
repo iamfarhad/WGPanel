@@ -15,6 +15,8 @@ import {
   Sun,
   Moon,
   Monitor,
+  BookOpen,
+  ExternalLink,
 } from 'lucide-react'
 import { useAuth } from '../lib/auth'
 import type { AdminRole } from '../lib/auth'
@@ -25,6 +27,9 @@ interface NavItem {
   label: string
   icon: typeof LayoutDashboard
   minRole?: AdminRole
+  // External items are plain links opened in a new tab (e.g. the static Swagger
+  // page), not SPA routes - they render as <a>, never match as "active".
+  external?: boolean
 }
 
 interface NavGroup {
@@ -53,6 +58,9 @@ const navGroups: NavGroup[] = [
       { to: '/admins', label: 'Admin Users', icon: ShieldCheck, minRole: 'super_admin' },
       { to: '/audit-log', label: 'Audit Log', icon: ScrollText, minRole: 'super_admin' },
       { to: '/settings', label: 'Settings', icon: Settings, minRole: 'super_admin' },
+      // No minRole: the Swagger page is a static asset nginx serves to anyone
+      // with the URL anyway, so hiding the link would only be security theater.
+      { to: '/api-docs.html', label: 'API Docs', icon: BookOpen, external: true },
     ],
   },
 ]
@@ -129,30 +137,45 @@ export function DashboardLayout() {
               </p>
             )}
             <div className="space-y-0.5">
-              {group.items.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  onClick={() => setMobileOpen(false)}
-                  className={({ isActive }) =>
-                    `group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                      isActive
-                        ? 'bg-accent-soft text-accent-fg'
-                        : 'text-muted hover:bg-inset hover:text-fg'
-                    }`
-                  }
-                >
-                  {({ isActive }) => (
-                    <>
-                      {isActive && (
-                        <span className="absolute top-1/2 left-0 h-4 w-1 -translate-y-1/2 rounded-r-full bg-accent" />
-                      )}
-                      <item.icon className={`h-4 w-4 shrink-0 ${isActive ? 'text-accent-fg' : 'text-faint group-hover:text-muted'}`} />
-                      {item.label}
-                    </>
-                  )}
-                </NavLink>
-              ))}
+              {group.items.map((item) =>
+                item.external ? (
+                  <a
+                    key={item.to}
+                    href={item.to}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={() => setMobileOpen(false)}
+                    className="group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted transition-colors hover:bg-inset hover:text-fg"
+                  >
+                    <item.icon className="h-4 w-4 shrink-0 text-faint group-hover:text-muted" />
+                    {item.label}
+                    <ExternalLink className="ml-auto h-3.5 w-3.5 shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+                  </a>
+                ) : (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    onClick={() => setMobileOpen(false)}
+                    className={({ isActive }) =>
+                      `group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                        isActive
+                          ? 'bg-accent-soft text-accent-fg'
+                          : 'text-muted hover:bg-inset hover:text-fg'
+                      }`
+                    }
+                  >
+                    {({ isActive }) => (
+                      <>
+                        {isActive && (
+                          <span className="absolute top-1/2 left-0 h-4 w-1 -translate-y-1/2 rounded-r-full bg-accent" />
+                        )}
+                        <item.icon className={`h-4 w-4 shrink-0 ${isActive ? 'text-accent-fg' : 'text-faint group-hover:text-muted'}`} />
+                        {item.label}
+                      </>
+                    )}
+                  </NavLink>
+                ),
+              )}
             </div>
           </div>
         ))}

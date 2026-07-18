@@ -1336,7 +1336,11 @@ paths:
         Requires an admin session with role = `super_admin` - these are panel-wide
         defaults, the same trust tier as API keys and join tokens. Omitted fields are
         left unchanged (same PATCH convention as `PATCH /api/v1/accounts/{id}` - a
-        nullable field can be set this way but not explicitly cleared back to null).
+        nullable field can be set this way but not explicitly cleared back to null,
+        with two exceptions: sub_domain "" and sub_port 0 explicitly clear those).
+        Including panel_domain, sub_domain or sub_port also pushes the new domain
+        config to Caddy live - see domain_live_applied/domain_apply_error on the
+        response.
       security:
         - BearerAuth: []
       requestBody:
@@ -1349,7 +1353,7 @@ paths:
           description: Updated settings.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Settings" }
+              schema: { $ref: "#/components/schemas/SettingsUpdateResult" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -1517,6 +1521,15 @@ components:
             Relative capability URL serving this account's current wg-quick config
             with no further authentication - prepend the panel's public origin.
             Rotate via POST .../subscription/rotate if it leaks.
+        subscription_url:
+          type: string
+          nullable: true
+          example: https://sub.example.com:8443/api/v1/sub/0a1b2c...
+          description: >-
+            Absolute form of subscription_path on the separate subscription origin
+            (Settings' sub_domain/sub_port), or null when no separate origin is
+            configured - fall back to prepending the panel's own origin to
+            subscription_path, as before.
         status:
           type: string
           enum: [active, suspended, deleted]
@@ -1656,4 +1669,58 @@ components:
           type: string
           nullable: true
           description: Shown to other admins who need help (e.g. an email address or Telegram handle).
-      required: [default_node_capacity]
+        panel_domain:
+          type: string
+          nullable: true
+          example: panel.example.com
+          description: >-
+            The live-managed TLS domain Caddy serves the panel on (unlike
+            public_base_url, which is informational only). Setting it via PATCH
+            persists it AND pushes it to Caddy's admin API live - see
+            domain_live_applied/domain_apply_error on the PATCH response. null =
+            never set from the panel; Caddy runs the .env PANEL_DOMAIN it booted with.
+        client_dns:
+          type: string
+          example: "1.1.1.1, 1.0.0.1"
+          description: >-
+            The DNS = line written into every generated wg-quick config
+            (comma-separated). Takes effect on the next config download.
+        sub_domain:
+          type: string
+          nullable: true
+          example: sub.example.com
+          description: >-
+            Optional separate domain for subscription URLs. When set, Caddy serves
+            ONLY /api/v1/sub/* on it (with its own automatic certificate) and
+            account responses carry an absolute subscription_url built from it.
+            Live-pushed like panel_domain. On PATCH, "" explicitly clears it back
+            to off (unlike other nullable settings, which can't be cleared).
+        sub_port:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 65535
+          description: >-
+            Public HTTPS port for the subscription origin. null = 443 (shares the
+            panel's port via SNI, no extra setup). Any other port must match the
+            SUB_PORT published in deploy/.env. On PATCH, 0 explicitly resets to
+            the default.
+      required: [default_node_capacity, client_dns]
+
+    SettingsUpdateResult:
+      allOf:
+        - $ref: "#/components/schemas/Settings"
+        - type: object
+          properties:
+            domain_live_applied:
+              type: boolean
+              description: >-
+                Only meaningful when the request included panel_domain, sub_domain
+                or sub_port: true when the new config was pushed to Caddy live.
+            domain_apply_error:
+              type: string
+              nullable: true
+              description: >-
+                Why the live push failed, if it did. The values are still persisted
+                either way; the API re-applies them from the database on its next
+                startup.
