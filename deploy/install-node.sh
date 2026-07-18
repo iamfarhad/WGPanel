@@ -71,17 +71,75 @@ install_docker() {
   systemctl enable --now docker
 }
 
+# read_required re-prompts until the answer is non-empty. Without this, a stray
+# blank line in a paste (very easy to hit when copy-pasting the join token with a
+# trailing newline) silently answers the NEXT prompt, and required settings land
+# empty in .env - the node then fails in ways that only surface much later.
+# Pasted CRs (CRLF clipboards) are stripped too.
+read_required() {
+  local prompt="$1" var="$2" val=""
+  while [[ -z "$val" ]]; do
+    read -rp "$prompt" val
+    val="${val//$'\r'/}"
+  done
+  printf -v "$var" '%s' "$val"
+}
+
 prompt_config() {
   mkdir -p "$NODE_DIR"
 
-  read -rp "Control plane address (host:port, e.g. panel.example.com:48443): " PANEL_ADDR
-  read -rp "Join token (from admin panel -> Nodes -> Add Node): " JOIN_TOKEN
-  read -rp "A name for this node (e.g. de-frankfurt-1): " NODE_NAME
-  read -rp "WireGuard listen port [51820]: " WG_PORT
-  WG_PORT=${WG_PORT:-51820}
+  # The agent dials https://<addr>/agent/* - that's the panel's NODE_AGENT_PORT
+  # (48443 by default), NOT the panel web UI port and NOT WireGuard's UDP port.
+  # Getting this wrong is the most common install mistake, so probe it over TCP
+  # before accepting the answer.
+  while true; do
+    read_required "Control plane address (host:port - the panel's NODE_AGENT_PORT, e.g. panel.example.com:48443): " PANEL_ADDR
+    if [[ "$PANEL_ADDR" != *:* ]]; then
+      warn "Expected host:port, e.g. panel.example.com:48443."
+      continue
+    fi
+    if ! timeout 5 bash -c ": </dev/tcp/${PANEL_ADDR%:*}/${PANEL_ADDR##*:}" 2>/dev/null; then
+      warn "Cannot reach ${PANEL_ADDR} over TCP. Check the address: the port must be the"
+      warn "panel's node-agent port (NODE_AGENT_PORT in the panel's .env, 48443 by default),"
+      warn "not the WireGuard port, and it must be open in the panel server's firewall."
+      read -rp "Use ${PANEL_ADDR} anyway? [y/N]: " CONFIRM
+      [[ "${CONFIRM,,}" == y* ]] && break
+      continue
+    fi
+    # Reachable is not enough: the panel's WEB port (443) also answers TCP. The real
+    # agent endpoint replies with plain text/JSON, never HTML - an HTML answer means
+    # this is the web UI and registration would die with an nginx "405 Not Allowed".
+    if curl -skm 5 "https://${PANEL_ADDR}/agent/register" 2>/dev/null | grep -qiE '<html|<!doctype'; then
+      warn "${PANEL_ADDR} answers like the panel's WEB UI, not the node-agent API."
+      warn "Enter the panel's node-agent port instead: NODE_AGENT_PORT in the panel"
+      warn "server's /opt/wgpanel/.env (48443 by default) - e.g. ${PANEL_ADDR%:*}:48443."
+      read -rp "Use ${PANEL_ADDR} anyway? [y/N]: " CONFIRM
+      [[ "${CONFIRM,,}" == y* ]] && break
+      continue
+    fi
+    break
+  done
+
+  read_required "Join token (from admin panel -> Nodes -> Add Node): " JOIN_TOKEN
+  read_required "A name for this node (e.g. de-frankfurt-1): " NODE_NAME
+
+  while true; do
+    read -rp "WireGuard listen port [51820]: " WG_PORT
+    WG_PORT="${WG_PORT//$'\r'/}"
+    WG_PORT=${WG_PORT:-51820}
+    [[ "$WG_PORT" =~ ^[0-9]+$ ]] && break
+    warn "The port must be a number."
+  done
+
   read -rp "WireGuard interface name [wg0]: " WG_IFACE
+  WG_IFACE="${WG_IFACE//$'\r'/}"
   WG_IFACE=${WG_IFACE:-wg0}
-  read -rp "This node's own WireGuard interface address, with prefix (the .1 of the subnet you set in the panel, e.g. 10.66.0.1/24): " WG_IFACE_ADDR
+
+  while true; do
+    read_required "This node's own WireGuard interface address, with prefix (the .1 of the subnet you set in the panel, e.g. 10.66.0.1/24): " WG_IFACE_ADDR
+    [[ "$WG_IFACE_ADDR" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] && break
+    warn "Expected an IPv4 address with a prefix length, e.g. 10.66.0.1/24."
+  done
 
   cat > "$ENV_FILE" <<EOF
 NODE_IMAGE=${NODE_IMAGE}
@@ -166,7 +224,15 @@ build_image_from_source() {
 setup_firewall() {
   log "Configuring firewall (ufw)..."
   ufw allow OpenSSH >/dev/null 2>&1 || true
-  ufw allow "${WG_PORT}/udp"
+  # A broken ufw/iptables ("ERROR: problem running iptables/ufw-init" - classically a
+  # kernel upgraded without a reboot, leaving the running kernel unable to load
+  # iptables modules) must not abort the install this late. The node works without
+  # the rule; the port just has to be opened once ufw is healthy again.
+  if ! ufw allow "${WG_PORT}/udp"; then
+    warn "ufw could not add the ${WG_PORT}/udp rule (see the error above) - continuing anyway."
+    warn "Clients can't connect until UDP ${WG_PORT} is open. If the error mentions iptables,"
+    warn "a reboot usually fixes it (pending kernel upgrade); then run: ufw allow ${WG_PORT}/udp"
+  fi
   # ufw's default FORWARD policy is DROP, which also drops the traffic Docker forwards
   # for the node container's clients (container bridge -> host egress). Set it to ACCEPT
   # so Docker's own specific per-bridge FORWARD rules govern forwarding - without this,

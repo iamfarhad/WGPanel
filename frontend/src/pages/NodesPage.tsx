@@ -34,6 +34,9 @@ interface JoinToken {
   token: string
   expires_at: string | null
   unlimited: boolean
+  // The exact host:port to give install-node.sh as the control-plane address
+  // (panel domain + NODE_AGENT_PORT) - null if no panel domain is configured.
+  panel_addr: string | null
 }
 
 interface MetricsSample {
@@ -317,6 +320,30 @@ function JoinTokenDialog({
             <Copy className="h-4 w-4" />
             Copy token
           </Button>
+          {token.panel_addr && (
+            <div className="border-t border-edge pt-3">
+              <p className="text-sm leading-relaxed text-muted">
+                When the installer asks for the <span className="font-medium text-fg">control plane address</span>,
+                enter exactly this — it is the panel's node-agent port, <em>not</em> the web UI address:
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <code className="min-w-0 flex-1 truncate rounded-lg border border-edge bg-inset px-3 py-2 font-mono text-xs leading-5 text-fg">
+                  {token.panel_addr}
+                </code>
+                <Button
+                  variant="secondary"
+                  size="icon"
+                  title="Copy control plane address"
+                  onClick={() => {
+                    navigator.clipboard.writeText(token.panel_addr!)
+                    push('success', 'Control plane address copied')
+                  }}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </Dialog>

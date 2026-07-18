@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -109,6 +110,14 @@ func register(cfg config, p paths) (*identity, error) {
 
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
+		// An HTML body (or a bare 405) means we reached a web server, not the
+		// agent API: WGPANEL_PANEL_ADDR points at the panel's WEB port instead of
+		// NODE_AGENT_PORT. Say so - the raw nginx/SPA error page explains nothing.
+		if resp.StatusCode == http.StatusMethodNotAllowed ||
+			strings.Contains(resp.Header.Get("Content-Type"), "text/html") ||
+			bytes.Contains(bytes.ToLower(body), []byte("<html")) {
+			return nil, fmt.Errorf("register rejected: %s - this address answers like the panel's web UI, not the node-agent API; WGPANEL_PANEL_ADDR must use the panel's NODE_AGENT_PORT (48443 by default, see the panel server's .env), not the web/HTTPS port", resp.Status)
+		}
 		return nil, fmt.Errorf("register rejected: %s: %s", resp.Status, string(body))
 	}
 

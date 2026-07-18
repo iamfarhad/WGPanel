@@ -39,6 +39,10 @@ type Server struct {
 	// caDataDir) so backup can include it and restore can replace it. Empty
 	// disables the CA portion of backup/restore.
 	CADataDir string
+	// NodeAgentPort is the NODE_AGENT_PORT this API's agent listener is published
+	// on - surfaced in the join-token response so the panel can show the exact
+	// control-plane address install-node.sh needs (see controlPlaneAddr).
+	NodeAgentPort string
 }
 
 // Routes builds the full handler tree: public routes (proxied by Caddy), the

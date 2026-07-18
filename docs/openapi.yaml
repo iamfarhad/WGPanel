@@ -478,7 +478,16 @@ paths:
                 type: object
                 properties:
                   token: { type: string }
-                  expires_at: { type: string, format: date-time }
+                  expires_at: { type: string, format: date-time, nullable: true }
+                  unlimited: { type: boolean }
+                  panel_addr:
+                    type: string
+                    nullable: true
+                    description: >-
+                      The exact host:port to give install-node.sh as the control-plane
+                      address (panel domain + NODE_AGENT_PORT). Null when no panel
+                      domain is configured. This is NOT the panel's web/HTTPS port.
+                    example: panel.example.com:48443
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -951,9 +960,13 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: wg-quick config text (Content-Disposition attachment).
+          description: >-
+            wg-quick config text (Content-Disposition attachment). Served as
+            `application/octet-stream` rather than `text/plain` so Android
+            Chrome keeps the `.conf` extension instead of renaming the
+            download to `.conf.txt`, which the WireGuard app can't import.
           content:
-            text/plain:
+            application/octet-stream:
               schema: { type: string }
         "403":
           description: "`account_suspended`"

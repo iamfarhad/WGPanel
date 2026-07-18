@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -206,6 +207,27 @@ type joinTokenResponse struct {
 	Token     string  `json:"token"`
 	ExpiresAt *string `json:"expires_at"` // null for an unlimited token - it never expires
 	Unlimited bool    `json:"unlimited"`
+	// PanelAddr is the exact host:port install-node.sh must be given as the
+	// "control plane address" (panel domain + NODE_AGENT_PORT). Null when the
+	// deployment has no domain configured. Shown next to the token because
+	// pointing the agent at the panel's WEB port instead is the most common
+	// node-onboarding mistake - the agent then gets the SPA's HTML back.
+	PanelAddr *string `json:"panel_addr"`
+}
+
+// controlPlaneAddr assembles the host:port a node agent must dial: the panel
+// domain (live setting, falling back to the boot-time PANEL_DOMAIN) plus the
+// agent listener's NODE_AGENT_PORT. Nil when either half is unknown.
+func (s *Server) controlPlaneAddr(ctx context.Context) *string {
+	host := s.BootPanelDomain
+	if settings, err := s.Store.GetSettings(ctx); err == nil && settings.PanelDomain != nil && *settings.PanelDomain != "" {
+		host = *settings.PanelDomain
+	}
+	if host == "" || s.NodeAgentPort == "" {
+		return nil
+	}
+	addr := host + ":" + s.NodeAgentPort
+	return &addr
 }
 
 type generateJoinTokenRequest struct {
@@ -278,6 +300,7 @@ func (s *Server) handleGenerateJoinToken(w http.ResponseWriter, r *http.Request)
 		Token:     rawToken,
 		ExpiresAt: expiresAt,
 		Unlimited: req.Unlimited,
+		PanelAddr: s.controlPlaneAddr(ctx),
 	})
 }
 
