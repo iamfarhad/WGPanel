@@ -64,9 +64,9 @@ type accountResponse struct {
 	// prepending the panel's own origin to SubscriptionPath, as before.
 	SubscriptionURL *string `json:"subscription_url"`
 	Status          string  `json:"status"`
-	SuspendReason    *string `json:"suspend_reason"`
-	CreatedAt        string  `json:"created_at"`
-	UpdatedAt        string  `json:"updated_at"`
+	SuspendReason   *string `json:"suspend_reason"`
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
 	// NodeID/AssignedIP are deprecated - kept for one release as a bot-integration
 	// compatibility bridge from the pre-multi-node single-peer model (see
 	// docs/STORY-09-multi-node-accounts.md). They mirror the account's first peer
