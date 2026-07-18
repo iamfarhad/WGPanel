@@ -126,9 +126,11 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("PATCH /api/v1/settings", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleUpdateSettings))))
 
 	// Backup & restore (see backup.go's doc comment) - both directions are
-	// super_admin-only: the file contains admin password hashes, the CA private
-	// key and every subscription token, and restore replaces ALL panel state.
-	mux.Handle("GET /api/v1/backup", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleDownloadBackup))))
+	// super_admin-only: the decrypted file contains admin password hashes, the CA
+	// private key, the .env encryption keys and every subscription token, and
+	// restore replaces ALL panel state. Download is a POST because the encryption
+	// password rides in the request body.
+	mux.Handle("POST /api/v1/backup", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleDownloadBackup))))
 	mux.Handle("POST /api/v1/backup/restore", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleRestoreBackup))))
 
 	return s.loggingMiddleware(mux)

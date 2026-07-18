@@ -12,7 +12,7 @@ import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Field } from '../components/ui/Field'
 import { Skeleton } from '../components/ui/Skeleton'
-import { ConfirmDialog } from '../components/ui/ConfirmDialog'
+import { Dialog } from '../components/ui/Dialog'
 
 interface Settings {
   public_base_url: string | null
@@ -43,16 +43,38 @@ function BackupCard() {
   const queryClient = useQueryClient()
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  const [downloadOpen, setDownloadOpen] = useState(false)
+  const [downloadPassword, setDownloadPassword] = useState('')
+  const [downloadPasswordConfirm, setDownloadPasswordConfirm] = useState('')
   const [downloading, setDownloading] = useState(false)
+
   const [restoreFile, setRestoreFile] = useState<File | null>(null)
+  const [restorePassword, setRestorePassword] = useState('')
   const [restoring, setRestoring] = useState(false)
   const [restoreResult, setRestoreResult] = useState<RestoreResult | null>(null)
+
+  function closeDownload() {
+    setDownloadOpen(false)
+    setDownloadPassword('')
+    setDownloadPasswordConfirm('')
+  }
+
+  function closeRestore() {
+    setRestoreFile(null)
+    setRestorePassword('')
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
 
   async function downloadBackup() {
     setDownloading(true)
     try {
       const res = await fetch('/api/v1/backup', {
-        headers: { Authorization: `Bearer ${getAccessToken() ?? ''}` },
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${getAccessToken() ?? ''}`,
+        },
+        body: JSON.stringify({ password: downloadPassword }),
       })
       if (!res.ok) {
         let message = 'Failed to create backup'
@@ -72,7 +94,8 @@ function BackupCard() {
       a.download = filename
       a.click()
       URL.revokeObjectURL(url)
-      push('success', 'Backup downloaded - store it somewhere safe, it contains every panel secret')
+      closeDownload()
+      push('success', 'Backup downloaded - keep the file AND its password safe; the password cannot be recovered')
     } catch (err) {
       push('error', err instanceof Error ? err.message : 'Failed to create backup')
     } finally {
@@ -84,18 +107,24 @@ function BackupCard() {
     if (!restoreFile) return
     setRestoring(true)
     try {
-      const body = await restoreFile.text()
-      const result = await apiFetch<RestoreResult>('/api/v1/backup/restore', { method: 'POST', body })
+      const backup = JSON.parse(await restoreFile.text()) as unknown
+      const result = await apiFetch<RestoreResult>('/api/v1/backup/restore', {
+        method: 'POST',
+        body: JSON.stringify({ password: restorePassword, backup }),
+      })
       setRestoreResult(result)
       // Everything cached client-side describes the pre-restore panel.
       queryClient.clear()
+      closeRestore()
       push('success', 'Backup restored')
     } catch (err) {
-      push('error', err instanceof ApiError ? err.message : 'Restore failed')
+      if (err instanceof SyntaxError) {
+        push('error', 'That file is not a WGPanel backup')
+      } else {
+        push('error', err instanceof ApiError ? err.message : 'Restore failed')
+      }
     } finally {
       setRestoring(false)
-      setRestoreFile(null)
-      if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }
 
@@ -104,25 +133,25 @@ function BackupCard() {
       <SectionHeader
         icon={DatabaseBackup}
         title="Backup & restore"
-        description="One JSON file with everything except deploy/.env: admins, nodes, accounts and their keys, API keys, settings, audit log, and the node CA. Treat it like the database itself - anyone holding it holds the panel."
+        description="One password-encrypted file with everything: admins, nodes, accounts and their keys, API keys, settings, audit log, the node CA, and the encryption keys from deploy/.env. Restoring needs only this file and its password - even on a brand-new server."
       />
       <div className="space-y-4 p-6">
         <div className="flex items-center justify-between gap-4">
           <p className="text-sm leading-relaxed text-muted">
-            Metrics history (usage charts) is not included; account usage totals are. Restoring on a new server also
-            needs the original <code>deploy/.env</code> - account keys are encrypted with its{' '}
-            <code>ACCOUNT_KEY_ENCRYPTION_KEY</code>.
+            The file is useless without the password you choose - and the password cannot be recovered, so store both
+            safely. Metrics history (usage charts) is not included; account usage totals are.
           </p>
-          <Button variant="secondary" onClick={downloadBackup} disabled={downloading}>
+          <Button variant="secondary" onClick={() => setDownloadOpen(true)}>
             <Download className="h-4 w-4" />
-            {downloading ? 'Preparing…' : 'Download backup'}
+            Download backup
           </Button>
         </div>
 
         <div className="flex items-center justify-between gap-4 border-t border-edge pt-4">
           <p className="text-sm leading-relaxed text-muted">
             Restore replaces <span className="font-semibold text-fg">all</span> current panel data with the file's
-            contents - including admin users, so your own login may change.
+            contents - including admin users, so your own login may change. Works on a fresh install with new{' '}
+            <code>.env</code> keys: account keys are re-encrypted automatically.
           </p>
           <input
             ref={fileInputRef}
@@ -133,7 +162,7 @@ function BackupCard() {
           />
           <Button variant="danger" onClick={() => fileInputRef.current?.click()} disabled={restoring}>
             <Upload className="h-4 w-4" />
-            {restoring ? 'Restoring…' : 'Restore backup'}
+            Restore backup
           </Button>
         </div>
 
@@ -153,19 +182,88 @@ function BackupCard() {
         )}
       </div>
 
-      <ConfirmDialog
-        open={restoreFile !== null}
-        onClose={() => {
-          setRestoreFile(null)
-          if (fileInputRef.current) fileInputRef.current.value = ''
-        }}
-        onConfirm={restoreBackup}
-        title="Replace all panel data?"
-        description={`Everything currently in this panel - accounts, nodes, admins, API keys, settings, audit log - will be replaced by "${restoreFile?.name ?? ''}". This cannot be undone. Download a backup of the current state first if you might need it.`}
-        confirmLabel="Replace everything"
-        danger
-        submitting={restoring}
-      />
+      <Dialog open={downloadOpen} onClose={closeDownload} title="Encrypt backup">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            downloadBackup()
+          }}
+          className="space-y-4"
+        >
+          <p className="text-sm leading-relaxed text-muted">
+            Choose a password for this backup. Restoring it - here or on a new server - requires exactly this
+            password; it is not stored anywhere and cannot be recovered.
+          </p>
+          <Field label="Backup password">
+            <Input
+              type="password"
+              value={downloadPassword}
+              onChange={(e) => setDownloadPassword(e.target.value)}
+              minLength={8}
+              placeholder="At least 8 characters"
+              autoFocus
+              required
+            />
+          </Field>
+          <Field label="Confirm password">
+            <Input
+              type="password"
+              value={downloadPasswordConfirm}
+              onChange={(e) => setDownloadPasswordConfirm(e.target.value)}
+              required
+            />
+          </Field>
+          {downloadPasswordConfirm.length > 0 && downloadPassword !== downloadPasswordConfirm && (
+            <p className="text-sm text-rose-600 dark:text-rose-400">Passwords do not match.</p>
+          )}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" type="button" onClick={closeDownload} disabled={downloading}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={downloading || downloadPassword.length < 8 || downloadPassword !== downloadPasswordConfirm}
+            >
+              <Download className="h-4 w-4" />
+              {downloading ? 'Encrypting…' : 'Download'}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
+
+      <Dialog open={restoreFile !== null} onClose={closeRestore} title="Replace all panel data?">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            restoreBackup()
+          }}
+          className="space-y-4"
+        >
+          <p className="text-sm leading-relaxed text-muted">
+            Everything currently in this panel - accounts, nodes, admins, API keys, settings, audit log - will be
+            replaced by <span className="font-medium text-fg">{restoreFile?.name}</span>. This cannot be undone.
+            Download a backup of the current state first if you might need it.
+          </p>
+          <Field label="Backup password">
+            <Input
+              type="password"
+              value={restorePassword}
+              onChange={(e) => setRestorePassword(e.target.value)}
+              placeholder="The password this backup was encrypted with"
+              autoFocus
+              required
+            />
+          </Field>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" type="button" onClick={closeRestore} disabled={restoring}>
+              Cancel
+            </Button>
+            <Button variant="danger" type="submit" disabled={restoring || restorePassword.length === 0}>
+              {restoring ? 'Restoring…' : 'Replace everything'}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
     </Card>
   )
 }
