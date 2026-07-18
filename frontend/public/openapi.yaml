@@ -107,6 +107,11 @@ tags:
     description: Append-only record of every mutating action. super_admin only.
   - name: Settings
     description: Panel-wide configuration and defaults. Readable by any admin, editable by super_admin only.
+  - name: Backup
+    description: >-
+      Whole-panel backup & restore as a single JSON file. super_admin only, both
+      directions audit-logged. The file contains every panel secret except
+      deploy/.env - treat it like the database itself.
   - name: Health
     description: Liveness/readiness probes.
   - name: Node Agent
@@ -1359,6 +1364,72 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/backup:
+    get:
+      tags: [Backup]
+      summary: Download a full panel backup
+      description: >-
+        Requires role = `super_admin`. Streams a JSON attachment containing every
+        config table (admins, nodes, accounts, account_peers, account_devices,
+        api_keys, panel_settings, audit_log) plus the node-mTLS CA keypair.
+        Metrics history (TimescaleDB hypertables) is excluded - account usage
+        totals live on the accounts rows and are included. Account private keys
+        remain encrypted with the deployment's ACCOUNT_KEY_ENCRYPTION_KEY, so a
+        backup is only restorable alongside the original deploy/.env.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: The backup file (Content-Disposition attachment).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupFile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/backup/restore:
+    post:
+      tags: [Backup]
+      summary: Replace ALL panel state with an uploaded backup
+      description: >-
+        Requires role = `super_admin`. Atomically replaces the contents of every
+        backed-up table with the file's rows (a table absent from the file is
+        emptied, not skipped) and writes the CA keypair to disk - if that keypair
+        differs from the running one, node-agent mTLS needs an api restart to pick
+        it up (`restart_required` on the response). Validated before anything is
+        touched: the file's schema version must exactly match this panel's
+        (`schema_mismatch`) and its key canary must decrypt with the current
+        ACCOUNT_KEY_ENCRYPTION_KEY (`encryption_key_mismatch`). Restoring replaces
+        admin users too - the caller's own login may change.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BackupFile" }
+      responses:
+        "200":
+          description: Restore succeeded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RestoreResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`schema_mismatch` or `encryption_key_mismatch` - nothing was changed."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "413":
+          description: Backup file exceeds the 256MB limit.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
 components:
   securitySchemes:
     BearerAuth:
@@ -1706,6 +1777,53 @@ components:
             SUB_PORT published in deploy/.env. On PATCH, 0 explicitly resets to
             the default.
       required: [default_node_capacity, client_dns]
+
+    BackupFile:
+      type: object
+      description: >-
+        The wgpanel-backup/1 format. `tables` maps each table name to its rows as
+        plain JSON objects (the exact json_agg of the table); `key_canary` is a
+        fixed string encrypted with ACCOUNT_KEY_ENCRYPTION_KEY so restore can
+        verify key compatibility up front; `ca` is the node-mTLS CA keypair (PEM),
+        omitted if the deployment has none.
+      required: [format, created_at, migrations, key_canary, tables]
+      properties:
+        format: { type: string, enum: [wgpanel-backup/1] }
+        created_at: { type: string, format: date-time }
+        migrations:
+          type: array
+          items: { type: string }
+          description: Applied migration filenames at backup time - restore requires an exact match.
+        key_canary: { type: string }
+        ca:
+          type: object
+          nullable: true
+          properties:
+            cert_pem: { type: string }
+            key_pem: { type: string }
+          required: [cert_pem, key_pem]
+        tables:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: object, additionalProperties: true }
+
+    RestoreResult:
+      type: object
+      required: [restored, ca_restored, restart_required]
+      properties:
+        restored:
+          type: object
+          additionalProperties: { type: integer }
+          description: Rows restored per table.
+        ca_restored:
+          type: boolean
+          description: The backup carried a CA keypair and it was written to disk.
+        restart_required:
+          type: boolean
+          description: >-
+            The restored CA differs from the one loaded at startup - node-agent
+            mTLS keeps using the old CA until the api container is restarted.
 
     SettingsUpdateResult:
       allOf:

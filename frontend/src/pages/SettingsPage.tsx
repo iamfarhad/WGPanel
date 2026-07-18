@@ -1,8 +1,10 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Save, ShieldCheck, SlidersHorizontal } from 'lucide-react'
+import { DatabaseBackup, Download, Save, ShieldCheck, SlidersHorizontal, Upload } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { apiFetch, ApiError } from '../lib/api'
+import { getAccessToken } from '../lib/tokenStore'
+import { useAuth } from '../lib/auth'
 import { useToast } from '../lib/toast'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
@@ -10,6 +12,7 @@ import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Field } from '../components/ui/Field'
 import { Skeleton } from '../components/ui/Skeleton'
+import { ConfirmDialog } from '../components/ui/ConfirmDialog'
 
 interface Settings {
   public_base_url: string | null
@@ -26,6 +29,145 @@ interface Settings {
 interface UpdateSettingsResult extends Settings {
   domain_live_applied: boolean
   domain_apply_error: string | null
+}
+
+interface RestoreResult {
+  restored: Record<string, number>
+  ca_restored: boolean
+  restart_required: boolean
+}
+
+function BackupCard() {
+  const { push } = useToast()
+  const { logout } = useAuth()
+  const queryClient = useQueryClient()
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const [downloading, setDownloading] = useState(false)
+  const [restoreFile, setRestoreFile] = useState<File | null>(null)
+  const [restoring, setRestoring] = useState(false)
+  const [restoreResult, setRestoreResult] = useState<RestoreResult | null>(null)
+
+  async function downloadBackup() {
+    setDownloading(true)
+    try {
+      const res = await fetch('/api/v1/backup', {
+        headers: { Authorization: `Bearer ${getAccessToken() ?? ''}` },
+      })
+      if (!res.ok) {
+        let message = 'Failed to create backup'
+        try {
+          const body = (await res.json()) as { error?: { message?: string } }
+          message = body?.error?.message ?? message
+        } catch {
+          // Not JSON - keep the generic message.
+        }
+        throw new Error(message)
+      }
+      const filename =
+        res.headers.get('Content-Disposition')?.match(/filename="?([^";]+)"?/)?.[1] ?? 'wgpanel-backup.json'
+      const url = URL.createObjectURL(await res.blob())
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.click()
+      URL.revokeObjectURL(url)
+      push('success', 'Backup downloaded - store it somewhere safe, it contains every panel secret')
+    } catch (err) {
+      push('error', err instanceof Error ? err.message : 'Failed to create backup')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  async function restoreBackup() {
+    if (!restoreFile) return
+    setRestoring(true)
+    try {
+      const body = await restoreFile.text()
+      const result = await apiFetch<RestoreResult>('/api/v1/backup/restore', { method: 'POST', body })
+      setRestoreResult(result)
+      // Everything cached client-side describes the pre-restore panel.
+      queryClient.clear()
+      push('success', 'Backup restored')
+    } catch (err) {
+      push('error', err instanceof ApiError ? err.message : 'Restore failed')
+    } finally {
+      setRestoring(false)
+      setRestoreFile(null)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  return (
+    <Card className="overflow-hidden">
+      <SectionHeader
+        icon={DatabaseBackup}
+        title="Backup & restore"
+        description="One JSON file with everything except deploy/.env: admins, nodes, accounts and their keys, API keys, settings, audit log, and the node CA. Treat it like the database itself - anyone holding it holds the panel."
+      />
+      <div className="space-y-4 p-6">
+        <div className="flex items-center justify-between gap-4">
+          <p className="text-sm leading-relaxed text-muted">
+            Metrics history (usage charts) is not included; account usage totals are. Restoring on a new server also
+            needs the original <code>deploy/.env</code> - account keys are encrypted with its{' '}
+            <code>ACCOUNT_KEY_ENCRYPTION_KEY</code>.
+          </p>
+          <Button variant="secondary" onClick={downloadBackup} disabled={downloading}>
+            <Download className="h-4 w-4" />
+            {downloading ? 'Preparing…' : 'Download backup'}
+          </Button>
+        </div>
+
+        <div className="flex items-center justify-between gap-4 border-t border-edge pt-4">
+          <p className="text-sm leading-relaxed text-muted">
+            Restore replaces <span className="font-semibold text-fg">all</span> current panel data with the file's
+            contents - including admin users, so your own login may change.
+          </p>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(e) => setRestoreFile(e.target.files?.[0] ?? null)}
+          />
+          <Button variant="danger" onClick={() => fileInputRef.current?.click()} disabled={restoring}>
+            <Upload className="h-4 w-4" />
+            {restoring ? 'Restoring…' : 'Restore backup'}
+          </Button>
+        </div>
+
+        {restoreResult && (
+          <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2.5 text-sm leading-relaxed text-emerald-700 dark:text-emerald-400">
+            <p>
+              Restored {restoreResult.restored.accounts ?? 0} accounts, {restoreResult.restored.nodes ?? 0} nodes,{' '}
+              {restoreResult.restored.admins ?? 0} admins and {restoreResult.restored.api_keys ?? 0} API keys.
+              {restoreResult.restart_required &&
+                ' The node CA changed - restart the api container (wgpanel restart) so agents can reconnect.'}{' '}
+              Log in again with the restored credentials.
+            </p>
+            <Button variant="secondary" size="sm" className="mt-2" onClick={logout}>
+              Log out now
+            </Button>
+          </div>
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={restoreFile !== null}
+        onClose={() => {
+          setRestoreFile(null)
+          if (fileInputRef.current) fileInputRef.current.value = ''
+        }}
+        onConfirm={restoreBackup}
+        title="Replace all panel data?"
+        description={`Everything currently in this panel - accounts, nodes, admins, API keys, settings, audit log - will be replaced by "${restoreFile?.name ?? ''}". This cannot be undone. Download a backup of the current state first if you might need it.`}
+        confirmLabel="Replace everything"
+        danger
+        submitting={restoring}
+      />
+    </Card>
+  )
 }
 
 function SectionHeader({ icon: Icon, title, description }: { icon: LucideIcon; title: string; description: string }) {
@@ -291,6 +433,8 @@ export function SettingsPage() {
             </form>
           )}
         </Card>
+
+        <BackupCard />
       </div>
     </div>
   )

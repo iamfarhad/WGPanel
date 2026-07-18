@@ -95,6 +95,7 @@ func run(logger *slog.Logger) error {
 		CaddyAdmin:      caddyadmin.New(cfg.CaddyAdminSocket),
 		AdminACLEmail:   cfg.AdminACLEmail,
 		BootPanelDomain: cfg.PanelDomain,
+		CADataDir:       caDataDir,
 	}
 
 	httpServer := &http.Server{
