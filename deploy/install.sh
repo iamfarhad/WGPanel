@@ -190,13 +190,21 @@ setup_files() {
 }
 
 setup_firewall() {
+  local rule
   log "Configuring firewall (ufw)..."
   ufw allow OpenSSH >/dev/null 2>&1 || true
-  ufw allow 80/tcp
-  ufw allow 443/tcp
-  # Node agents connect back to the control plane on this port over the public internet.
+  # Node agents connect back to the control plane on NODE_AGENT_PORT over the public
+  # internet. A broken ufw/iptables ("ERROR: problem running iptables/ufw-init" -
+  # classically a kernel upgraded without a reboot) must not abort the install this
+  # late; warn with the exact rule to add by hand once ufw is healthy again.
   NODE_AGENT_PORT="$(grep '^NODE_AGENT_PORT=' "$ENV_FILE" | cut -d= -f2)"
-  ufw allow "${NODE_AGENT_PORT}/tcp"
+  for rule in 80/tcp 443/tcp "${NODE_AGENT_PORT}/tcp"; do
+    if ! ufw allow "$rule"; then
+      warn "ufw could not add the ${rule} rule (see the error above) - continuing anyway."
+      warn "If the error mentions iptables, a reboot usually fixes it (pending kernel"
+      warn "upgrade); then run: ufw allow ${rule}"
+    fi
+  done
   # ufw's default FORWARD policy is DROP, which also drops the traffic Docker forwards
   # for the self-node container's clients. Setting it to ACCEPT lets Docker's own
   # per-bridge FORWARD rules govern forwarding (they're specific, not blanket), which
