@@ -37,6 +37,50 @@ log()  { echo -e "\033[1;32m[wgpanel]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[wgpanel]\033[0m $*"; }
 err()  { echo -e "\033[1;31m[wgpanel]\033[0m $*" >&2; }
 
+# read_required re-prompts until the answer is non-empty (a stray blank line in a
+# paste would otherwise answer the NEXT prompt); read_default applies a default on
+# Enter. Both strip pasted CRs (CRLF clipboards). Same helpers as install-node.sh.
+read_required() {
+  local prompt="$1" var="$2" val=""
+  while [[ -z "$val" ]]; do
+    read -rp "$prompt" val
+    val="${val//$'\r'/}"
+  done
+  printf -v "$var" '%s' "$val"
+}
+
+read_default() {
+  local prompt="$1" var="$2" def="$3" val
+  read -rp "$prompt" val
+  val="${val//$'\r'/}"
+  printf -v "$var" '%s' "${val:-$def}"
+}
+
+valid_port() { [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 )); }
+
+# valid_cidr4 checks the whole value, not just its shape: 999.1.1.1/40 matches a
+# naive digits regex but only fails much later (wg-quick, or a 400 from the API).
+valid_cidr4() {
+  local addr="$1" prefix o
+  [[ "$addr" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]] || return 1
+  # 10# forces base-10: a leading zero ("08") would otherwise be parsed as
+  # (invalid) octal and abort the script under set -e.
+  prefix="${BASH_REMATCH[5]}"
+  (( 10#$prefix >= 1 && 10#$prefix <= 32 )) || return 1
+  for o in "${BASH_REMATCH[@]:1:4}"; do
+    (( 10#$o <= 255 )) || return 1
+  done
+}
+
+# env_get reads KEY's value from .env without tripping set -e/pipefail: grep exits
+# non-zero when the key is missing - entirely possible with a legacy .env predating
+# newer keys (the PANEL_HTTP_PORT backfill in setup_files exists for exactly that) -
+# and a bare VAR="$(grep ... | cut ...)" assignment then kills the whole script at
+# that line with no message at all.
+env_get() {
+  grep -m1 "^$1=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true
+}
+
 # --fresh / --reset wipes any prior install (containers, volumes, secrets) for a
 # genuinely clean setup. Off by default so a normal re-run never destroys data.
 FRESH=0
@@ -106,6 +150,7 @@ detect_os() {
 
 install_prereqs() {
   log "Installing base packages..."
+  export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   # git is only used by the self-node's build-from-source fallback (ensure_self_node_image).
   apt-get install -y curl ca-certificates gnupg lsb-release ufw openssl git
@@ -114,6 +159,9 @@ install_prereqs() {
 install_docker() {
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     log "Docker + Compose plugin already installed, skipping."
+    # Still make sure it starts on boot - a preinstalled-but-disabled daemon would
+    # leave the whole panel dead after the first reboot.
+    systemctl enable --now docker >/dev/null 2>&1 || true
     return
   fi
   log "Installing Docker Engine + Compose plugin..."
@@ -139,30 +187,61 @@ setup_files() {
     # keys, install.sh never asked, and Caddy failed to bind because 443 was
     # already taken by something else on that host.
     if ! grep -q '^PANEL_HTTP_PORT=' "$ENV_FILE"; then
-      read -rp "Public HTTP port [80]: " PANEL_HTTP_PORT
-      echo "PANEL_HTTP_PORT=${PANEL_HTTP_PORT:-80}" >> "$ENV_FILE"
+      while true; do
+        read_default "Public HTTP port [80]: " PANEL_HTTP_PORT 80
+        valid_port "$PANEL_HTTP_PORT" && break
+        warn "The port must be a number between 1 and 65535."
+      done
+      echo "PANEL_HTTP_PORT=${PANEL_HTTP_PORT}" >> "$ENV_FILE"
     fi
     if ! grep -q '^PANEL_HTTPS_PORT=' "$ENV_FILE"; then
-      read -rp "Public HTTPS port [443]: " PANEL_HTTPS_PORT
-      echo "PANEL_HTTPS_PORT=${PANEL_HTTPS_PORT:-443}" >> "$ENV_FILE"
+      while true; do
+        read_default "Public HTTPS port [443]: " PANEL_HTTPS_PORT 443
+        valid_port "$PANEL_HTTPS_PORT" && break
+        warn "The port must be a number between 1 and 65535."
+      done
+      echo "PANEL_HTTPS_PORT=${PANEL_HTTPS_PORT}" >> "$ENV_FILE"
     fi
     return
   fi
 
   cp "$SCRIPT_SOURCE_DIR/.env.example" "$ENV_FILE"
 
-  read -rp "Panel domain (must already point to this server's IP, e.g. panel.example.com): " PANEL_DOMAIN
-  read -rp "Admin e-mail (used for Let's Encrypt notices): " ADMIN_EMAIL
-  read -rp "Desired super-admin username [admin]: " ADMIN_USER
-  ADMIN_USER=${ADMIN_USER:-admin}
+  # The domain lands in the Caddy site address and the self-node's public_endpoint -
+  # an empty answer (stray Enter), a pasted URL scheme, or a trailing path would all
+  # produce a panel that installs "fine" and then fails ACME/routing much later.
+  while true; do
+    read_required "Panel domain (must already point to this server's IP, e.g. panel.example.com): " PANEL_DOMAIN
+    PANEL_DOMAIN="${PANEL_DOMAIN#http://}"
+    PANEL_DOMAIN="${PANEL_DOMAIN#https://}"
+    PANEL_DOMAIN="${PANEL_DOMAIN%%/*}"
+    [[ "$PANEL_DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] && break
+    warn "That doesn't look like a hostname - enter just the domain, e.g. panel.example.com."
+  done
+  while true; do
+    read_required "Admin e-mail (used for Let's Encrypt notices): " ADMIN_EMAIL
+    [[ "$ADMIN_EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] && break
+    warn "That doesn't look like an e-mail address."
+  done
+  while true; do
+    read_default "Desired super-admin username [admin]: " ADMIN_USER admin
+    [[ "$ADMIN_USER" =~ ^[A-Za-z0-9._-]+$ ]] && break
+    warn "Usernames can only contain letters, digits, . _ -"
+  done
   # Only relevant if 80/443 are already taken by another service on this host -
   # Caddy itself still binds :80/:443 inside its own container either way (its
   # automatic-HTTPS/ACME logic assumes that internally); this only changes which
   # host-side port maps to it.
-  read -rp "Public HTTP port [80]: " PANEL_HTTP_PORT
-  PANEL_HTTP_PORT=${PANEL_HTTP_PORT:-80}
-  read -rp "Public HTTPS port [443]: " PANEL_HTTPS_PORT
-  PANEL_HTTPS_PORT=${PANEL_HTTPS_PORT:-443}
+  while true; do
+    read_default "Public HTTP port [80]: " PANEL_HTTP_PORT 80
+    valid_port "$PANEL_HTTP_PORT" && break
+    warn "The port must be a number between 1 and 65535."
+  done
+  while true; do
+    read_default "Public HTTPS port [443]: " PANEL_HTTPS_PORT 443
+    valid_port "$PANEL_HTTPS_PORT" && break
+    warn "The port must be a number between 1 and 65535."
+  done
 
   PG_PASS="$(random_secret)"
   REDIS_PASS="$(random_secret)"
@@ -190,15 +269,26 @@ setup_files() {
 }
 
 setup_firewall() {
-  local rule
+  local rule ssh_port node_agent_port http_port https_port
   log "Configuring firewall (ufw)..."
+  # Never lock out SSH: the OpenSSH app profile only exists when openssh-server is
+  # installed from apt, and sshd may listen on a custom port - "ufw allow OpenSSH"
+  # silently failing followed by "ufw enable" (default deny incoming) would cut this
+  # session off. Allow the ports sshd is actually listening on as well.
   ufw allow OpenSSH >/dev/null 2>&1 || true
+  while read -r ssh_port; do
+    [[ -n "$ssh_port" ]] && ufw allow "${ssh_port}/tcp" >/dev/null 2>&1 || true
+  done < <(ss -tlnpH 2>/dev/null | awk '/sshd/ {n = split($4, a, ":"); print a[n]}' | sort -u)
   # Node agents connect back to the control plane on NODE_AGENT_PORT over the public
   # internet. A broken ufw/iptables ("ERROR: problem running iptables/ufw-init" -
   # classically a kernel upgraded without a reboot) must not abort the install this
   # late; warn with the exact rule to add by hand once ufw is healthy again.
-  NODE_AGENT_PORT="$(grep '^NODE_AGENT_PORT=' "$ENV_FILE" | cut -d= -f2)"
-  for rule in 80/tcp 443/tcp "${NODE_AGENT_PORT}/tcp"; do
+  # The web ports come from .env, NOT hardcoded 80/443: a panel installed on custom
+  # PANEL_HTTP_PORT/PANEL_HTTPS_PORT would otherwise get the wrong ports opened.
+  node_agent_port="$(env_get NODE_AGENT_PORT)"
+  http_port="$(env_get PANEL_HTTP_PORT)"
+  https_port="$(env_get PANEL_HTTPS_PORT)"
+  for rule in "${http_port:-80}/tcp" "${https_port:-443}/tcp" "${node_agent_port:-48443}/tcp"; do
     if ! ufw allow "$rule"; then
       warn "ufw could not add the ${rule} rule (see the error above) - continuing anyway."
       warn "If the error mentions iptables, a reboot usually fixes it (pending kernel"
@@ -218,21 +308,27 @@ setup_firewall() {
 
 # preflight_ports fails fast with a clear message if a host port the stack must
 # publish is already taken - far friendlier than the mid-`docker compose up`
-# "failed to start userland proxy / docker-proxy" error you get otherwise. Only
-# checks the publicly-bound NODE_AGENT_PORT; the loopback API/frontend ports rarely
-# clash and Docker's own message for those is at least specific.
+# "failed to start userland proxy / docker-proxy" error you get otherwise. Checks
+# the publicly-bound ports (NODE_AGENT_PORT and Caddy's web ports - a taken 443 is
+# the setup_files comment's own live incident); the loopback API/frontend ports
+# rarely clash and Docker's own message for those is at least specific.
 preflight_ports() {
   local port pid
-  port="$(grep '^NODE_AGENT_PORT=' "$ENV_FILE" | cut -d= -f2)"
-  [[ -n "$port" ]] || return 0
-  if command -v ss >/dev/null 2>&1 && ss -tlnH "sport = :${port}" 2>/dev/null | grep -q .; then
+  command -v ss >/dev/null 2>&1 || return 0
+  for port in "$(env_get NODE_AGENT_PORT)" "$(env_get PANEL_HTTP_PORT)" "$(env_get PANEL_HTTPS_PORT)"; do
+    [[ -n "$port" ]] || continue
+    ss -tlnH "sport = :${port}" 2>/dev/null | grep -q . || continue
     pid="$(ss -tlnpH "sport = :${port}" 2>/dev/null | grep -oE 'users:\(\("[^"]+"' | head -n1 | sed -E 's/.*"([^"]+)"/\1/')"
-    err "Port ${port} (NODE_AGENT_PORT) is already in use${pid:+ by \"${pid}\"} - the API container can't publish it."
-    err "  Common culprit: cockpit or prometheus (both default to 9090)."
-    err "  Fix: free the port (e.g. 'systemctl disable --now cockpit.socket'), or set a"
-    err "       different NODE_AGENT_PORT in ${ENV_FILE} and open it in the firewall, then re-run."
+    # docker-proxy means OUR already-running stack holds it (this is a re-run) -
+    # compose re-publishes the same port fine on --force-recreate; aborting here
+    # would make every re-run over a live panel fail its own preflight.
+    [[ "$pid" == "docker-proxy" ]] && continue
+    err "Port ${port} is already in use${pid:+ by \"${pid}\"} - the stack can't publish it."
+    err "  Common culprit: cockpit or prometheus (both default to 9090), or another web server on 80/443."
+    err "  Fix: free the port (e.g. 'systemctl disable --now cockpit.socket'), or change the"
+    err "       corresponding port in ${ENV_FILE} and open it in the firewall, then re-run."
     exit 1
-  fi
+  done
 }
 
 # Total RAM+swap (MB) this stack needs to boot reliably. TimescaleDB's first-boot plus
@@ -382,8 +478,12 @@ wgpanel_wait_for_health() {
   # admin password - timing out early makes install.sh claim failure on a panel that's
   # actually still coming up.
   local api_port token timeout=180 waited=0
-  api_port="$(grep '^API_PORT=' "$ENV_FILE" | cut -d= -f2)"
-  token="$(grep '^INTERNAL_API_TOKEN=' "$ENV_FILE" | cut -d= -f2)"
+  api_port="$(env_get API_PORT)"
+  token="$(env_get INTERNAL_API_TOKEN)"
+  if [[ -z "$api_port" || -z "$token" ]]; then
+    err "API_PORT or INTERNAL_API_TOKEN is missing from ${ENV_FILE} - cannot check API health."
+    return 1
+  fi
   while (( waited < timeout )); do
     curl -fsS -H "X-Internal-Token: ${token}" "http://127.0.0.1:${api_port}/internal/healthz" >/dev/null 2>&1 && return 0
     sleep 3
@@ -413,29 +513,58 @@ setup_self_node() {
   fi
 
   log "Configuring this server as a WireGuard node (Docker)..."
-  read -rp "A name for this node [core]: " NODE_NAME
-  NODE_NAME=${NODE_NAME:-core}
-  read -rp "Node group [default]: " NODE_GROUP
-  NODE_GROUP=${NODE_GROUP:-default}
-  read -rp "Max peers on this node [250]: " NODE_CAPACITY
-  NODE_CAPACITY=${NODE_CAPACITY:-250}
-  read -rp "WireGuard listen port [51820]: " WG_PORT
-  WG_PORT=${WG_PORT:-51820}
-  read -rp "WireGuard interface name [wg0]: " WG_IFACE
-  WG_IFACE=${WG_IFACE:-wg0}
-  # Every prompt has a default so hitting Enter through the whole sequence produces a
-  # valid config (an empty wg_subnet used to reach the API and 400).
-  read -rp "WireGuard subnet for peer IPs [10.66.0.0/24]: " WG_SUBNET
-  WG_SUBNET=${WG_SUBNET:-10.66.0.0/24}
-  # Auto-derived as the subnet's .1 (the convention used everywhere else here), still overridable.
+  # NODE_NAME/NODE_GROUP/NODE_CAPACITY are interpolated RAW into the bootstrap JSON
+  # body - a quote in a name or a non-numeric capacity produces invalid JSON and a
+  # cryptic API error, so every answer is validated here first. Every prompt has a
+  # default so hitting Enter through the whole sequence produces a valid config
+  # (an empty wg_subnet used to reach the API and 400).
+  while true; do
+    read_default "A name for this node [core]: " NODE_NAME core
+    [[ "$NODE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] && break
+    warn "Node names can only contain letters, digits, . _ -"
+  done
+  while true; do
+    read_default "Node group [default]: " NODE_GROUP default
+    [[ "$NODE_GROUP" =~ ^[A-Za-z0-9._-]+$ ]] && break
+    warn "Group names can only contain letters, digits, . _ -"
+  done
+  while true; do
+    read_default "Max peers on this node [250]: " NODE_CAPACITY 250
+    [[ "$NODE_CAPACITY" =~ ^[0-9]+$ ]] && (( 10#$NODE_CAPACITY >= 1 )) && break
+    warn "Capacity must be a positive number."
+  done
+  while true; do
+    read_default "WireGuard listen port [51820]: " WG_PORT 51820
+    valid_port "$WG_PORT" && break
+    warn "The port must be a number between 1 and 65535."
+  done
+  # Linux caps interface names at 15 chars (IFNAMSIZ); slashes/spaces would also
+  # break the wg-quick config path inside the container.
+  while true; do
+    read_default "WireGuard interface name [wg0]: " WG_IFACE wg0
+    [[ "$WG_IFACE" =~ ^[A-Za-z0-9_=+.-]{1,15}$ ]] && break
+    warn "Interface names must be 1-15 characters (letters, digits, . _ = + -)."
+  done
+  while true; do
+    read_default "WireGuard subnet for peer IPs [10.66.0.0/24]: " WG_SUBNET 10.66.0.0/24
+    valid_cidr4 "$WG_SUBNET" && break
+    warn "Expected a valid IPv4 subnet in CIDR form, e.g. 10.66.0.0/24."
+  done
+  # Auto-derived as the subnet's .1 (the convention used everywhere else here), still
+  # overridable. The sed only rewrites a well-formed A.B.C.D/nn - guaranteed by the
+  # valid_cidr4 gate above; on a non-match it would pass the input through unchanged.
   default_iface_addr="$(echo "$WG_SUBNET" | sed -E 's#^([0-9]+\.[0-9]+\.[0-9]+)\.[0-9]+/([0-9]+)$#\1.1/\2#')"
-  read -rp "This node's own interface address, with prefix [${default_iface_addr}]: " WG_IFACE_ADDR
-  WG_IFACE_ADDR=${WG_IFACE_ADDR:-$default_iface_addr}
+  while true; do
+    read_default "This node's own interface address, with prefix [${default_iface_addr}]: " WG_IFACE_ADDR "$default_iface_addr"
+    valid_cidr4 "$WG_IFACE_ADDR" && break
+    warn "Expected a valid IPv4 address with a prefix length, e.g. 10.66.0.1/24."
+  done
 
   local panel_domain node_agent_port node_image
-  panel_domain="$(grep '^PANEL_DOMAIN=' "$ENV_FILE" | cut -d= -f2)"
-  node_agent_port="$(grep '^NODE_AGENT_PORT=' "$ENV_FILE" | cut -d= -f2)"
-  node_image="$(grep '^NODE_IMAGE=' "$ENV_FILE" | cut -d= -f2)"
+  panel_domain="$(env_get PANEL_DOMAIN)"
+  node_agent_port="$(env_get NODE_AGENT_PORT)"
+  node_agent_port="${node_agent_port:-48443}"
+  node_image="$(env_get NODE_IMAGE)"
   node_image="${node_image:-ghcr.io/iamfarhad/wgpanel-node:latest}"
 
   setup_self_node_host || return 1
@@ -445,12 +574,24 @@ setup_self_node() {
   (cd "$NODE_DIR" && docker compose up -d) || return 1
   ufw allow "${WG_PORT}/udp" >/dev/null 2>&1 || true
 
-  sleep 3
-  if (cd "$NODE_DIR" && docker compose ps --status running --format '{{.Name}}' | grep -q .); then
-    log "This server is now registered as node '${NODE_NAME}' and should show 'online' in the panel shortly."
-  else
-    err "Node container failed to start. Check logs with: cd ${NODE_DIR} && docker compose logs"
-  fi
+  # "Container running" says nothing about registration (a crash-looping agent stays
+  # "running" under restart: unless-stopped) - watch the agent's own JSON log markers
+  # instead, same as install-node.sh's verify().
+  local logs deadline=$((SECONDS + 45))
+  log "Waiting for the node to register with the control plane..."
+  while (( SECONDS < deadline )); do
+    sleep 3
+    logs="$(cd "$NODE_DIR" && docker compose logs --no-color 2>/dev/null || true)"
+    if grep -q '"msg":"registered"' <<<"$logs"; then
+      log "This server is now registered as node '${NODE_NAME}' and should show 'online' in the panel shortly."
+      return 0
+    fi
+    grep -q '"msg":"fatal"' <<<"$logs" && break
+  done
+  err "Node did not confirm registration - last log lines:"
+  (cd "$NODE_DIR" && docker compose logs --no-color --tail 5) >&2 || true
+  err "Check with: cd ${NODE_DIR} && docker compose logs -f"
+  return 1
 }
 
 # Host prep for running WireGuard in a container: the kernel module (the container's
@@ -470,8 +611,12 @@ setup_self_node_host() {
 bootstrap_self_node() {
   local panel_domain="$1"
   local api_port token resp
-  api_port="$(grep '^API_PORT=' "$ENV_FILE" | cut -d= -f2)"
-  token="$(grep '^INTERNAL_API_TOKEN=' "$ENV_FILE" | cut -d= -f2)"
+  api_port="$(env_get API_PORT)"
+  token="$(env_get INTERNAL_API_TOKEN)"
+  if [[ -z "$api_port" || -z "$token" ]]; then
+    err "API_PORT or INTERNAL_API_TOKEN is missing from ${ENV_FILE} - cannot bootstrap the self-node."
+    return 1
+  fi
 
   # No -f (deliberately): it would swallow a non-2xx body, turning a real error (e.g.
   # "wg_subnet is required") into an empty string. An empty JOIN_TOKEN detects failure.
@@ -586,7 +731,11 @@ main() {
   # `|| return 1`-guarded, so a failure partway through (docker cp, wg genkey,
   # the bootstrap API call, whatever) should stop just that flow, not abort this
   # whole script this late after the panel and its first admin already exist.
-  ( set +e; setup_self_node ); self_node_rc=$?
+  # The rc MUST be captured via `|| ...`: a bare `( ... ); rc=$?` still trips the
+  # parent's set -e on the subshell's non-zero exit, killing the script right here -
+  # before the final summary (and the one-time admin password) ever prints.
+  self_node_rc=0
+  ( set +e; setup_self_node ) || self_node_rc=$?
   if [[ $self_node_rc -ne 0 ]]; then
     warn "Self-node setup did not complete - the panel itself is still fully usable; add a node manually with install-node.sh whenever you're ready."
   fi
@@ -596,8 +745,8 @@ main() {
   # install; setup_files() returns early without touching them at all when .env
   # already existed, which under `set -u` would otherwise crash here exactly like
   # cmd_backup's leaked RETURN trap did.
-  PANEL_DOMAIN="$(grep '^PANEL_DOMAIN=' "$ENV_FILE" | cut -d= -f2)"
-  PANEL_HTTPS_PORT="$(grep '^PANEL_HTTPS_PORT=' "$ENV_FILE" | cut -d= -f2)"
+  PANEL_DOMAIN="$(env_get PANEL_DOMAIN)"
+  PANEL_HTTPS_PORT="$(env_get PANEL_HTTPS_PORT)"
   panel_display_url="https://${PANEL_DOMAIN}"
   if [[ -n "$PANEL_HTTPS_PORT" && "$PANEL_HTTPS_PORT" != "443" ]]; then
     panel_display_url="${panel_display_url}:${PANEL_HTTPS_PORT}"

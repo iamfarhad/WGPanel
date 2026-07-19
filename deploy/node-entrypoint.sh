@@ -36,6 +36,16 @@ PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o 
 PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o ${egress_iface} -j MASQUERADE
 EOF
   chmod 600 "$WG_CONF"
+else
+  # The conf outlives the container (state volume), so env changes would otherwise
+  # never apply: a re-install with a new WGPANEL_WG_PORT publishes the new port on
+  # the host while the interface keeps listening on the old one. Sync the mutable
+  # fields on every boot; the generated keys are left untouched. '#' as the sed
+  # delimiter because the address value contains '/'.
+  sed -i \
+    -e "s#^Address = .*#Address = ${WG_IFACE_ADDR}#" \
+    -e "s#^ListenPort = .*#ListenPort = ${WG_PORT}#" \
+    "$WG_CONF"
 fi
 
 # Idempotent across container restarts and crashes: if a stale interface or leftover

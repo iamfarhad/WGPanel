@@ -48,6 +48,7 @@ detect_os() {
 
 install_prereqs() {
   log "Installing base packages and the WireGuard kernel module..."
+  export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   # wireguard-tools is not needed on the host (it lives in the container), but the
   # kernel MODULE is: the container's wg-quick drives the host kernel's WireGuard.
@@ -64,6 +65,9 @@ install_prereqs() {
 install_docker() {
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     log "Docker + Compose plugin already installed, skipping."
+    # Still make sure it starts on boot - a preinstalled-but-disabled daemon would
+    # leave the node dead after the first reboot, despite restart: unless-stopped.
+    systemctl enable --now docker >/dev/null 2>&1 || true
     return
   fi
   log "Installing Docker Engine + Compose plugin..."
@@ -85,7 +89,23 @@ read_required() {
   printf -v "$var" '%s' "$val"
 }
 
+# valid_cidr4 checks the whole value, not just its shape: 999.1.1.1/40 matches a
+# naive digits regex but only fails much later, inside the container's wg-quick,
+# where the error is far harder to trace back to this prompt.
+valid_cidr4() {
+  local addr="$1" prefix o
+  [[ "$addr" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]] || return 1
+  # 10# forces base-10: a leading zero ("08") would otherwise be parsed as
+  # (invalid) octal and abort the script under set -e.
+  prefix="${BASH_REMATCH[5]}"
+  (( 10#$prefix >= 1 && 10#$prefix <= 32 )) || return 1
+  for o in "${BASH_REMATCH[@]:1:4}"; do
+    (( 10#$o <= 255 )) || return 1
+  done
+}
+
 prompt_config() {
+  local probe
   mkdir -p "$NODE_DIR"
 
   # The agent dials https://<addr>/agent/* - that's the panel's NODE_AGENT_PORT
@@ -94,8 +114,15 @@ prompt_config() {
   # before accepting the answer.
   while true; do
     read_required "Control plane address (host:port - the panel's NODE_AGENT_PORT, e.g. panel.example.com:48443): " PANEL_ADDR
-    if [[ "$PANEL_ADDR" != *:* ]]; then
-      warn "Expected host:port, e.g. panel.example.com:48443."
+    # The agent prepends https:// itself, so a pasted URL scheme or path would
+    # produce https://https://... and break registration - strip both.
+    PANEL_ADDR="${PANEL_ADDR#http://}"
+    PANEL_ADDR="${PANEL_ADDR#https://}"
+    PANEL_ADDR="${PANEL_ADDR%%/*}"
+    if [[ "$PANEL_ADDR" != *:* ]] || [[ -z "${PANEL_ADDR%:*}" ]] ||
+       [[ ! "${PANEL_ADDR##*:}" =~ ^[0-9]+$ ]] ||
+       (( 10#${PANEL_ADDR##*:} < 1 || 10#${PANEL_ADDR##*:} > 65535 )); then
+      warn "Expected host:port with a numeric port, e.g. panel.example.com:48443."
       continue
     fi
     if ! timeout 5 bash -c ": </dev/tcp/${PANEL_ADDR%:*}/${PANEL_ADDR##*:}" 2>/dev/null; then
@@ -109,7 +136,10 @@ prompt_config() {
     # Reachable is not enough: the panel's WEB port (443) also answers TCP. The real
     # agent endpoint replies with plain text/JSON, never HTML - an HTML answer means
     # this is the web UI and registration would die with an nginx "405 Not Allowed".
-    if curl -skm 5 "https://${PANEL_ADDR}/agent/register" 2>/dev/null | grep -qiE '<html|<!doctype'; then
+    # Buffered in a variable rather than piped to grep -q: under pipefail, grep's
+    # early exit can SIGPIPE curl and turn a positive match into a skipped warning.
+    probe="$(curl -skm 5 "https://${PANEL_ADDR}/agent/register" 2>/dev/null || true)"
+    if grep -qiE '<html|<!doctype' <<<"$probe"; then
       warn "${PANEL_ADDR} answers like the panel's WEB UI, not the node-agent API."
       warn "Enter the panel's node-agent port instead: NODE_AGENT_PORT in the panel"
       warn "server's /opt/wgpanel/.env (48443 by default) - e.g. ${PANEL_ADDR%:*}:48443."
@@ -127,18 +157,24 @@ prompt_config() {
     read -rp "WireGuard listen port [51820]: " WG_PORT
     WG_PORT="${WG_PORT//$'\r'/}"
     WG_PORT=${WG_PORT:-51820}
-    [[ "$WG_PORT" =~ ^[0-9]+$ ]] && break
-    warn "The port must be a number."
+    [[ "$WG_PORT" =~ ^[0-9]+$ ]] && (( 10#$WG_PORT >= 1 && 10#$WG_PORT <= 65535 )) && break
+    warn "The port must be a number between 1 and 65535."
   done
 
-  read -rp "WireGuard interface name [wg0]: " WG_IFACE
-  WG_IFACE="${WG_IFACE//$'\r'/}"
-  WG_IFACE=${WG_IFACE:-wg0}
+  # Linux caps interface names at 15 chars (IFNAMSIZ); slashes/spaces would also
+  # break the wg-quick config path inside the container.
+  while true; do
+    read -rp "WireGuard interface name [wg0]: " WG_IFACE
+    WG_IFACE="${WG_IFACE//$'\r'/}"
+    WG_IFACE=${WG_IFACE:-wg0}
+    [[ "$WG_IFACE" =~ ^[A-Za-z0-9_=+.-]{1,15}$ ]] && break
+    warn "Interface names must be 1-15 characters (letters, digits, . _ = + -)."
+  done
 
   while true; do
     read_required "This node's own WireGuard interface address, with prefix (the .1 of the subnet you set in the panel, e.g. 10.66.0.1/24): " WG_IFACE_ADDR
-    [[ "$WG_IFACE_ADDR" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] && break
-    warn "Expected an IPv4 address with a prefix length, e.g. 10.66.0.1/24."
+    valid_cidr4 "$WG_IFACE_ADDR" && break
+    warn "Expected a valid IPv4 address with a prefix length, e.g. 10.66.0.1/24."
   done
 
   cat > "$ENV_FILE" <<EOF
@@ -223,7 +259,15 @@ build_image_from_source() {
 
 setup_firewall() {
   log "Configuring firewall (ufw)..."
+  # Never lock out SSH: the OpenSSH app profile only exists when openssh-server is
+  # installed from apt, and sshd may listen on a custom port - "ufw allow OpenSSH"
+  # silently failing followed by "ufw enable" (default deny incoming) would cut this
+  # session off. Allow the ports sshd is actually listening on as well.
   ufw allow OpenSSH >/dev/null 2>&1 || true
+  local ssh_port
+  while read -r ssh_port; do
+    [[ -n "$ssh_port" ]] && ufw allow "${ssh_port}/tcp" >/dev/null 2>&1 || true
+  done < <(ss -tlnpH 2>/dev/null | awk '/sshd/ {n = split($4, a, ":"); print a[n]}' | sort -u)
   # A broken ufw/iptables ("ERROR: problem running iptables/ufw-init" - classically a
   # kernel upgraded without a reboot, leaving the running kernel unable to load
   # iptables modules) must not abort the install this late. The node works without
@@ -247,14 +291,38 @@ setup_firewall() {
 
 start_node() {
   log "Starting the node container..."
-  (cd "$NODE_DIR" && docker compose up -d)
+  # --force-recreate: on a re-install with an unchanged .env, `up -d` would leave the
+  # old container (and its old logs) running untouched - verify() would then read
+  # stale failure lines from a previous run instead of this one.
+  (cd "$NODE_DIR" && docker compose up -d --force-recreate)
 }
 
+# The container being "running" says nothing about registration: a bad join token or
+# wrong panel address makes the agent crash-loop while restart: unless-stopped keeps
+# the container alive - the old 3-second check reported success anyway. Watch the
+# agent's own log markers instead ("registered" / "fatal", cmd/agent/main.go).
 verify() {
-  sleep 3
+  log "Waiting for the node to register with the control plane..."
+  local logs deadline=$((SECONDS + 45))
+  while (( SECONDS < deadline )); do
+    sleep 3
+    logs="$(cd "$NODE_DIR" && docker compose logs --no-color 2>/dev/null || true)"
+    if grep -q '"msg":"registered"' <<<"$logs"; then
+      log "Node registered with the control plane. Follow heartbeats with:"
+      log "    cd ${NODE_DIR} && docker compose logs -f"
+      return
+    fi
+    if grep -q '"msg":"fatal"' <<<"$logs"; then
+      err "The node agent failed to start - last log lines:"
+      (cd "$NODE_DIR" && docker compose logs --no-color --tail 5) >&2 || true
+      err "The usual causes are a wrong/expired join token or a wrong control-plane address."
+      err "Fix .env in ${NODE_DIR}, then run: cd ${NODE_DIR} && docker compose up -d --force-recreate"
+      exit 1
+    fi
+  done
   if (cd "$NODE_DIR" && docker compose ps --status running --format '{{.Name}}' | grep -q .); then
-    log "Node container is running. Follow registration/heartbeats with:"
-    log "    cd ${NODE_DIR} && docker compose logs -f"
+    warn "Node container is running but registration is not confirmed yet. Follow it with:"
+    warn "    cd ${NODE_DIR} && docker compose logs -f"
   else
     err "Node container failed to start. Check logs with: cd ${NODE_DIR} && docker compose logs"
     exit 1
