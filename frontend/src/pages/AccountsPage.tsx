@@ -446,7 +446,7 @@ export function AccountsPage() {
                     <Td className="whitespace-nowrap text-muted">
                       <span className="inline-flex items-center gap-1.5">
                         <Server className="h-3.5 w-3.5 text-faint" />
-                        {a.peers.length === 0 ? t('none yet') : t('{n} nodes', { n: a.peers.length })}
+                        {a.peers.length === 0 ? t('none yet') : a.peers.length === 1 ? t('1 node') : t('{n} nodes', { n: a.peers.length })}
                       </span>
                     </Td>
                     <Td className="whitespace-nowrap text-muted">

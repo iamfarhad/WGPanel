@@ -34,6 +34,7 @@ export const accounts: Record<string, string> = {
   Status: 'وضعیت',
   'none yet': 'هنوز ندارد',
   '{n} nodes': '{n} نود',
+  '1 node': '1 نود',
   'Online on {n}/{total} nodes': 'آنلاین روی {n} از {total} نود',
   'Offline · {when}': 'آفلاین · {when}',
   'over device limit': 'بیش از محدودیت دستگاه',

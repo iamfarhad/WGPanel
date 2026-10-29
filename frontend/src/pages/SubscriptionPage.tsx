@@ -245,7 +245,7 @@ export function SubscriptionPage() {
             <div className="mb-1.5 flex items-baseline justify-between gap-2 text-sm">
               <span className="font-medium text-fg">{t('Traffic')}</span>
               <span className="text-muted tabular-nums">
-                {quota == null ? t('{used} used - unlimited', { used: formatBytes(used) }) : `${formatBytes(used)} / ${formatBytes(quota)}`}
+                {quota == null ? t('{used} used - unlimited', { used: formatBytes(used) }) : ltr(`${formatBytes(used)} / ${formatBytes(quota)}`)}
               </span>
             </div>
             {quota != null ? <Progress value={used} max={quota} /> : <Progress value={0} max={1} />}
