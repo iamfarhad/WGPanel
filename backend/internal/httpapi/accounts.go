@@ -188,6 +188,10 @@ func auditActor(identity *CallerIdentity) string {
 	if identity.IsAdmin {
 		return identity.AdminUsername // for a reseller this is its own username
 	}
+	if identity.ResellerID != "" {
+		// Names both the key and its owning reseller, e.g. api_key:<key_id>@reseller:<id>.
+		return "api_key:" + identity.KeyID + "@" + identity.KeyNamespace
+	}
 	return "api_key:" + identity.KeyNamespace
 }
 
@@ -268,10 +272,14 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	var ownerNamespace *string
 	var allowedGroups []string
 	if identity.ResellerID != "" {
-		// The store re-reads the reseller's node_groups under its row lock, so the
-		// groups are not passed from the (possibly stale) request identity.
+		// The store re-reads the reseller's node_groups under its row lock, so a
+		// session passes none. A reseller-owned API key passes its own (narrower) set,
+		// which the store intersects with the reseller's.
 		ns := store.ResellerNamespace(identity.ResellerID)
 		ownerNamespace = &ns
+		if !identity.IsAdmin {
+			allowedGroups = identity.NodeGroups
+		}
 	} else if !identity.IsAdmin {
 		ns := identity.KeyNamespace
 		ownerNamespace = &ns

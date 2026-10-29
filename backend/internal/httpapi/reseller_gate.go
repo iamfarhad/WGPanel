@@ -20,6 +20,11 @@ import (
 var resellerRoutes = map[string]bool{
 	"GET /api/v1/me":          true,
 	"GET /api/v1/reseller/me": true,
+	// A reseller manages only the API keys it owns (store-scoped, 404 otherwise).
+	"GET /api/v1/api-keys":              true,
+	"POST /api/v1/api-keys":             true,
+	"POST /api/v1/api-keys/{id}/revoke": true,
+	"POST /api/v1/api-keys/{id}/rotate": true,
 	// Read-only node visibility, filtered to the reseller's node groups, so it can
 	// pick a node when creating an account.
 	"GET /api/v1/nodes":                              true,
