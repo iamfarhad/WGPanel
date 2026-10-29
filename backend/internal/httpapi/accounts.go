@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"wgpanel-api/internal/events"
 
 	"wgpanel-api/internal/store"
 	"wgpanel-api/internal/wgkeys"
@@ -342,6 +343,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.emitAccountEvent(events.AccountCreated, account)
 	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.created", account.ID, nil, r.RemoteAddr); err != nil {
 		s.Logger.Error("audit_log_failed", "error", err)
 	}
@@ -546,6 +548,7 @@ func (s *Server) handleSuspendAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	detail := map[string]string{"reason": reason}
+	s.emitAccountEvent(events.AccountSuspended, account)
 	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.suspended", account.ID, detail, r.RemoteAddr); err != nil {
 		s.Logger.Error("audit_log_failed", "error", err)
 	}
@@ -577,6 +580,7 @@ func (s *Server) handleEnableAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.emitAccountEvent(events.AccountEnabled, account)
 	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.enabled", account.ID, nil, r.RemoteAddr); err != nil {
 		s.Logger.Error("audit_log_failed", "error", err)
 	}
@@ -688,6 +692,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.emitAccountEvent(events.AccountDeleted, account)
 	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.deleted", account.ID, nil, r.RemoteAddr); err != nil {
 		s.Logger.Error("audit_log_failed", "error", err)
 	}

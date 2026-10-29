@@ -250,3 +250,13 @@ func (s *Server) postWebhook(ctx context.Context, hook store.Webhook, d store.We
 	}
 	return attemptResult{DeliveryAttempt: att}
 }
+
+// emitAccountEvent publishes an account lifecycle event under the account's owner
+// namespace (so resellers only ever see their own accounts' events).
+func (s *Server) emitAccountEvent(typ string, a store.Account) {
+	ns := ""
+	if a.OwnerKeyNamespace != nil {
+		ns = *a.OwnerKeyNamespace
+	}
+	s.emit(typ, ns, map[string]any{"account_id": a.ID, "label": a.Label, "status": a.Status})
+}
