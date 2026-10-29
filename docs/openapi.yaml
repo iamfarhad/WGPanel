@@ -3997,7 +3997,7 @@ components:
         failed: { type: integer }
         results:
           type: array
-          description: One entry per item, in request order (create: in label order).
+          description: "One entry per item, in request order (create: in label order)."
           items:
             type: object
             properties:
