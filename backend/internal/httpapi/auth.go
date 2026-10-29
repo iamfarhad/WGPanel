@@ -28,7 +28,9 @@ type loginResponse struct {
 const dummyHash = "argon2id$m=65536,t=1,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 // handleLogin verifies admin credentials and issues a short-lived JWT plus a
-// Redis-backed refresh token (docs/PRD-security-access-control.md §6).
+// Redis-backed refresh token (docs/PRD-security-access-control.md §6). Order of
+// checks: IP allowlist, lockout, password (with the dummy-hash timing defence), and -
+// when the admin has a second factor - an mfa_token instead of the session tokens.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -39,8 +41,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "username and password are required")
 		return
 	}
+	if !s.enforceAdminIPAllowlist(w, r) {
+		return
+	}
 
 	ctx := r.Context()
+	ip := clientIP(r)
+	// Locked subjects are refused before any password work. Unknown usernames lock
+	// exactly like real ones, so this reveals nothing about which accounts exist.
+	if wait := s.loginLockedFor(ctx, req.Username, ip); wait > 0 {
+		writeTooManyAttempts(w, wait)
+		return
+	}
+
 	admin, err := s.Store.GetAdminByUsername(ctx, req.Username)
 	if err != nil && !errors.Is(err, store.ErrAdminNotFound) {
 		s.Logger.Error("login_lookup_failed", "error", err)
@@ -60,12 +73,35 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if errors.Is(err, store.ErrAdminNotFound) || !valid {
+		if wait, locked := s.recordLoginFailure(ctx, req.Username, ip); locked {
+			writeTooManyAttempts(w, wait)
+			return
+		}
 		writeJSONError(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
 		return
 	}
 
 	// A disabled reseller is refused only after the password checked out, so the
 	// response never reveals which usernames are resellers to someone guessing.
+	if admin.Role == "reseller" {
+		if code := s.resellerBlockCode(ctx, admin.ID); code != "" {
+			writeJSONError(w, http.StatusUnauthorized, code, "this reseller account is disabled or its plan has expired")
+			return
+		}
+	}
+
+	// Second factor: password alone never yields a session for an admin that has one.
+	if s.beginMFA(w, r, admin) {
+		return
+	}
+
+	s.completeLogin(w, r, admin, "password")
+}
+
+// completeLogin issues the session token pair and audits the sign-in. method names
+// the credential that finished it (password, totp, recovery_code, passkey).
+func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, admin store.Admin, method string) {
+	ctx := r.Context()
 	if admin.Role == "reseller" {
 		if code := s.resellerBlockCode(ctx, admin.ID); code != "" {
 			writeJSONError(w, http.StatusUnauthorized, code, "this reseller account is disabled or its plan has expired")
@@ -86,7 +122,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Store.InsertAuditLog(ctx, admin.Username, "admin.login", admin.Username, nil, r.RemoteAddr); err != nil {
+	s.clearLoginFailures(ctx, admin.Username)
+	var detail map[string]string
+	if method != "password" {
+		detail = map[string]string{"method": method}
+	}
+	if err := s.Store.InsertAuditLog(ctx, admin.Username, "admin.login", admin.Username, detail, clientIP(r)); err != nil {
 		s.Logger.Error("audit_log_failed", "error", err)
 	}
 
@@ -112,6 +153,9 @@ type refreshResponse struct {
 // issued refresh tokens that nothing ever consumed. Does not rotate the refresh
 // token itself (STORY-06 scope note).
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	if !s.enforceAdminIPAllowlist(w, r) {
+		return
+	}
 	var req refreshRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.RefreshToken == "" {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "refresh_token is required")

@@ -17,6 +17,9 @@ import (
 // stays small and restorable while losing only chart history.
 var backupTables = []string{
 	"admins",
+	"admin_totp",
+	"admin_recovery_codes",
+	"admin_passkeys",
 	"nodes",
 	"accounts",
 	"account_peers",

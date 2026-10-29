@@ -47,6 +47,8 @@ type Server struct {
 	// ResellerLimitsLookup overrides the per-request reseller limits lookup in tests;
 	// nil means Store.GetResellerLimits (see reseller_gate.go).
 	ResellerLimitsLookup func(ctx context.Context, adminID string) (store.ResellerLimits, error)
+	// sec caches the admin sign-in security settings (see clientip.go).
+	sec securityRuntime
 }
 
 // Routes builds the full handler tree: public routes (proxied by Caddy), the
@@ -163,6 +165,8 @@ func (s *Server) Routes() http.Handler {
 	// password rides in the request body.
 	mux.Handle("POST /api/v1/backup", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleDownloadBackup))))
 	mux.Handle("POST /api/v1/backup/restore", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleRestoreBackup))))
+
+	s.registerSecurityRoutes(mux)
 
 	return s.loggingMiddleware(mux)
 }
