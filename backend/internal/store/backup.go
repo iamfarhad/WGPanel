@@ -18,6 +18,7 @@ import (
 var backupTables = []string{
 	"admins",
 	"nodes",
+	"node_endpoints",
 	"accounts",
 	"account_peers",
 	"account_devices",
