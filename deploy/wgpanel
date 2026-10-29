@@ -351,6 +351,21 @@ cmd_uninstall() {
   log "WGPanel uninstalled. Pulled images were kept - reclaim the space with: docker image prune -a"
 }
 
+cmd_tune() {
+  local action="${1:-status}"
+  case "$action" in
+    status) net_tune_status ;;
+    apply|revert)
+      if [[ "$EUID" -ne 0 ]]; then
+        err "wgpanel tune ${action} must run as root (sudo wgpanel tune ${action})"
+        exit 1
+      fi
+      "net_tune_${action}"
+      ;;
+    *) err "Usage: wgpanel tune [apply|status|revert]"; exit 1 ;;
+  esac
+}
+
 usage() {
   cat <<'EOF'
 wgpanel - manage the WGPanel control-plane stack
@@ -379,11 +394,197 @@ Admin accounts:
   show-bootstrap-admin    Re-display the auto-created first-boot super admin credentials,
                           if still present in the API's log history
 
+Network tuning (run as root):
+  tune [apply|status|revert]
+                          Host network tuning for WireGuard speed: BBR + fq, bigger socket
+                          buffers, conntrack sizing, TCP MTU probing, UDP GRO forwarding.
+                          'status' (default) shows current vs target values; 'revert'
+                          removes the tuning and restores the previous values
+
 Other:
   uninstall               Remove WGPanel completely: panel + self-node stacks, volumes,
                           /opt/wgpanel*, and this CLI (destructive, asks for confirmation)
 EOF
 }
+
+# >>> wgpanel net-tune (this block is identical in install.sh, install-node.sh and wgpanel; deploy/check-net-tune-sync.sh enforces it)
+# Host network tuning for WireGuard throughput: BBR + fq, bigger socket buffers and
+# backlog, a conntrack table sized to RAM, TCP MTU probing, and (when the NIC supports
+# it) UDP GRO forwarding. Idempotent, and never fatal: an unsupported knob is skipped.
+NET_TUNE_CONF="/etc/sysctl.d/90-wgpanel-net.conf"
+NET_TUNE_UNIT="/etc/systemd/system/wgpanel-net-tune.service"
+NET_TUNE_NIC_SCRIPT="/usr/local/sbin/wgpanel-net-tune-nic"
+NET_TUNE_PREV="/var/lib/wgpanel/net-tune.prev"
+
+net_tune_default_iface() {
+  ip route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}'
+}
+
+# ~65536 entries per GB of RAM, clamped to 32768..262144.
+net_tune_conntrack_max() {
+  local mem_kb max
+  mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)"
+  max=$(( ${mem_kb:-0} / 16 ))
+  (( max < 32768 )) && max=32768
+  (( max > 262144 )) && max=262144
+  echo "$max"
+}
+
+net_tune_bbr_available() {
+  grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null && return 0
+  modprobe tcp_bbr >/dev/null 2>&1 || true
+  grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null
+}
+
+# Target sysctls as "key value" lines - the single source for apply, status and revert.
+net_tune_targets() {
+  if net_tune_bbr_available; then
+    echo "net.core.default_qdisc fq"
+    echo "net.ipv4.tcp_congestion_control bbr"
+  fi
+  echo "net.core.rmem_max 16777216"
+  echo "net.core.wmem_max 16777216"
+  echo "net.ipv4.tcp_rmem 4096 131072 16777216"
+  echo "net.ipv4.tcp_wmem 4096 65536 16777216"
+  echo "net.core.netdev_max_backlog 16384"
+  echo "net.netfilter.nf_conntrack_max $(net_tune_conntrack_max)"
+  echo "net.ipv4.tcp_mtu_probing 1"
+}
+
+net_tune_render() {
+  echo "# Managed by wgpanel (wgpanel tune). Remove with: wgpanel tune revert"
+  local key value
+  while read -r key value; do
+    # The leading "-" tells sysctl to ignore a key this kernel does not have.
+    echo "-${key} = ${value}"
+  done < <(net_tune_targets)
+}
+
+net_tune_nic_script() {
+  cat <<'NICEOF'
+#!/bin/sh
+# Installed by wgpanel (wgpanel tune): UDP GRO forwarding on the default-route NIC.
+dev="$(ip route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')"
+[ -n "$dev" ] || exit 0
+command -v ethtool >/dev/null 2>&1 || exit 0
+ethtool -k "$dev" 2>/dev/null | grep -q '^rx-udp-gro-forwarding:' || exit 0
+ethtool -K "$dev" rx-udp-gro-forwarding on rx-gro-list off >/dev/null 2>&1 || true
+exit 0
+NICEOF
+}
+
+net_tune_unit() {
+  cat <<UNITEOF
+[Unit]
+Description=WGPanel NIC tuning (UDP GRO forwarding)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${NET_TUNE_NIC_SCRIPT}
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+}
+
+# net_tune_write PATH MODE: stdin -> PATH, only touching the file when content changed.
+net_tune_write() {
+  local path="$1" mode="$2" tmp
+  tmp="$(mktemp)" || return 1
+  cat > "$tmp"
+  if [[ -f "$path" ]] && cmp -s "$tmp" "$path"; then
+    rm -f "$tmp"
+    return 0
+  fi
+  install -D -m "$mode" "$tmp" "$path"
+  rm -f "$tmp"
+}
+
+net_tune_apply() {
+  log "Applying network tuning (BBR, socket buffers, conntrack, MTU probing)..."
+  modprobe nf_conntrack >/dev/null 2>&1 || true
+
+  # Remember the pre-tuning values once, so `wgpanel tune revert` can restore them.
+  if [[ ! -f "$NET_TUNE_PREV" ]]; then
+    local key value cur
+    mkdir -p "$(dirname "$NET_TUNE_PREV")" 2>/dev/null || true
+    while read -r key value; do
+      cur="$(sysctl -n "$key" 2>/dev/null | tr '\t' ' ')" || cur=""
+      [[ -n "$cur" ]] && echo "${key} ${cur}"
+    done < <(net_tune_targets) > "$NET_TUNE_PREV" 2>/dev/null || true
+  fi
+
+  if net_tune_render | net_tune_write "$NET_TUNE_CONF" 644; then
+    sysctl -q -p "$NET_TUNE_CONF" >/dev/null 2>&1 || warn "Some network settings are not supported by this kernel and were skipped."
+  else
+    warn "Could not write ${NET_TUNE_CONF} - skipping sysctl tuning."
+  fi
+
+  if ! command -v ethtool >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y ethtool >/dev/null 2>&1 || true
+  fi
+  if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+    if net_tune_nic_script | net_tune_write "$NET_TUNE_NIC_SCRIPT" 755 && net_tune_unit | net_tune_write "$NET_TUNE_UNIT" 644; then
+      systemctl daemon-reload >/dev/null 2>&1 || true
+      systemctl enable wgpanel-net-tune.service >/dev/null 2>&1 || true
+      systemctl restart wgpanel-net-tune.service >/dev/null 2>&1 || warn "NIC tuning service did not start (the NIC may not support UDP GRO forwarding) - continuing."
+    else
+      warn "Could not install the NIC tuning service - continuing."
+    fi
+  else
+    warn "systemd not available - skipped the NIC tuning service."
+  fi
+  return 0
+}
+
+net_tune_status() {
+  local key value cur mark iface
+  printf '%-36s %-26s %-26s\n' "SETTING" "CURRENT" "TARGET"
+  while read -r key value; do
+    cur="$(sysctl -n "$key" 2>/dev/null | tr '\t' ' ')" || cur=""
+    mark=" "
+    [[ "$cur" == "$value" ]] && mark="*"
+    printf '%-36s %-26s %-26s %s\n' "$key" "${cur:-n/a}" "$value" "$mark"
+  done < <(net_tune_targets)
+  echo "(* = already at target)"
+  if [[ -f "$NET_TUNE_CONF" ]]; then
+    echo "sysctl file: ${NET_TUNE_CONF} (present)"
+  else
+    echo "sysctl file: ${NET_TUNE_CONF} (absent - run: wgpanel tune apply)"
+  fi
+  iface="$(net_tune_default_iface)"
+  if [[ -n "$iface" ]] && command -v ethtool >/dev/null 2>&1; then
+    echo "NIC ${iface}: $(ethtool -k "$iface" 2>/dev/null | grep -E '^(rx-udp-gro-forwarding|rx-gro-list):' | tr -s ' ' | tr '\n' ' ')"
+  else
+    echo "NIC: ethtool not available"
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    echo "wgpanel-net-tune.service: $(systemctl is-enabled wgpanel-net-tune.service 2>/dev/null || echo not-installed)"
+  fi
+}
+
+net_tune_revert() {
+  local key value
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now wgpanel-net-tune.service >/dev/null 2>&1 || true
+  fi
+  rm -f "$NET_TUNE_UNIT" "$NET_TUNE_NIC_SCRIPT" "$NET_TUNE_CONF"
+  command -v systemctl >/dev/null 2>&1 && { systemctl daemon-reload >/dev/null 2>&1 || true; }
+  if [[ -f "$NET_TUNE_PREV" ]]; then
+    while read -r key value; do
+      sysctl -q -w "${key}=${value}" >/dev/null 2>&1 || true
+    done < "$NET_TUNE_PREV"
+    rm -f "$NET_TUNE_PREV"
+    log "Network tuning removed and the previous kernel values restored."
+  else
+    log "Network tuning files removed (no saved values; kernel settings return to default on reboot)."
+  fi
+  return 0
+}
+# <<< wgpanel net-tune
 
 main() {
   local cmd="${1:-}"
@@ -402,6 +603,7 @@ main() {
     version) cmd_version ;;
     create-admin) cmd_create_admin "$@" ;;
     show-bootstrap-admin) cmd_show_bootstrap_admin ;;
+    tune) cmd_tune "$@" ;;
     uninstall) cmd_uninstall ;;
     *) usage ;;
   esac
