@@ -61,6 +61,19 @@ var resellerRoutes = map[string]bool{
 	"GET /api/v1/accounts/{id}/devices":              true,
 	"GET /api/v1/accounts/{id}/steer":                true,
 	"POST /api/v1/accounts/{id}/subscription/rotate": true,
+	// Notification center (scoped to the reseller's own namespace) and the reseller's
+	// own webhook endpoints (store-scoped by namespace, SSRF override never applies).
+	"GET /api/v1/notifications":                                     true,
+	"POST /api/v1/notifications/read-all":                           true,
+	"POST /api/v1/notifications/{id}/read":                          true,
+	"GET /api/v1/webhooks":                                          true,
+	"POST /api/v1/webhooks":                                         true,
+	"PATCH /api/v1/webhooks/{id}":                                   true,
+	"DELETE /api/v1/webhooks/{id}":                                  true,
+	"POST /api/v1/webhooks/{id}/rotate-secret":                      true,
+	"POST /api/v1/webhooks/{id}/test":                               true,
+	"GET /api/v1/webhooks/{id}/deliveries":                          true,
+	"POST /api/v1/webhooks/{id}/deliveries/{delivery_id}/redeliver": true,
 }
 
 // resellerLimits fetches the reseller's limits row (test hook: ResellerLimitsLookup).

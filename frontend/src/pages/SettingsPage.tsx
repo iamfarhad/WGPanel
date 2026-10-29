@@ -18,6 +18,8 @@ import { Illustration, type IllustrationName } from '../components/brand/Brand'
 import { Skeleton } from '../components/ui/Skeleton'
 import { Dialog } from '../components/ui/Dialog'
 import { SecuritySettingsCard } from '../components/SecuritySettingsCard'
+import { NotificationChannelsCard } from '../components/settings/NotificationChannelsCard'
+import { BackupScheduleCard } from '../components/settings/BackupScheduleCard'
 
 interface Settings {
   public_base_url: string | null
@@ -628,6 +630,8 @@ export function SettingsPage() {
         <SecuritySettingsCard />
 
         <BackupCard />
+        <BackupScheduleCard />
+        <NotificationChannelsCard />
       </div>
     </div>
   )

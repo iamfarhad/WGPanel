@@ -40,6 +40,14 @@ const codeMessages: Record<string, string> = {
   endpoint_check_disabled: 'Health checks are turned off for this endpoint.',
   rate_limited: 'Too many requests - wait a moment and try again.',
   invalid_cursor: 'The page position is no longer valid - reload the list.',
+  webhook_url_blocked: 'That address points to a private or internal network and is not allowed for webhooks.',
+  webhook_not_found: 'That webhook no longer exists.',
+  delivery_not_found: 'That delivery no longer exists.',
+  channel_not_found: 'That notification channel no longer exists.',
+  channel_test_failed: 'The test message could not be delivered.',
+  notification_not_found: 'That notification no longer exists.',
+  backup_not_configured: 'Set a backup password and enable a destination first.',
+  backup_in_progress: 'A backup is already running.',
 }
 
 export function apiErrorMessage(err: unknown, t: (text: string) => string, fallback = 'Something went wrong'): string {

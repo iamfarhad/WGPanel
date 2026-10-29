@@ -19,6 +19,7 @@ import (
 	"wgpanel-api/internal/authcrypto"
 	"wgpanel-api/internal/caddyadmin"
 	"wgpanel-api/internal/config"
+	"wgpanel-api/internal/events"
 	"wgpanel-api/internal/httpapi"
 	"wgpanel-api/internal/nodeca"
 	"wgpanel-api/internal/redisclient"
@@ -97,6 +98,7 @@ func run(logger *slog.Logger) error {
 		BootPanelDomain: cfg.PanelDomain,
 		CADataDir:       caDataDir,
 		NodeAgentPort:   cfg.NodeAgentPort,
+		Events:          events.NewBus(1024, logger),
 	}
 
 	httpServer := &http.Server{
@@ -118,6 +120,8 @@ func run(logger *slog.Logger) error {
 
 	go srv.RunOfflineSweepLoop(ctx)
 	go srv.RunEndpointHealthLoop(ctx)
+	// Event dispatcher, webhook delivery queue, threshold sweep and scheduled backups.
+	go srv.RunNotificationWorkers(ctx)
 	// Re-push any UI-managed domain config (panel domain changed from Settings, or
 	// the DB-only subscription origin) to Caddy, which always boots from the static
 	// Caddyfile - see ReapplyDomainConfig for why this must happen on every start.

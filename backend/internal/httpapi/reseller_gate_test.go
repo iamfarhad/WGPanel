@@ -33,9 +33,10 @@ func routePatterns(t *testing.T) []string {
 	t.Helper()
 	re := regexp.MustCompile(`mux\.Handle(?:Func)?\("([A-Z]+ [^"]+)"`)
 	var out []string
-	// security.go holds the sign-in security routes (registerSecurityRoutes).
-	for _, f := range []string{"server.go", "security.go"} {
-		src, err := os.ReadFile(f)
+	// Routes live in server.go and in feature files that register their own groups
+	// (security.go: registerSecurityRoutes, notify_api.go: registerNotificationRoutes).
+	for _, file := range []string{"server.go", "security.go", "notify_api.go"} {
+		src, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -82,7 +83,7 @@ func TestResellerAllowlist(t *testing.T) {
 			continue
 		}
 		method, path, _ := strings.Cut(pattern, " ")
-		path = strings.NewReplacer("{id}", "x").Replace(path)
+		path = strings.NewReplacer("{id}", "x", "{delivery_id}", "y").Replace(path)
 		_, reached := doAs(s, token, method, path)
 		if want := resellerRoutes[pattern]; reached != want {
 			t.Errorf("%s: reseller reached handler = %v, allowlist says %v", pattern, reached, want)

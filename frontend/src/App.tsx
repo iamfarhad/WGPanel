@@ -18,6 +18,8 @@ import { ReportsPage } from './pages/ReportsPage'
 import { SecurityPage } from './pages/SecurityPage'
 import { TemplatesPage } from './pages/TemplatesPage'
 import { SubscriptionPage } from './pages/SubscriptionPage'
+import { WebhooksPage } from './pages/WebhooksPage'
+import { NotificationsPage } from './pages/NotificationsPage'
 
 const queryClient = new QueryClient()
 
@@ -50,6 +52,8 @@ function App() {
                   <Route path="/resellers" element={<ResellersPage />} />
                   <Route path="/reports" element={<ReportsPage />} />
                   <Route path="/security" element={<SecurityPage />} />
+                  <Route path="/webhooks" element={<WebhooksPage />} />
+                  <Route path="/notifications" element={<NotificationsPage />} />
                 </Route>
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
               </Routes>
