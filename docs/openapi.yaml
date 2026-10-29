@@ -94,6 +94,8 @@ tags:
     description: Reseller logins with account/traffic/expiry/node-group limits (super_admin manages; reseller self-service is limited to its own accounts).
   - name: Auth
     description: Admin login/session management.
+  - name: Security
+    description: Admin sign-in security - TOTP two-factor, recovery codes, passkeys (WebAuthn), login lockout and the admin IP allowlist.
   - name: Nodes
     description: WireGuard server (node) directory and lifecycle.
   - name: Accounts
@@ -261,6 +263,15 @@ paths:
     post:
       tags: [Auth]
       summary: Log in with username/password
+      description: >-
+        If the admin has two-factor authentication (TOTP and/or passkeys) and the password is
+        correct, the response is `{mfa_required: true, mfa_token, methods}` with **no** session
+        tokens; finish with `POST /api/v1/auth/mfa/totp`, `/mfa/recovery` or
+        `/mfa/passkey/*`. Failed attempts are counted per username and per client IP in Redis
+        (defaults: 5 failures lock for 15 minutes, doubling on repeat lockouts; thresholds are in
+        Settings -> Security) - a locked caller gets `429 too_many_attempts` with a `Retry-After`
+        header, even with a correct password. When the admin IP allowlist is set, an address
+        outside it gets `403 ip_not_allowed`.
       security: []
       requestBody:
         required: true
@@ -283,12 +294,23 @@ paths:
                   access_token: { type: string, description: "JWT, 15 minute TTL" }
                   refresh_token: { type: string, description: "Redis-backed, 7 day TTL" }
                   expires_in_seconds: { type: integer, example: 900 }
+                  mfa_required: { type: boolean, description: "true instead of the tokens above when a second factor is needed" }
+                  mfa_token: { type: string, description: "Short-lived (5 min), single-use; exchange it at /auth/mfa/*" }
+                  methods:
+                    type: array
+                    items: { type: string, enum: [totp, recovery, passkey] }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401":
           description: Invalid username or password (same response for both cases, to avoid leaking which one was wrong).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "403":
+          description: "`ip_not_allowed` - the caller's IP is not on the admin IP allowlist."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/auth/refresh:
@@ -326,6 +348,442 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/auth/mfa/totp:
+    post:
+      tags: [Auth]
+      summary: Finish a two-factor login with an authenticator code
+      description: Exchanges `mfa_token` + a 6-digit TOTP code for the normal token pair. The token is single-use; 5 wrong codes burn it. Wrong codes count toward the login lockout.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mfa_token, code]
+              properties:
+                mfa_token: { type: string }
+                code: { type: string, example: "123456" }
+      responses:
+        "200": { $ref: "#/components/responses/SessionTokens" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: "`invalid_mfa_code` or `mfa_token_invalid` (expired / already used)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "403":
+          description: "`ip_not_allowed`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/auth/mfa/recovery:
+    post:
+      tags: [Auth]
+      summary: Finish a two-factor login with a one-time recovery code
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mfa_token, recovery_code]
+              properties:
+                mfa_token: { type: string }
+                recovery_code: { type: string, example: "abcde-fghij" }
+      responses:
+        "200": { $ref: "#/components/responses/SessionTokens" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: "`invalid_mfa_code` or `mfa_token_invalid`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "403":
+          description: "`ip_not_allowed`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/auth/mfa/passkey/begin:
+    post:
+      tags: [Auth]
+      summary: Start a passkey assertion as the second factor
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mfa_token]
+              properties:
+                mfa_token: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/PasskeyOptions" }
+        "400":
+          description: "`invalid_request`, `no_passkeys` or `passkeys_unavailable` (the page's Origin is not the panel domain over HTTPS, or http://localhost)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401":
+          description: "`mfa_token_invalid`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/auth/mfa/passkey/finish:
+    post:
+      tags: [Auth]
+      summary: Finish the passkey second factor
+      description: Body is the raw `PublicKeyCredential` JSON produced by `navigator.credentials.get()`. `session` is the `session_id` from begin.
+      security: []
+      parameters:
+        - { name: session, in: query, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: "WebAuthn assertion response (base64url fields)" }
+      responses:
+        "200": { $ref: "#/components/responses/SessionTokens" }
+        "400":
+          description: "`passkey_session_expired` or `passkeys_unavailable`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401":
+          description: "`invalid_mfa_code` (assertion failed, including a non-increasing signature counter) or `mfa_token_invalid`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/auth/passkey/begin:
+    post:
+      tags: [Auth]
+      summary: Start a passwordless passkey sign-in
+      description: Discoverable (usernameless) credentials; user verification is required. The RP ID is derived from the panel domain (or `localhost` over http for development).
+      security: []
+      responses:
+        "200": { $ref: "#/components/responses/PasskeyOptions" }
+        "400":
+          description: "`passkeys_unavailable`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "403":
+          description: "`ip_not_allowed`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/auth/passkey/finish:
+    post:
+      tags: [Auth]
+      summary: Finish a passwordless passkey sign-in
+      description: Body is the raw `PublicKeyCredential` JSON from `navigator.credentials.get()`. Returns the normal token pair.
+      security: []
+      parameters:
+        - { name: session, in: query, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: "WebAuthn assertion response (base64url fields)" }
+      responses:
+        "200": { $ref: "#/components/responses/SessionTokens" }
+        "400":
+          description: "`passkey_session_expired` or `passkeys_unavailable`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401":
+          description: "`invalid_passkey`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "403":
+          description: "`ip_not_allowed`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/me/security:
+    get:
+      tags: [Security]
+      summary: The caller's own two-factor / passkey status
+      description: Available to every admin role including resellers; always scoped to the session's own admin.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totp_enabled: { type: boolean }
+                  totp_pending: { type: boolean, description: "An enrolment was started but not confirmed." }
+                  recovery_codes_remaining: { type: integer }
+                  passkeys:
+                    type: array
+                    items: { $ref: "#/components/schemas/Passkey" }
+                  passkeys_supported: { type: boolean }
+
+  /api/v1/me/security/totp/enroll:
+    post:
+      tags: [Security]
+      summary: Start TOTP enrolment
+      description: Returns the Base32 secret and an `otpauth://` URI (render it as a QR code). Nothing is enforced until `confirm`. Calling again before confirming replaces the pending secret.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Pending secret.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { type: string }
+                  otpauth_uri: { type: string }
+        "409":
+          description: "`totp_already_enabled`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/me/security/totp/confirm:
+    post:
+      tags: [Security]
+      summary: Confirm TOTP enrolment with a code
+      description: Activates two-factor authentication and returns 10 one-time recovery codes **once** (stored only as hashes).
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/RecoveryCodes" }
+        "401":
+          description: "`invalid_mfa_code`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`totp_not_pending`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/me/security/totp/disable:
+    post:
+      tags: [Security]
+      summary: Disable TOTP (needs the password and a code)
+      description: Also removes the recovery codes. Passkeys are separate and stay. The code may be a TOTP code or an unused recovery code.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, code]
+              properties:
+                password: { type: string, format: password }
+                code: { type: string }
+      responses:
+        "204": { description: Disabled. }
+        "401":
+          description: "`invalid_credentials` or `invalid_mfa_code`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/me/security/recovery-codes:
+    post:
+      tags: [Security]
+      summary: Regenerate the recovery codes (needs the password and a code)
+      description: Invalidates every earlier recovery code and returns 10 new ones once.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, code]
+              properties:
+                password: { type: string, format: password }
+                code: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/RecoveryCodes" }
+        "401":
+          description: "`invalid_credentials` or `invalid_mfa_code`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`totp_not_enabled`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/me/security/passkeys/begin:
+    post:
+      tags: [Security]
+      summary: Start registering a passkey
+      description: Creation options (discoverable credential, user verification required) plus a `session_id` held in Redis for 5 minutes. At most 10 passkeys per admin (`passkey_limit`).
+      security:
+        - BearerAuth: []
+      responses:
+        "200": { $ref: "#/components/responses/PasskeyOptions" }
+        "400":
+          description: "`passkeys_unavailable`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`passkey_limit`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/me/security/passkeys/finish:
+    post:
+      tags: [Security]
+      summary: Finish registering a passkey
+      description: Body is the raw `PublicKeyCredential` JSON from `navigator.credentials.create()`.
+      security:
+        - BearerAuth: []
+      parameters:
+        - { name: session, in: query, required: true, schema: { type: string } }
+        - { name: name, in: query, required: false, schema: { type: string, maxLength: 64 }, description: "Label shown in the list (default Passkey)." }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: "WebAuthn attestation response (base64url fields)" }
+      responses:
+        "201":
+          description: Registered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Passkey" }
+        "400":
+          description: "`passkey_session_expired`, `passkey_verification_failed` or `passkeys_unavailable`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`passkey_exists`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/me/security/passkeys/{id}:
+    delete:
+      tags: [Security]
+      summary: Delete one of the caller's passkeys
+      security:
+        - BearerAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Deleted. }
+        "404":
+          description: "`passkey_not_found`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/admins/{id}/mfa:
+    delete:
+      tags: [Security]
+      summary: Reset an admin's two-factor authentication (super_admin)
+      description: Removes the admin's TOTP secret, recovery codes and passkeys. Audited as `admin.mfa_reset`.
+      security:
+        - BearerAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Reset. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`admin_not_found`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/security/settings:
+    get:
+      tags: [Security]
+      summary: Login lockout thresholds and the admin IP allowlist (super_admin)
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current settings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecuritySettings" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    patch:
+      tags: [Security]
+      summary: Update the lockout thresholds / admin IP allowlist (super_admin)
+      description: >-
+        An empty `admin_ip_allowlist` removes the restriction. A non-empty list is refused with
+        `allowlist_excludes_you` (400) if it would not include the requesting admin's own IP. The
+        allowlist applies to the admin login flow and JWT-authenticated admin routes only - never to
+        subscription URLs, node-agent connections or API-key requests. Break-glass: run
+        `wgpanel clear-ip-allowlist` on the server.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                admin_ip_allowlist:
+                  type: array
+                  maxItems: 100
+                  items: { type: string, example: "203.0.113.0/24" }
+                login_max_failures: { type: integer, minimum: 1, maximum: 100 }
+                login_lockout_minutes: { type: integer, minimum: 1, maximum: 1440 }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecuritySettings" }
+        "400":
+          description: "`invalid_request` or `allowlist_excludes_you`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/v1/nodes/join:
     post:
@@ -2012,6 +2470,40 @@ components:
       description: Must equal the INTERNAL_API_TOKEN env var. Gates every /internal/* route.
 
   responses:
+    TooManyAttempts:
+      description: "`too_many_attempts` - the username or client IP is locked out after repeated failures. See the `Retry-After` header (seconds)."
+      headers:
+        Retry-After: { schema: { type: integer }, description: Seconds until the lockout ends. }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    SessionTokens:
+      description: Session issued.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              access_token: { type: string }
+              refresh_token: { type: string }
+              expires_in_seconds: { type: integer, example: 900 }
+    PasskeyOptions:
+      description: WebAuthn options (`options.publicKey`, base64url-encoded binary fields) and the Redis-held `session_id` to send back to the matching finish call.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              session_id: { type: string }
+              options: { type: object }
+    RecoveryCodes:
+      description: Ten one-time recovery codes, shown only this once.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              recovery_codes: { type: array, items: { type: string }, example: ["abcde-fghij"] }
     BadRequest:
       description: "`invalid_request` - malformed JSON body or missing/invalid required fields."
       content:
@@ -2454,7 +2946,27 @@ components:
           type: string
           enum: [super_admin, operator, support]
         created_at: { type: string, format: date-time }
+        totp_enabled: { type: boolean, description: "List only: TOTP two-factor is confirmed." }
+        passkey_count: { type: integer, description: "List only: number of registered passkeys." }
       required: [id, username, role, created_at]
+
+    Passkey:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+      required: [id, name, created_at]
+
+    SecuritySettings:
+      type: object
+      properties:
+        admin_ip_allowlist: { type: array, items: { type: string } }
+        login_max_failures: { type: integer, example: 5 }
+        login_lockout_minutes: { type: integer, example: 15 }
+        your_ip: { type: string, description: "The caller's IP as the panel sees it." }
+      required: [admin_ip_allowlist, login_max_failures, login_lockout_minutes, your_ip]
 
     AdminCreateResponse:
       type: object

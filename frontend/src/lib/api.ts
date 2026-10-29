@@ -17,10 +17,13 @@ export class ApiError extends Error {
   /** The API's machine-readable error code (body.error.code), e.g.
    * "reseller_account_limit_reached" - see lib/apiErrors.ts. */
   code?: string
-  constructor(status: number, message: string, code?: string) {
+  /** Seconds from the Retry-After header (429 too_many_attempts), when present. */
+  retryAfter?: number
+  constructor(status: number, message: string, code?: string, retryAfter?: number) {
     super(message)
     this.status = status
     this.code = code
+    this.retryAfter = retryAfter
   }
 }
 
@@ -100,7 +103,8 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
       setAccessToken(null)
       setStoredRefreshToken(null)
     }
-    throw new ApiError(res.status, message, code)
+    const retry = Number(res.headers.get('Retry-After'))
+    throw new ApiError(res.status, message, code, Number.isFinite(retry) && retry > 0 ? retry : undefined)
   }
 
   if (res.status === 204) return undefined as T

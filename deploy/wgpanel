@@ -320,6 +320,19 @@ cmd_show_bootstrap_admin() {
   echo "$creds" | sed -E 's/^.*(WGPANEL_INITIAL_ADMIN_[A-Z]+=.*)$/\1/'
 }
 
+# Break-glass: remove the admin IP allowlist (Settings -> Security) when an admin has
+# locked themselves out of the panel. Needs shell access to this server, which is the
+# point - it uses the loopback-only internal API, authenticated with the install's
+# INTERNAL_API_TOKEN, so it is unaffected by the allowlist itself.
+cmd_clear_ip_allowlist() {
+  local port; port="$(api_port)"
+  if ! internal_curl -X POST "http://127.0.0.1:${port}/internal/security/clear-allowlist" >/dev/null; then
+    err "Could not clear the admin IP allowlist - is the API running? (wgpanel status)"
+    exit 1
+  fi
+  log "Admin IP allowlist cleared - the panel is reachable from any address again."
+}
+
 # ---- destructive ----
 
 cmd_uninstall() {
@@ -379,6 +392,10 @@ Admin accounts:
   show-bootstrap-admin    Re-display the auto-created first-boot super admin credentials,
                           if still present in the API's log history
 
+Recovery:
+  clear-ip-allowlist      Break-glass: remove the admin IP allowlist (Settings -> Security)
+                          if it locked every admin out of the panel
+
 Other:
   uninstall               Remove WGPanel completely: panel + self-node stacks, volumes,
                           /opt/wgpanel*, and this CLI (destructive, asks for confirmation)
@@ -402,6 +419,7 @@ main() {
     version) cmd_version ;;
     create-admin) cmd_create_admin "$@" ;;
     show-bootstrap-admin) cmd_show_bootstrap_admin ;;
+    clear-ip-allowlist) cmd_clear_ip_allowlist ;;
     uninstall) cmd_uninstall ;;
     *) usage ;;
   esac

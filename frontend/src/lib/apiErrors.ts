@@ -16,6 +16,22 @@ const codeMessages: Record<string, string> = {
   account_suspended_by_admin: 'An administrator suspended this account; only they can re-enable it.',
   reseller_has_accounts: 'This reseller still owns accounts. Delete or move them first.',
   username_taken: 'That username is already taken.',
+  too_many_attempts: 'Too many failed attempts. Try again later.',
+  invalid_mfa_code: 'That code is not valid. Check it and try again.',
+  mfa_token_invalid: 'The verification step expired. Sign in again.',
+  ip_not_allowed: 'Admin access is not permitted from your IP address.',
+  allowlist_excludes_you: 'That list would block your own IP address. Add it first.',
+  invalid_passkey: 'The passkey could not be verified.',
+  passkeys_unavailable: 'Passkeys need the panel to be opened over HTTPS on its configured domain.',
+  passkey_session_expired: 'The passkey step expired. Try again.',
+  passkey_verification_failed: 'The passkey could not be verified.',
+  passkey_exists: 'This passkey is already registered.',
+  passkey_limit: 'You have reached the maximum number of passkeys.',
+  passkey_not_found: 'That passkey no longer exists.',
+  no_passkeys: 'This account has no passkeys.',
+  totp_already_enabled: 'Two-factor authentication is already enabled.',
+  totp_not_pending: 'There is no pending two-factor setup. Start again.',
+  totp_not_enabled: 'Two-factor authentication is not enabled.',
 }
 
 export function apiErrorMessage(err: unknown, t: (text: string) => string, fallback = 'Something went wrong'): string {

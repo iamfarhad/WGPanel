@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Trash2 } from 'lucide-react'
+import { Plus, ShieldOff, Trash2 } from 'lucide-react'
 import { apiFetch, ApiError } from '../lib/api'
 import { useToast } from '../lib/toast'
 import { useAuth } from '../lib/auth'
@@ -25,6 +25,8 @@ interface AdminUser {
   username: string
   role: string
   created_at: string
+  totp_enabled?: boolean
+  passkey_count?: number
 }
 
 const ROLE_TONE: Record<string, 'blue' | 'green' | 'slate'> = {
@@ -41,6 +43,7 @@ export function AdminUsersPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<AdminUser | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null)
+  const [resetTarget, setResetTarget] = useState<AdminUser | null>(null)
 
   const adminsQuery = useQuery({
     queryKey: ['admin-users'],
@@ -62,6 +65,16 @@ export function AdminUsersPage() {
     onError: (err) => push('error', err instanceof ApiError ? err.message : 'Failed to delete admin'),
   })
 
+  const resetMfaMutation = useMutation({
+    mutationFn: (id: string) => apiFetch<void>(`/api/v1/admins/${id}/mfa`, { method: 'DELETE' }),
+    onSuccess: () => {
+      push('success', t('Two-factor authentication reset for {name}', { name: resetTarget?.username ?? '' }))
+      invalidate()
+      setResetTarget(null)
+    },
+    onError: (err) => push('error', err instanceof ApiError ? err.message : t('Failed to reset two-factor authentication')),
+  })
+
   return (
     <div>
       <PageHeader
@@ -76,7 +89,7 @@ export function AdminUsersPage() {
       />
 
       <Card className="overflow-hidden">
-        {adminsQuery.isLoading && <TableSkeleton cols={3} />}
+        {adminsQuery.isLoading && <TableSkeleton cols={4} />}
         {adminsQuery.isError && <ErrorState title="Could not load admin users." onRetry={() => adminsQuery.refetch()} />}
         {!adminsQuery.isLoading && !adminsQuery.isError && admins.length === 0 && (
           <EmptyState illustration="security" title="No admin users found" />
@@ -87,6 +100,7 @@ export function AdminUsersPage() {
               <tr>
                 <Th>Username</Th>
                 <Th>Role</Th>
+                <Th>Two-factor</Th>
                 <Th>Created</Th>
                 <Th className="text-end">Actions</Th>
               </tr>
@@ -103,11 +117,25 @@ export function AdminUsersPage() {
                     <Td>
                       <Badge tone={ROLE_TONE[a.role] ?? 'slate'}>{t(a.role.replace('_', ' '))}</Badge>
                     </Td>
+                    <Td>
+                      <div className="flex flex-wrap gap-1.5">
+                        {a.totp_enabled && <Badge tone="green">Authenticator</Badge>}
+                        {(a.passkey_count ?? 0) > 0 && (
+                          <Badge tone="blue">{t('{n} passkey(s)', { n: String(a.passkey_count) })}</Badge>
+                        )}
+                        {!a.totp_enabled && !(a.passkey_count ?? 0) && <span className="text-faint">{t('Off')}</span>}
+                      </div>
+                    </Td>
                     <Td className="text-muted">{formatDate(a.created_at, { dateStyle: 'medium' })}</Td>
                     <Td className="text-end">
-                      {!isSelf && (
-                        <RowActions actions={[{ label: 'Delete', icon: Trash2, onSelect: () => setDeleteTarget(a), danger: true }]} />
-                      )}
+                      <RowActions
+                        actions={[
+                          ...(a.totp_enabled || (a.passkey_count ?? 0) > 0
+                            ? [{ label: 'Reset two-factor', icon: ShieldOff, onSelect: () => setResetTarget(a) }]
+                            : []),
+                          ...(!isSelf ? [{ label: 'Delete', icon: Trash2, onSelect: () => setDeleteTarget(a), danger: true }] : []),
+                        ]}
+                      />
                     </Td>
                   </Tr>
                 )
@@ -134,6 +162,21 @@ export function AdminUsersPage() {
             invalidate()
             setEditTarget(null)
           }}
+        />
+      )}
+
+      {resetTarget && (
+        <ConfirmDialog
+          open
+          onClose={() => setResetTarget(null)}
+          onConfirm={() => resetMfaMutation.mutate(resetTarget.id)}
+          title="Reset two-factor authentication"
+          description={t('This removes the authenticator app, recovery codes and passkeys of "{name}". They can sign in with just their password until they set a new second step.', {
+            name: resetTarget.username,
+          })}
+          confirmLabel="Reset"
+          danger
+          submitting={resetMfaMutation.isPending}
         />
       )}
 

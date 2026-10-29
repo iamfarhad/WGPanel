@@ -31,14 +31,17 @@ func resellerTestServer(disabled bool) *Server {
 // route can't slip past the allowlist test unclassified.
 func routePatterns(t *testing.T) []string {
 	t.Helper()
-	src, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
 	re := regexp.MustCompile(`mux\.Handle(?:Func)?\("([A-Z]+ [^"]+)"`)
 	var out []string
-	for _, m := range re.FindAllStringSubmatch(string(src), -1) {
-		out = append(out, m[1])
+	// security.go holds the sign-in security routes (registerSecurityRoutes).
+	for _, f := range []string{"server.go", "security.go"} {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range re.FindAllStringSubmatch(string(src), -1) {
+			out = append(out, m[1])
+		}
 	}
 	if len(out) < 20 {
 		t.Fatalf("only found %d routes; regexp stale?", len(out))
@@ -70,6 +73,9 @@ func TestResellerAllowlist(t *testing.T) {
 	public := map[string]bool{
 		"GET /healthz": true, "POST /api/v1/auth/login": true, "POST /api/v1/auth/refresh": true,
 		"POST /api/v1/nodes/join": true, "GET /api/v1/sub/{token}": true, "GET /api/v1/sub/{token}/nodes": true,
+		"POST /api/v1/auth/mfa/totp": true, "POST /api/v1/auth/mfa/recovery": true,
+		"POST /api/v1/auth/mfa/passkey/begin": true, "POST /api/v1/auth/mfa/passkey/finish": true,
+		"POST /api/v1/auth/passkey/begin": true, "POST /api/v1/auth/passkey/finish": true,
 	}
 	for _, pattern := range routePatterns(t) {
 		if public[pattern] || strings.Contains(pattern, "/internal/") {

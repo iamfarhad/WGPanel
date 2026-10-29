@@ -17,6 +17,7 @@ import { ErrorState } from '../components/ui/ErrorState'
 import { Illustration, type IllustrationName } from '../components/brand/Brand'
 import { Skeleton } from '../components/ui/Skeleton'
 import { Dialog } from '../components/ui/Dialog'
+import { SecuritySettingsCard } from '../components/SecuritySettingsCard'
 
 interface Settings {
   public_base_url: string | null
@@ -584,6 +585,8 @@ export function SettingsPage() {
             </form>
           )}
         </Card>
+
+        <SecuritySettingsCard />
 
         <BackupCard />
       </div>

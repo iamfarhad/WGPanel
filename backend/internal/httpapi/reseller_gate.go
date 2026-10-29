@@ -21,6 +21,16 @@ var resellerRoutes = map[string]bool{
 	"GET /api/v1/me":          true,
 	"GET /api/v1/reseller/me": true,
 	"GET /api/v1/reports":     true, // always scoped to its own namespace
+	// Self-service two-factor / passkeys: the handlers act only on the session's own
+	// admin id.
+	"GET /api/v1/me/security":                  true,
+	"POST /api/v1/me/security/totp/enroll":     true,
+	"POST /api/v1/me/security/totp/confirm":    true,
+	"POST /api/v1/me/security/totp/disable":    true,
+	"POST /api/v1/me/security/recovery-codes":  true,
+	"POST /api/v1/me/security/passkeys/begin":  true,
+	"POST /api/v1/me/security/passkeys/finish": true,
+	"DELETE /api/v1/me/security/passkeys/{id}": true,
 	// A reseller manages only the API keys it owns (store-scoped, 404 otherwise).
 	"GET /api/v1/api-keys":              true,
 	"POST /api/v1/api-keys":             true,
@@ -60,6 +70,11 @@ func (s *Server) resellerLimits(ctx context.Context, adminID string) (store.Rese
 // row per request: a DB hit, but it makes "disabled" and "deleted" take effect on the
 // very next request instead of when the 15-minute access token expires.
 func (s *Server) admitAdminClaims(w http.ResponseWriter, r *http.Request, claims *authcrypto.Claims) (*CallerIdentity, bool) {
+	// The admin IP allowlist guards JWT sessions only; API-key, subscription and
+	// node-agent routes never pass through here.
+	if !s.enforceAdminIPAllowlist(w, r) {
+		return nil, false
+	}
 	identity := &CallerIdentity{IsAdmin: true, AdminID: claims.AdminID, AdminUsername: claims.Username, AdminRole: claims.Role}
 	if claims.Role != "reseller" {
 		return identity, true

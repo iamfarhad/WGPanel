@@ -138,6 +138,9 @@ type adminUserResponse struct {
 	Username  string `json:"username"`
 	Role      string `json:"role"`
 	CreatedAt string `json:"created_at"`
+	// 2FA summary (list only): whether TOTP is confirmed and how many passkeys exist.
+	TOTPEnabled  bool `json:"totp_enabled"`
+	PasskeyCount int  `json:"passkey_count"`
 }
 
 func (s *Server) handleListAdminUsers(w http.ResponseWriter, r *http.Request) {
@@ -147,9 +150,16 @@ func (s *Server) handleListAdminUsers(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not list admins")
 		return
 	}
+	mfa, err := s.Store.MFAStatusByAdmin(r.Context())
+	if err != nil {
+		s.Logger.Error("mfa_status_failed", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not list admins")
+		return
+	}
 	out := make([]adminUserResponse, 0, len(admins))
 	for _, a := range admins {
-		out = append(out, adminUserResponse{ID: a.ID, Username: a.Username, Role: a.Role, CreatedAt: a.CreatedAt.Format(time.RFC3339)})
+		st := mfa[a.ID]
+		out = append(out, adminUserResponse{ID: a.ID, Username: a.Username, Role: a.Role, CreatedAt: a.CreatedAt.Format(time.RFC3339), TOTPEnabled: st.TOTPEnabled, PasskeyCount: st.PasskeyCount})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"admins": out})
 }
