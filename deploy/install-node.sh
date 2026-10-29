@@ -15,7 +15,9 @@
 # You will be asked for:
 #   - the control-plane address (e.g. panel.example.com:48443)
 #   - a one-time join token, generated from the admin panel: Nodes -> Add Node -> Generate Token
-#   - this node's WireGuard subnet .1 address (must match the subnet you set in the panel)
+# The WireGuard listen port and interface address are taken from the node's settings
+# in the panel (they must match it exactly); you are only asked for them if the
+# panel can't be queried.
 #
 # The node image is pulled from $NODE_IMAGE (GHCR by default). If it can't be pulled
 # (private package, or before CI has published it), the script falls back to building
@@ -104,8 +106,34 @@ valid_cidr4() {
   done
 }
 
+# preflight asks the panel which node JOIN_TOKEN belongs to and the exact WireGuard
+# settings it expects (POST /agent/preflight - the token is NOT redeemed). On success
+# sets PF_NAME / PF_PORT / PF_IFACE_ADDR; PF_STATUS is the HTTP status either way.
+# Taking these from the panel instead of asking matters: a wrong interface address
+# handshakes fine but routes no traffic back to clients, and a listen port that
+# differs from the endpoint's port means clients never reach the node at all.
+preflight() {
+  local resp
+  PF_NAME="" PF_PORT="" PF_IFACE_ADDR=""
+  resp="$(curl -sk -m 10 -w '\n%{http_code}' -X POST "https://${PANEL_ADDR}/agent/preflight" \
+    -H 'Content-Type: application/json' -d "{\"join_token\":\"${JOIN_TOKEN}\"}" 2>/dev/null || true)"
+  PF_STATUS="${resp##*$'\n'}"
+  [[ "$PF_STATUS" == 200 ]] || return 1
+  resp="${resp%$'\n'*}"
+  PF_NAME="$(grep -o '"name":"[^"]*"' <<<"$resp" | head -n1 | cut -d'"' -f4 || true)"
+  PF_PORT="$(grep -o '"wg_listen_port":[0-9]*' <<<"$resp" | cut -d: -f2 || true)"
+  PF_IFACE_ADDR="$(grep -o '"wg_interface_address":"[^"]*"' <<<"$resp" | cut -d'"' -f4 || true)"
+  # Only use what would also pass the manual prompts' validation; anything else
+  # (a legacy endpoint without a port -> 0) falls back to asking.
+  [[ "$PF_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || PF_NAME=""
+  { [[ "$PF_PORT" =~ ^[0-9]+$ ]] && (( 10#$PF_PORT >= 1 && 10#$PF_PORT <= 65535 )); } || PF_PORT=""
+  valid_cidr4 "$PF_IFACE_ADDR" || PF_IFACE_ADDR=""
+  return 0
+}
+
 prompt_config() {
   local probe
+  PF_NAME="" PF_PORT="" PF_IFACE_ADDR="" PF_STATUS=""
   mkdir -p "$NODE_DIR"
 
   # The agent dials https://<addr>/agent/* - that's the panel's NODE_AGENT_PORT
@@ -150,16 +178,58 @@ prompt_config() {
     break
   done
 
-  read_required "Join token (from admin panel -> Nodes -> Add Node): " JOIN_TOKEN
-  read_required "A name for this node (e.g. de-frankfurt-1): " NODE_NAME
-
   while true; do
-    read -rp "WireGuard listen port [51820]: " WG_PORT
-    WG_PORT="${WG_PORT//$'\r'/}"
-    WG_PORT=${WG_PORT:-51820}
-    [[ "$WG_PORT" =~ ^[0-9]+$ ]] && (( 10#$WG_PORT >= 1 && 10#$WG_PORT <= 65535 )) && break
-    warn "The port must be a number between 1 and 65535."
+    read_required "Join token (from admin panel -> Nodes -> Add Node): " JOIN_TOKEN
+    # Tokens are hex; anything else (a stray quote, a space from a bad paste) would
+    # also break the JSON bodies built from it.
+    if [[ ! "$JOIN_TOKEN" =~ ^[A-Za-z0-9_-]+$ ]]; then
+      warn "That doesn't look like a join token - copy it again from the panel."
+      continue
+    fi
+    if preflight; then
+      log "Join token accepted for node '${PF_NAME:-?}'."
+      break
+    fi
+    case "$PF_STATUS" in
+      401)
+        warn "The panel rejected this join token: it is invalid, expired, or already used."
+        warn "Generate a new one in the panel (Nodes -> the node -> Generate Token). If this server"
+        warn "is already registered and you are only reinstalling it, you can continue - it keeps"
+        warn "its existing registration."
+        ;;
+      404)
+        warn "This panel version can't report the node's WireGuard settings - you'll be asked for them."
+        break
+        ;;
+      000|"")
+        warn "Could not reach the panel at ${PANEL_ADDR} to check the token."
+        ;;
+      *)
+        warn "Could not check the token with the panel (HTTP ${PF_STATUS})."
+        ;;
+    esac
+    read -rp "Continue with this token anyway? [y/N]: " CONFIRM
+    [[ "${CONFIRM,,}" == y* ]] && break
   done
+
+  if [[ -n "$PF_NAME" ]]; then
+    read_default "A name for this node [${PF_NAME}]: " NODE_NAME "$PF_NAME"
+  else
+    read_required "A name for this node (e.g. de-frankfurt-1): " NODE_NAME
+  fi
+
+  if [[ -n "$PF_PORT" ]]; then
+    WG_PORT="$PF_PORT"
+    log "WireGuard listen port: ${WG_PORT} (the port of this node's public endpoint in the panel)."
+  else
+    while true; do
+      read -rp "WireGuard listen port - must be the port in this node's public endpoint in the panel [51820]: " WG_PORT
+      WG_PORT="${WG_PORT//$'\r'/}"
+      WG_PORT=${WG_PORT:-51820}
+      [[ "$WG_PORT" =~ ^[0-9]+$ ]] && (( 10#$WG_PORT >= 1 && 10#$WG_PORT <= 65535 )) && break
+      warn "The port must be a number between 1 and 65535."
+    done
+  fi
 
   # Linux caps interface names at 15 chars (IFNAMSIZ); slashes/spaces would also
   # break the wg-quick config path inside the container.
@@ -171,11 +241,18 @@ prompt_config() {
     warn "Interface names must be 1-15 characters (letters, digits, . _ = + -)."
   done
 
-  while true; do
-    read_required "This node's own WireGuard interface address, with prefix (the .1 of the subnet you set in the panel, e.g. 10.66.0.1/24): " WG_IFACE_ADDR
-    valid_cidr4 "$WG_IFACE_ADDR" && break
-    warn "Expected a valid IPv4 address with a prefix length, e.g. 10.66.0.1/24."
-  done
+  if [[ -n "$PF_IFACE_ADDR" ]]; then
+    WG_IFACE_ADDR="$PF_IFACE_ADDR"
+    log "WireGuard interface address: ${WG_IFACE_ADDR} (from this node's subnet in the panel)."
+  else
+    # The agent re-checks this against the panel once registered and refuses to run
+    # on a mismatch, so a wrong answer here fails loudly instead of silently.
+    while true; do
+      read_required "This node's own WireGuard interface address: the .1 of the node's subnet in the panel (Nodes list), with its prefix, e.g. 10.66.0.1/24: " WG_IFACE_ADDR
+      valid_cidr4 "$WG_IFACE_ADDR" && break
+      warn "Expected a valid IPv4 address with a prefix length, e.g. 10.66.0.1/24."
+    done
+  fi
 
   cat > "$ENV_FILE" <<EOF
 NODE_IMAGE=${NODE_IMAGE}
@@ -297,27 +374,62 @@ start_node() {
   (cd "$NODE_DIR" && docker compose up -d --force-recreate)
 }
 
+# warn_client_dns surfaces the agent's client_dns_unreachable check (cmd/agent's
+# checkClientDNS): clients resolve names through this node, so resolvers it can't
+# reach mean "connected but no internet". Shared verbatim with install.sh.
+warn_client_dns() {
+  local line
+  line="$(grep -m1 '"msg":"client_dns_unreachable"' <<<"$1" || true)"
+  [[ -n "$line" ]] || return 0
+  warn "The DNS servers clients are given (panel: Settings -> Client DNS) don't answer from this"
+  warn "server: $(grep -o '"unreachable":\[[^]]*\]' <<<"$line" | cut -d: -f2 || true)"
+  warn "Clients will connect but can't resolve names. In the panel, set Client DNS to \"Each node"
+  warn "resolves for its clients\" (the default), or to resolvers this server can reach."
+}
+
 # The container being "running" says nothing about registration: a bad join token or
 # wrong panel address makes the agent crash-loop while restart: unless-stopped keeps
 # the container alive - the old 3-second check reported success anyway. Watch the
-# agent's own log markers instead ("registered" / "fatal", cmd/agent/main.go).
+# agent's own log markers instead (cmd/agent). Success is the first accepted
+# heartbeat, not the "registered" line: on a reinstall the agent may carry on with a
+# saved registration the panel no longer accepts (node deleted), which only the
+# heartbeat reveals.
 verify() {
   log "Waiting for the node to register with the control plane..."
   local logs deadline=$((SECONDS + 45))
   while (( SECONDS < deadline )); do
     sleep 3
     logs="$(cd "$NODE_DIR" && docker compose logs --no-color 2>/dev/null || true)"
-    if grep -q '"msg":"registered"' <<<"$logs"; then
-      log "Node registered with the control plane. Follow heartbeats with:"
-      log "    cd ${NODE_DIR} && docker compose logs -f"
-      return
-    fi
     if grep -q '"msg":"fatal"' <<<"$logs"; then
       err "The node agent failed to start - last log lines:"
       (cd "$NODE_DIR" && docker compose logs --no-color --tail 5) >&2 || true
-      err "The usual causes are a wrong/expired join token or a wrong control-plane address."
+      err "The usual causes are a wrong/expired join token, a wrong control-plane address, or a"
+      err "WireGuard interface address that doesn't match the node's subnet (the error says which)."
       err "Fix .env in ${NODE_DIR}, then run: cd ${NODE_DIR} && docker compose up -d --force-recreate"
       exit 1
+    fi
+    if grep -qE '"msg":"heartbeat_rejected","status":40[14]' <<<"$logs"; then
+      err "The control plane rejected this node's saved registration from a previous install"
+      err "(the node was deleted in the panel, or registered again from another server)."
+      err "Generate a new join token for this node in the panel (or add it again), then re-run install-node.sh with it."
+      exit 1
+    fi
+    if grep -q '"msg":"heartbeat_ok"' <<<"$logs"; then
+      if grep -q '"msg":"join_token_rejected_using_existing_registration"' <<<"$logs"; then
+        warn "The join token you entered was rejected, so this server kept its existing registration"
+        warn "from a previous install - that registration is still valid and in use."
+      elif grep -q '"reused":true' <<<"$logs"; then
+        log "Reusing this server's existing registration from a previous install."
+      fi
+      if grep -q '"msg":"wg_listen_port_mismatch"' <<<"$logs"; then
+        warn "WireGuard listens on ${WG_PORT}/udp, but this node's public endpoint in the panel uses"
+        warn "another port - clients dial that one. Fix the endpoint (Nodes -> Edit) unless a"
+        warn "port-forward in front of this server maps it to ${WG_PORT}."
+      fi
+      warn_client_dns "$logs"
+      log "Node registered and reporting to the control plane. Follow it with:"
+      log "    cd ${NODE_DIR} && docker compose logs -f"
+      return
     fi
   done
   if (cd "$NODE_DIR" && docker compose ps --status running --format '{{.Name}}' | grep -q .); then

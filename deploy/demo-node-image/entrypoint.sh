@@ -31,6 +31,7 @@ fi
 echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
 
 wg-quick up wg0
-export WGPANEL_WG_PUBLIC_KEY="$(cat /etc/wireguard/wg0-public.key)"
+WGPANEL_WG_PUBLIC_KEY="$(cat /etc/wireguard/wg0-public.key)"
+export WGPANEL_WG_PUBLIC_KEY
 
 exec /wgpanel-agent

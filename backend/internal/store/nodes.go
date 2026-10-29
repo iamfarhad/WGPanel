@@ -206,6 +206,22 @@ func (s *Store) RedeemJoinToken(ctx context.Context, rawToken string) (Node, err
 	return n, nil
 }
 
+// PeekJoinToken returns the node a join token would register, under exactly
+// RedeemJoinToken's validity rules, without redeeming it - install-node.sh's
+// preflight uses it to learn the node's WireGuard settings before the agent runs.
+func (s *Store) PeekJoinToken(ctx context.Context, rawToken string) (Node, error) {
+	var n Node
+	err := scanNode(s.pool.QueryRow(ctx, `
+		SELECT `+nodeColumns+` FROM nodes
+		WHERE join_token_hash = $1
+			AND (join_token_unlimited OR (status = 'pending' AND join_token_expires_at > now()))
+	`, hashToken(rawToken)), &n)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Node{}, ErrInvalidOrUsedToken
+	}
+	return n, err
+}
+
 func hashToken(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
@@ -250,7 +266,10 @@ var ErrFingerprintMismatch = errors.New("certificate fingerprint does not match 
 
 // RecordHeartbeat verifies the presented certificate's fingerprint matches what was
 // pinned at registration, then updates last_heartbeat_at and flips status to online.
-func (s *Store) RecordHeartbeat(ctx context.Context, nodeID, presentedFingerprint string) error {
+// dnsForwarder is whether the agent reports a working DNS forwarder on the node's
+// tunnel address (migration 0020) - refreshed every heartbeat, so a node downgraded to
+// an older agent falls back to public resolvers on its next one.
+func (s *Store) RecordHeartbeat(ctx context.Context, nodeID, presentedFingerprint string, dnsForwarder bool) error {
 	var storedFingerprint *string
 	err := s.pool.QueryRow(ctx, `SELECT mtls_cert_fingerprint FROM nodes WHERE id = $1`, nodeID).Scan(&storedFingerprint)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -264,8 +283,8 @@ func (s *Store) RecordHeartbeat(ctx context.Context, nodeID, presentedFingerprin
 	}
 
 	_, err = s.pool.Exec(ctx, `
-		UPDATE nodes SET status = 'online', last_heartbeat_at = now() WHERE id = $1
-	`, nodeID)
+		UPDATE nodes SET status = 'online', last_heartbeat_at = now(), dns_forwarder = $2 WHERE id = $1
+	`, nodeID, dnsForwarder)
 	return err
 }
 

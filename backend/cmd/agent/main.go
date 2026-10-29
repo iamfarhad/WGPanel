@@ -34,11 +34,24 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	logger.Info("registered", "node_id", id.NodeID)
+	// Before "registered" is logged: the installers treat that line as progress, so a
+	// mismatched interface must surface as "fatal" first.
+	if err := checkNodeNetwork(cfg, id.Network, logger); err != nil {
+		return err
+	}
+	logger.Info("registered", "node_id", id.NodeID, "reused", id.Reused)
+
+	// Without a forwarder the node still works: heartbeats report it missing and the
+	// panel gives this node's clients the public default resolvers instead.
+	forwarder, err := startDNSForwarder(cfg.WGInterface, "/etc/resolv.conf", logger)
+	if err != nil {
+		logger.Warn("dns_forwarder_unavailable", "error", err)
+	} else {
+		defer forwarder.Close()
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	runHeartbeatLoop(ctx, cfg, id, logger)
-	return nil
+	return runHeartbeatLoop(ctx, cfg, id, forwarder != nil, logger)
 }

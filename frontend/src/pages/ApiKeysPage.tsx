@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, KeyRound, Ban, RotateCw, Copy, AlertTriangle } from 'lucide-react'
+import { Plus, Ban, RotateCw, Copy, AlertTriangle } from 'lucide-react'
 import { apiFetch, ApiError } from '../lib/api'
 import { useToast } from '../lib/toast'
 import { PageHeader } from '../components/ui/PageHeader'
@@ -14,6 +14,7 @@ import { Badge } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
+import { RowActions } from '../components/ui/RowActions'
 
 interface ApiKey {
   id: string
@@ -83,14 +84,14 @@ export function ApiKeysPage() {
 
       <Card className="overflow-hidden">
         {keysQuery.isLoading && <TableSkeleton cols={5} />}
-        {keysQuery.isError && <p className="p-6 text-sm text-rose-600 dark:text-rose-400">Could not load API keys.</p>}
+        {keysQuery.isError && <p className="p-6 text-sm text-danger-fg">Could not load API keys.</p>}
         {!keysQuery.isLoading && !keysQuery.isError && keys.length === 0 && (
           <EmptyState
-            icon={KeyRound}
+            mascot
             title="No API keys yet"
             description="Create one to let your Telegram bot talk to this panel."
             action={
-              <Button variant="secondary" onClick={() => setCreateOpen(true)}>
+              <Button onClick={() => setCreateOpen(true)}>
                 <Plus className="h-4 w-4" />
                 New API key
               </Button>
@@ -106,7 +107,7 @@ export function ApiKeysPage() {
                 <Th>Permissions</Th>
                 <Th>Node groups</Th>
                 <Th>Status</Th>
-                <Th className="text-right">Actions</Th>
+                <Th className="text-end">Actions</Th>
               </tr>
             </THead>
             <tbody>
@@ -127,23 +128,14 @@ export function ApiKeysPage() {
                   <Td>
                     <Badge dot tone={k.revoked ? 'red' : 'green'}>{k.revoked ? 'revoked' : 'active'}</Badge>
                   </Td>
-                  <Td>
+                  <Td className="text-end">
                     {!k.revoked && (
-                      <div className="flex justify-end gap-1.5">
-                        <Button variant="secondary" size="sm" onClick={() => rotateMutation.mutate(k.id)} disabled={rotateMutation.isPending}>
-                          <RotateCw className="h-3.5 w-3.5" />
-                          Rotate
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => setRevokeTarget(k)}
-                          className="text-rose-600 hover:border-rose-300 hover:bg-rose-500/10 dark:text-rose-400 dark:hover:border-rose-500/40"
-                        >
-                          <Ban className="h-3.5 w-3.5" />
-                          Revoke
-                        </Button>
-                      </div>
+                      <RowActions
+                        actions={[
+                          { label: 'Rotate secret', icon: RotateCw, onSelect: () => rotateMutation.mutate(k.id), disabled: rotateMutation.isPending },
+                          { label: 'Revoke', icon: Ban, onSelect: () => setRevokeTarget(k), danger: true },
+                        ]}
+                      />
                     )}
                   </Td>
                 </Tr>
@@ -178,7 +170,7 @@ export function ApiKeysPage() {
 
       {revealedSecret && (
         <Dialog open onClose={() => setRevealedSecret(null)} title="Secret key">
-          <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700 dark:text-amber-400">
+          <div className="mb-4 flex items-start gap-2.5 rounded-control border border-warning/25 bg-warning-soft px-3 py-2.5 text-sm text-warning-fg">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <span>This secret is shown once. Store it securely — it cannot be retrieved again.</span>
           </div>
@@ -289,7 +281,7 @@ function CreateApiKeyDialog({
             ))}
           </div>
         </div>
-        {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
+        {error && <p className="text-sm text-danger-fg">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel

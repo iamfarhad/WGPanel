@@ -16,6 +16,7 @@ import { Badge } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
+import { RowActions } from '../components/ui/RowActions'
 
 interface AdminUser {
   id: string
@@ -73,7 +74,7 @@ export function AdminUsersPage() {
 
       <Card className="overflow-hidden">
         {adminsQuery.isLoading && <TableSkeleton cols={3} />}
-        {adminsQuery.isError && <p className="p-6 text-sm text-rose-600 dark:text-rose-400">Could not load admin users.</p>}
+        {adminsQuery.isError && <p className="p-6 text-sm text-danger-fg">Could not load admin users.</p>}
         {!adminsQuery.isLoading && !adminsQuery.isError && admins.length === 0 && (
           <EmptyState icon={ShieldCheck} title="No admin users found" />
         )}
@@ -84,7 +85,7 @@ export function AdminUsersPage() {
                 <Th>Username</Th>
                 <Th>Role</Th>
                 <Th>Created</Th>
-                <Th className="text-right">Actions</Th>
+                <Th className="text-end">Actions</Th>
               </tr>
             </THead>
             <tbody>
@@ -94,28 +95,15 @@ export function AdminUsersPage() {
                   <Tr key={a.id} interactive onClick={() => setEditTarget(a)}>
                     <Td className="font-medium text-fg">
                       {a.username}
-                      {isSelf && <span className="ml-2 text-xs font-normal text-faint">(you)</span>}
+                      {isSelf && <span className="ms-2 text-xs font-normal text-faint">(you)</span>}
                     </Td>
                     <Td>
                       <Badge tone={ROLE_TONE[a.role] ?? 'slate'}>{a.role.replace('_', ' ')}</Badge>
                     </Td>
                     <Td className="text-muted">{new Date(a.created_at).toLocaleDateString()}</Td>
-                    <Td>
+                    <Td className="text-end">
                       {!isSelf && (
-                        <div className="flex justify-end">
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setDeleteTarget(a)
-                            }}
-                            className="text-rose-600 hover:border-rose-300 hover:bg-rose-500/10 dark:text-rose-400 dark:hover:border-rose-500/40"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            Delete
-                          </Button>
-                        </div>
+                        <RowActions actions={[{ label: 'Delete', icon: Trash2, onSelect: () => setDeleteTarget(a), danger: true }]} />
                       )}
                     </Td>
                   </Tr>
@@ -225,7 +213,7 @@ function EditAdminDialog({
             autoComplete="new-password"
           />
         </Field>
-        {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
+        {error && <p className="text-sm text-danger-fg">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel
@@ -298,7 +286,7 @@ function CreateAdminDialog({
             <option value="super_admin">Super admin</option>
           </Select>
         </Field>
-        {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
+        {error && <p className="text-sm text-danger-fg">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel
