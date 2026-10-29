@@ -21,6 +21,7 @@ var backupTables = []string{
 	"admin_recovery_codes",
 	"admin_passkeys",
 	"nodes",
+	"node_endpoints",
 	"accounts",
 	"account_peers",
 	"account_devices",

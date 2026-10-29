@@ -117,6 +117,7 @@ func run(logger *slog.Logger) error {
 	}
 
 	go srv.RunOfflineSweepLoop(ctx)
+	go srv.RunEndpointHealthLoop(ctx)
 	// Re-push any UI-managed domain config (panel domain changed from Settings, or
 	// the DB-only subscription origin) to Caddy, which always boots from the static
 	// Caddyfile - see ReapplyDomainConfig for why this must happen on every start.

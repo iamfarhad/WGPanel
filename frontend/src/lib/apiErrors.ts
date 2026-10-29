@@ -35,6 +35,11 @@ const codeMessages: Record<string, string> = {
   totp_already_enabled: 'Two-factor authentication is already enabled.',
   totp_not_pending: 'There is no pending two-factor setup. Start again.',
   totp_not_enabled: 'Two-factor authentication is not enabled.',
+  endpoint_not_found: 'That endpoint no longer exists on this node.',
+  endpoint_label_taken: 'This node already has an endpoint with that label.',
+  endpoint_check_disabled: 'Health checks are turned off for this endpoint.',
+  rate_limited: 'Too many requests - wait a moment and try again.',
+  invalid_cursor: 'The page position is no longer valid - reload the list.',
 }
 
 export function apiErrorMessage(err: unknown, t: (text: string) => string, fallback = 'Something went wrong'): string {

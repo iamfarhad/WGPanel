@@ -2,9 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -305,6 +307,8 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 
 	var accounts []store.Account
 	var err error
+	var nextCursor *string
+	cursorMode := false
 	if ref := q.Get("external_ref"); ref != "" {
 		// Exact-match lookup: limit, offset and the admin owner filters do not apply.
 		accounts, err = s.Store.FindAccountsByExternalRef(ctx, ref, ns)
@@ -317,6 +321,10 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 		// Unlike limit (a bad value falls back to the default), a bad offset is refused:
 		// silently serving page 0 would make a paging loop spin forever on page 0.
+		if q.Has("cursor") && q.Has("offset") {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", "use either cursor or offset, not both")
+			return
+		}
 		offset := 0
 		if q.Has("offset") {
 			n, perr := strconv.Atoi(q.Get("offset"))
@@ -338,7 +346,25 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 				ownerFilter = store.ResellerNamespace(v)
 			}
 		}
-		accounts, err = s.Store.ListAccounts(ctx, limit, offset, ns, ownerFilter)
+		if q.Has("cursor") {
+			// Keyset paging (?cursor= starts; then pass the previous next_cursor).
+			// One extra row is fetched to know whether another page exists.
+			afterAt, afterID, cerr := decodeAccountCursor(q.Get("cursor"))
+			if cerr != nil {
+				writeJSONError(w, http.StatusBadRequest, "invalid_cursor", "cursor is not valid - restart paging with an empty cursor")
+				return
+			}
+			accounts, err = s.Store.ListAccountsAfter(ctx, limit+1, afterAt, afterID, ns, ownerFilter)
+			if err == nil && len(accounts) > limit {
+				accounts = accounts[:limit]
+				last := accounts[len(accounts)-1]
+				c := encodeAccountCursor(last.CreatedAt, last.ID)
+				nextCursor = &c
+			}
+			cursorMode = true
+		} else {
+			accounts, err = s.Store.ListAccounts(ctx, limit, offset, ns, ownerFilter)
+		}
 	}
 	if err != nil {
 		s.Logger.Error("list_accounts_failed", "error", err)
@@ -357,7 +383,44 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, toAccountResponse(a, peers, subBase))
 	}
+	if cursorMode {
+		// next_cursor is null on the last page. Only present in cursor mode, so the
+		// limit/offset response shape is unchanged.
+		writeJSON(w, http.StatusOK, map[string]any{"accounts": out, "next_cursor": nextCursor})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
+}
+
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// encodeAccountCursor/decodeAccountCursor: an opaque keyset position
+// (created_at microseconds, id), the exact sort key of ListAccounts.
+func encodeAccountCursor(createdAt time.Time, id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(createdAt.UnixMicro(), 10) + "|" + id))
+}
+
+func decodeAccountCursor(c string) (*time.Time, string, error) {
+	if c == "" {
+		return nil, "", nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(c)
+	if err != nil {
+		return nil, "", err
+	}
+	micros, id, ok := strings.Cut(string(raw), "|")
+	if !ok || id == "" {
+		return nil, "", errors.New("malformed cursor")
+	}
+	n, err := strconv.ParseInt(micros, 10, 64)
+	if err != nil {
+		return nil, "", err
+	}
+	if !uuidPattern.MatchString(id) {
+		return nil, "", errors.New("malformed cursor id")
+	}
+	t := time.UnixMicro(n).UTC()
+	return &t, id, nil
 }
 
 func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
@@ -692,10 +755,22 @@ func (s *Server) handleGetAccountConfig(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Rendering (including the hard-won DNS and MTU=1280 choices) lives in
+	// ?endpoint_id= (staff only): a specific node endpoint's uuid, or "direct" for the
+	// node's public_endpoint. Without it the best healthy endpoint is chosen automatically.
+	endpointID := r.URL.Query().Get("endpoint_id")
+	if endpointID != "" && (identity.ResellerID != "" || !identity.IsAdmin) {
+		writeJSONError(w, http.StatusForbidden, "forbidden", "endpoint_id is available to panel staff only")
+		return
+	}
+
+	// Rendering (including the hard-won DNS and MTU choices) lives in
 	// renderPeerConfig, shared with the subscription endpoint so the two config
 	// surfaces can never drift apart.
-	config, err := s.renderPeerConfig(ctx, id, ns, target)
+	config, err := s.renderPeerConfig(ctx, id, ns, target, endpointID)
+	if errors.Is(err, errEndpointNotFound) {
+		writeJSONError(w, http.StatusNotFound, "endpoint_not_found", "that endpoint does not exist on this node")
+		return
+	}
 	if errors.Is(err, errNodeMissingPublicKey) {
 		writeJSONError(w, http.StatusConflict, "node_missing_public_key", "the node this account is on has no public key set yet")
 		return

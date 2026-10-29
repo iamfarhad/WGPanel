@@ -54,6 +54,21 @@ info:
     `message` is a human-readable string that MAY change wording over time —
     integrate against `code`, not `message`.
 
+    ## Rate limiting
+
+    Bot API requests authenticated with an API key are limited by a token bucket
+    **per key** (default 20 requests/second, burst 40; both configurable in
+    Settings as `api_rate_rps` / `api_rate_burst`). The limiter runs after the
+    signature check, so a forged request can never use up a real key's budget.
+    Every response to a keyed request carries `X-RateLimit-Limit` (bucket
+    capacity), `X-RateLimit-Remaining` (whole tokens left) and
+    `X-RateLimit-Reset` (seconds until the bucket is full again). When the bucket
+    is empty the API answers `429` with code `rate_limited` and a `Retry-After`
+    header (seconds). The public subscription endpoints are limited **per client
+    IP** instead (a generous bucket, plus a much stricter allowance for unknown
+    tokens so token guessing stops after a handful of tries) and answer the same
+    `429`.
+
     ## Two listeners
 
     This spec documents two distinct HTTP servers this backend runs:
@@ -933,6 +948,188 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/nodes/{id}/endpoints:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Nodes]
+      summary: List a node's entry endpoints (relays)
+      description: >-
+        Staff admin sessions only (any role; not available to resellers or API
+        keys). Besides its direct `public_endpoint`, a node can have several
+        entry endpoints - typically relay servers in a country where the node's
+        own address is blocked. Generated configs and subscriptions use the
+        **highest-`priority` enabled endpoint that is healthy** (health_check
+        `none`, or `tcp` with a recent `up` verdict) and fall back to the node's
+        `public_endpoint`, so a node without endpoints behaves exactly as before.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Endpoints, highest priority first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  endpoints:
+                    type: array
+                    items: { $ref: "#/components/schemas/NodeEndpoint" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [Nodes]
+      summary: Add an entry endpoint to a node
+      description: Admin session with role >= `operator`.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, address]
+              properties:
+                label: { type: string, maxLength: 64, description: Unique per node. }
+                address: { type: string, example: "relay.example.ir:51820", description: "host:port written into clients' `Endpoint =`." }
+                kind: { type: string, enum: [direct, relay], default: relay }
+                priority: { type: integer, default: 100, description: Higher wins. }
+                enabled: { type: boolean, default: true }
+                mtu: { type: integer, minimum: 1200, maximum: 1420, nullable: true, description: Per-endpoint client MTU override. }
+                health_check: { type: string, enum: [none, tcp], default: none }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NodeEndpoint" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`endpoint_label_taken`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/nodes/{id}/endpoints/{endpointId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: endpointId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Nodes]
+      summary: Update a node endpoint
+      description: >-
+        Admin session with role >= `operator`. Only provided fields change;
+        `clear_mtu: true` removes the MTU override. Changing `address` or
+        `health_check` resets the health verdict to `unknown`.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string }
+                address: { type: string }
+                kind: { type: string, enum: [direct, relay] }
+                priority: { type: integer }
+                enabled: { type: boolean }
+                mtu: { type: integer, minimum: 1200, maximum: 1420 }
+                clear_mtu: { type: boolean }
+                health_check: { type: string, enum: [none, tcp] }
+      responses:
+        "200":
+          description: Updated endpoint.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NodeEndpoint" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`endpoint_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`endpoint_label_taken`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [Nodes]
+      summary: Delete a node endpoint
+      description: Admin session with role >= `operator`.
+      security:
+        - BearerAuth: []
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`endpoint_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/nodes/{id}/endpoints/{endpointId}/check:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: endpointId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Nodes]
+      summary: Run an endpoint's health check now
+      description: >-
+        Admin session with role >= `operator`. Performs the endpoint's TCP-connect
+        check immediately (3 s timeout) and returns the refreshed endpoint. A
+        background job also re-checks each `tcp` endpoint at most once a minute.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Endpoint with fresh `last_status`/`last_checked_at`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NodeEndpoint" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`endpoint_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`endpoint_check_disabled` - the endpoint's health_check is `none`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/nodes/{id}/join-token:
     post:
       tags: [Nodes]
@@ -1061,6 +1258,17 @@ paths:
             empty - is rejected with 400 `invalid_request` rather than silently
             read as 0. Ignored when `external_ref` is given.
           schema: { type: integer, minimum: 0, default: 0 }
+        - name: cursor
+          in: query
+          description: >-
+            Keyset (cursor) paging. Pass an empty value (`?cursor=`) for the
+            first page, then the previous response's `next_cursor` until it is
+            `null`. Cursor paging stays correct while accounts are created or
+            deleted between requests, unlike `offset`. Mutually exclusive with
+            `offset` (400 `invalid_request`); a malformed value is 400
+            `invalid_cursor`. The `next_cursor` field only appears in cursor
+            mode - the `limit`/`offset` response shape is unchanged.
+          schema: { type: string }
         - name: external_ref
           in: query
           description: >-
@@ -1087,12 +1295,17 @@ paths:
                   accounts:
                     type: array
                     items: { $ref: "#/components/schemas/Account" }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Only present when `cursor` was passed. `null` on the last page.
         "400":
-          description: "`invalid_request` - `offset` is not an integer >= 0."
+          description: "`invalid_request` - `offset` is not an integer >= 0, or both `cursor` and `offset` were given; `invalid_cursor` - malformed `cursor`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/accounts/bulk:
@@ -1602,6 +1815,17 @@ paths:
           required: false
           schema: { type: string, format: uuid }
           description: Required if the account has peers on more than one node; optional (defaults to the only peer) otherwise.
+        - name: endpoint_id
+          in: query
+          required: false
+          schema: { type: string, description: "A node endpoint id, or the literal `direct` for the node's public_endpoint." }
+          description: >-
+            Staff admin sessions only (403 `forbidden` for resellers and API
+            keys). Renders the config for that specific entry endpoint of the
+            node, even if it is disabled or down. Without it the highest-priority
+            enabled, healthy node endpoint is used, falling back to the node's
+            `public_endpoint`. The `MTU` line is the endpoint's own `mtu` if set,
+            else the panel's `client_mtu` setting.
       security:
         - BearerAuth: []
         - ApiKeyAuth: []
@@ -1629,7 +1853,7 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404":
-          description: "`account_not_found`, or `node_not_found` if `node_id` doesn't match any of this account's peers."
+          description: "`account_not_found`, `node_not_found` if `node_id` doesn't match any of this account's peers, or `endpoint_not_found` if `endpoint_id` isn't an endpoint of that node."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
@@ -1779,11 +2003,27 @@ paths:
         Suspended/expired accounts get 403 `account_suspended` rather than a
         config that would silently fail to handshake. The token never appears
         in access logs (redacted by the logging middleware).
+
+
+        **Content negotiation.** A browser navigation (an `Accept` header that
+        lists `text/html`) is answered with `302` to `/s/{token}` on the same
+        origin - the public customer page, see `GET /api/v1/sub/{token}/info`.
+        Clients, bots and curl (no `Accept`, `*/*`, anything else) keep getting
+        the config exactly as before; `?format=conf` forces the config even for
+        a browser (the page's download button uses it). The config's `Endpoint`
+        is the best healthy node endpoint (relay) or the node's
+        `public_endpoint`; its `MTU` follows the `client_mtu` setting.
+        Rate limited per client IP (429 `rate_limited`).
       parameters:
         - name: token
           in: path
           required: true
           schema: { type: string }
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [conf] }
+          description: Force the config response (skip the browser redirect).
         - name: node_id
           in: query
           required: false
@@ -1802,11 +2042,16 @@ paths:
           content:
             application/octet-stream:
               schema: { type: string }
+        "302":
+          description: Browser navigation - redirect to the public page `/s/{token}` (same origin).
+          headers:
+            Location: { schema: { type: string, example: "/s/<token>" } }
         "403":
           description: "`account_suspended`"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "404":
           description: Unknown token, or `node_not_found` for an explicit `node_id` the account has no peer on.
           content:
@@ -1817,6 +2062,38 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/sub/{token}/info:
+    get:
+      tags: [Subscription]
+      summary: Account status for the public subscription page
+      description: >-
+        Feeds the customer-facing page at `/s/{token}` (mobile-first, Persian by
+        default with an English toggle): status, used/total traffic, days left,
+        active devices, support contact and the config/node download paths.
+        Unauthenticated - the token is the credential, and the response contains
+        only that one account's data (no ids, no token, no peer IPs, no device
+        endpoints). Unlike the config endpoint it also answers for a suspended
+        account, so the page can say why the link stopped working. Never cached.
+        Rate limited per client IP.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionInfo" }
+        "404":
+          description: Unknown token (or a deleted account).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/sub/{token}/nodes:
@@ -2685,6 +2962,26 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    RateLimited:
+      description: >-
+        `rate_limited` - the caller's token bucket is empty. Retry after the
+        `Retry-After` interval.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema: { type: integer, minimum: 1 }
+        X-RateLimit-Limit:
+          description: Bucket capacity (burst).
+          schema: { type: integer }
+        X-RateLimit-Remaining:
+          description: Whole tokens left (0 here).
+          schema: { type: integer }
+        X-RateLimit-Reset:
+          description: Seconds until the bucket is full again.
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
     InternalError:
       description: "`internal_error` - unexpected server-side failure."
       content:
@@ -2893,6 +3190,52 @@ components:
           description: Set once the node's agent reports its own WireGuard server public key.
         created_at: { type: string, format: date-time }
       required: [id, name, node_group, public_endpoint, wg_subnet, capacity_max_peers, status, created_at]
+
+    NodeEndpoint:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        node_id: { type: string, format: uuid }
+        label: { type: string }
+        address: { type: string, example: "relay.example.ir:51820" }
+        kind: { type: string, enum: [direct, relay] }
+        priority: { type: integer, description: Higher wins. }
+        enabled: { type: boolean }
+        mtu: { type: integer, nullable: true, description: Per-endpoint client MTU override (1200-1420). }
+        health_check: { type: string, enum: [none, tcp], description: "`tcp` = TCP connect to `address` (many relays also listen on TCP on the same port)." }
+        last_status: { type: string, enum: [unknown, up, down] }
+        last_checked_at: { type: string, format: date-time, nullable: true }
+        last_latency_ms: { type: integer, nullable: true }
+        created_at: { type: string, format: date-time }
+      required: [id, node_id, label, address, kind, priority, enabled, health_check, last_status, created_at]
+
+    SubscriptionInfo:
+      type: object
+      properties:
+        label: { type: string }
+        status: { type: string, enum: [active, suspended] }
+        status_reason: { type: string, enum: [expired, quota_exceeded], nullable: true }
+        data_quota_bytes: { type: integer, format: int64, nullable: true, description: "null = unlimited. Decimal bytes (1 GB = 1e9)." }
+        data_used_bytes: { type: integer, format: int64 }
+        expiry_at: { type: string, format: date-time, nullable: true }
+        days_left: { type: integer, nullable: true, description: Whole days rounded up; negative once expired. }
+        device_limit: { type: integer, nullable: true }
+        devices_active: { type: integer }
+        last_handshake_at: { type: string, format: date-time, nullable: true }
+        support_contact: { type: string, nullable: true }
+        config_path: { type: string, example: "/api/v1/sub/<token>?format=conf" }
+        nodes:
+          type: array
+          items:
+            type: object
+            properties:
+              node_id: { type: string, format: uuid }
+              name: { type: string }
+              region: { type: string }
+              online: { type: boolean }
+              recommended: { type: boolean }
+              config_path: { type: string }
+      required: [label, status, data_used_bytes, config_path, nodes]
 
     NodeNetwork:
       type: object
@@ -3275,6 +3618,27 @@ components:
     Settings:
       type: object
       properties:
+        client_mtu:
+          type: integer
+          minimum: 1200
+          maximum: 1420
+          default: 1280
+          description: >-
+            The `MTU =` line of generated client configs. Lower it if clients on
+            some networks connect but stall on large downloads; a node endpoint's
+            own `mtu` overrides it. Applies to the next config download.
+        api_rate_rps:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          default: 20
+          description: Bot API token-bucket refill rate per API key (requests/second).
+        api_rate_burst:
+          type: integer
+          minimum: 1
+          maximum: 100000
+          default: 40
+          description: Bot API token-bucket capacity per API key.
         public_base_url:
           type: string
           nullable: true

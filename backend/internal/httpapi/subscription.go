@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"wgpanel-api/internal/ipalloc"
 	"wgpanel-api/internal/steering"
@@ -27,14 +29,73 @@ func newSubscriptionToken() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-var errNodeMissingPublicKey = errors.New("node has no public key")
+var (
+	errNodeMissingPublicKey = errors.New("node has no public key")
+	errEndpointNotFound     = errors.New("endpoint not found on this node")
+)
+
+// clientMTU is the panel-wide client_mtu setting (migration 0027), 1280 if unreadable.
+func (s *Server) clientMTU(ctx context.Context) int {
+	settings, err := s.Store.GetSettings(ctx)
+	if err != nil {
+		s.Logger.Warn("get_settings_for_config_mtu_failed", "error", err)
+		return 1280
+	}
+	if validMTU(settings.ClientMTU) {
+		return settings.ClientMTU
+	}
+	return 1280
+}
+
+// resolveEndpointAndMTU applies the endpoint selection rules described on
+// renderPeerConfig and returns the Endpoint = value and the MTU to render.
+func (s *Server) resolveEndpointAndMTU(ctx context.Context, target store.AccountPeerWithNode, endpointID string) (string, int, error) {
+	endpoint, mtu := target.NodePublicEndpoint, s.clientMTU(ctx)
+	if endpointID == "direct" {
+		return endpoint, mtu, nil
+	}
+	eps, err := s.Store.ListNodeEndpoints(ctx, target.NodeID)
+	if err != nil {
+		if endpointID != "" {
+			return "", 0, err
+		}
+		// Automatic selection must not block config delivery: fall back to the direct address.
+		s.Logger.Warn("list_node_endpoints_failed", "error", err)
+		return endpoint, mtu, nil
+	}
+	var chosen *store.NodeEndpoint
+	if endpointID == "" {
+		chosen = pickEndpoint(eps, time.Now())
+	} else {
+		for i := range eps {
+			if eps[i].ID == endpointID {
+				chosen = &eps[i]
+			}
+		}
+		if chosen == nil {
+			return "", 0, errEndpointNotFound
+		}
+	}
+	if chosen != nil {
+		endpoint = chosen.Address
+		if chosen.MTU != nil && validMTU(*chosen.MTU) {
+			mtu = *chosen.MTU
+		}
+	}
+	return endpoint, mtu, nil
+}
 
 // renderPeerConfig renders the ready-to-import wg-quick config for one of an
 // account's peers - shared by the admin/bot config endpoint and the subscription
 // endpoint so the two can never drift apart on tunnel parameters. See
-// handleGetAccountConfig's doc comments for why DNS and MTU=1280 are set the way
+// handleGetAccountConfig's doc comments for why DNS and MTU are set the way
 // they are - those hard-won notes live on the template below.
-func (s *Server) renderPeerConfig(ctx context.Context, accountID string, ns *string, target store.AccountPeerWithNode) (string, error) {
+//
+// endpointID selects the entry point: "" = automatic (the highest-priority healthy
+// enabled node endpoint, else the node's public_endpoint), "direct" = the node's
+// public_endpoint, anything else = that specific node_endpoints row (staff-only; the
+// caller must have checked who is asking).
+func (s *Server) renderPeerConfig(ctx context.Context, accountID string, ns *string, target store.AccountPeerWithNode, endpointID string) (string, error) {
 	if target.NodePublicKey == nil || *target.NodePublicKey == "" {
 		return "", errNodeMissingPublicKey
 	}
@@ -49,7 +110,7 @@ func (s *Server) renderPeerConfig(ctx context.Context, accountID string, ns *str
 	}
 
 	// DNS is required (full tunnel makes the client's original resolver unreachable)
-	// and MTU 1280 is the safe floor that avoids black-hole fragmentation on paths
+	// and a conservative MTU (default 1280, the client_mtu setting; per-endpoint override) is the safe floor that avoids black-hole fragmentation on paths
 	// whose real MTU is below WireGuard's optimistic default - both found the hard way
 	// against real clients (see the original notes in handleGetAccountConfig's history,
 	// docs/STORY-09/STORY-10). The DNS server itself is a panel setting (migration
@@ -59,6 +120,11 @@ func (s *Server) renderPeerConfig(ctx context.Context, accountID string, ns *str
 	// The default ("node", migration 0020) sidesteps that: clients ask the node itself,
 	// which relays to whatever resolver its server uses (see resolveClientDNS).
 	dns := resolveClientDNS(s.clientDNS(ctx), target.NodeWGSubnet, target.NodeDNSForwarder)
+
+	endpoint, mtu, err := s.resolveEndpointAndMTU(ctx, target, endpointID)
+	if err != nil {
+		return "", err
+	}
 
 	// AllowedIPs carries BOTH families on purpose. Without ::/0, a dual-stack client
 	// (most mobile carriers, many home ISPs) keeps its native IPv6 route outside the
@@ -73,14 +139,14 @@ func (s *Server) renderPeerConfig(ctx context.Context, accountID string, ns *str
 PrivateKey = %s
 Address = %s/32
 DNS = %s
-MTU = 1280
+MTU = %d
 
 [Peer]
 PublicKey = %s
 Endpoint = %s
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
-`, privateKey, target.AssignedIP, dns, *target.NodePublicKey, target.NodePublicEndpoint), nil
+`, privateKey, target.AssignedIP, dns, mtu, *target.NodePublicKey, endpoint), nil
 }
 
 // nodeClientDNS is the client_dns setting value meaning "each node's own forwarder".
@@ -121,19 +187,32 @@ func resolveClientDNS(setting, nodeSubnet string, nodeForwarder bool) string {
 	return publicClientDNS
 }
 
-// resolveSubscriptionAccount is the shared front half of both /sub/{token} handlers:
-// token -> account, with suspended/expired accounts refused. Writes the error
-// response itself and returns ok=false when the caller should just return.
-func (s *Server) resolveSubscriptionAccount(w http.ResponseWriter, r *http.Request) (store.Account, bool) {
+// lookupSubscriptionAccount is token -> account for every /sub/{token} handler. It
+// writes the 404 itself (and charges the caller's unknown-token allowance, see
+// subRateGate) and returns ok=false when the caller should just return. Suspended
+// accounts are returned as-is: the machine endpoints refuse them, the info endpoint
+// reports them.
+func (s *Server) lookupSubscriptionAccount(w http.ResponseWriter, r *http.Request) (store.Account, bool) {
 	token := r.PathValue("token")
 	account, err := s.Store.GetAccountBySubscriptionToken(r.Context(), token)
 	if errors.Is(err, store.ErrAccountNotFound) {
+		s.noteSubscriptionMiss(r)
 		writeJSONError(w, http.StatusNotFound, "not_found", "unknown subscription")
 		return store.Account{}, false
 	}
 	if err != nil {
 		s.Logger.Error("subscription_lookup_failed", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not resolve subscription")
+		return store.Account{}, false
+	}
+	return account, true
+}
+
+// resolveSubscriptionAccount is the shared front half of the machine /sub/{token}
+// handlers: token -> account, with suspended/expired accounts refused.
+func (s *Server) resolveSubscriptionAccount(w http.ResponseWriter, r *http.Request) (store.Account, bool) {
+	account, ok := s.lookupSubscriptionAccount(w, r)
+	if !ok {
 		return store.Account{}, false
 	}
 	if account.Status != "active" {
@@ -145,6 +224,17 @@ func (s *Server) resolveSubscriptionAccount(w http.ResponseWriter, r *http.Reque
 	return account, true
 }
 
+// wantsHTML is true for a browser navigation (Accept lists text/html), false for
+// WireGuard clients, curl and bots (no Accept, */*, or anything else). Combined with
+// ?format=conf as an explicit override, this lets the one subscription URL open a
+// friendly page in a browser while machine consumers keep getting the config.
+func wantsHTML(r *http.Request) bool {
+	if r.URL.Query().Get("format") != "" {
+		return false
+	}
+	return strings.Contains(r.Header.Get("Accept"), "text/html")
+}
+
 // handleSubscriptionConfig serves the account's current wg-quick config to anyone
 // holding the subscription token - no panel credentials involved. Node choice:
 // ?node_id= pins one explicitly; otherwise steering picks the currently-best node
@@ -152,6 +242,14 @@ func (s *Server) resolveSubscriptionAccount(w http.ResponseWriter, r *http.Reque
 // fetch a working config" endpoint rather than a static file.
 func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	if wantsHTML(r) {
+		// Same origin, relative redirect: works on the panel domain and on a separate
+		// subscription domain alike (see caddyadmin's subscription block).
+		w.Header().Set("Vary", "Accept")
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, r, "/s/"+url.PathEscape(r.PathValue("token")), http.StatusFound)
+		return
+	}
 	account, ok := s.resolveSubscriptionAccount(w, r)
 	if !ok {
 		return
@@ -173,7 +271,7 @@ func (s *Server) handleSubscriptionConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	config, err := s.renderPeerConfig(ctx, account.ID, nil, target)
+	config, err := s.renderPeerConfig(ctx, account.ID, nil, target, "")
 	if errors.Is(err, errNodeMissingPublicKey) {
 		writeJSONError(w, http.StatusConflict, "node_missing_public_key", "the selected node has no public key set yet")
 		return

@@ -31,6 +31,7 @@ import { BulkActionBar, BulkCreateDialog, BulkRenewDialog, BulkResultDialog, typ
 import { LifecycleFields } from '../components/accounts/LifecycleFields'
 import { emptyLifecycle, lifecycleBody, lifecycleFromTemplate, type LifecycleState } from '../lib/lifecycleForm'
 import { resetStrategies, useTemplates, type BulkAction, type BulkResponse, type ResetStrategy } from '../lib/lifecycle'
+import { PeerEndpointSelect } from '../components/NodeEndpointsDialog'
 
 interface Node {
   id: string
@@ -844,6 +845,8 @@ function AccountDetailDialog({
   const [configNodeName, setConfigNodeName] = useState<string | null>(null)
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
   const [configLoading, setConfigLoading] = useState<string | null>(null)
+  // Staff may pin the entry endpoint (relay) per node; '' = automatic.
+  const [endpointByNode, setEndpointByNode] = useState<Record<string, string>>({})
 
   // Prefer the separate subscription origin (Settings -> Subscription domain &
   // port) when one is configured; otherwise the links live on the panel's origin.
@@ -880,7 +883,8 @@ function AccountDetailDialog({
     setQrDataUrl(null)
     setConfigNodeName(nodeName)
     try {
-      const res = await fetch(`/api/v1/accounts/${account.id}/config?node_id=${nodeId}`, {
+      const endpointId = endpointByNode[nodeId]
+      const res = await fetch(`/api/v1/accounts/${account.id}/config?node_id=${nodeId}${endpointId ? `&endpoint_id=${encodeURIComponent(endpointId)}` : ''}`, {
         headers: { Authorization: `Bearer ${getAccessToken() ?? ''}` },
       })
       if (!res.ok) {
@@ -1047,10 +1051,17 @@ function AccountDetailDialog({
                       </p>
                       <p className="mt-0.5 font-mono text-xs text-muted">{p.assigned_ip}</p>
                     </div>
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                    <PeerEndpointSelect
+                      nodeId={p.node_id}
+                      value={endpointByNode[p.node_id] ?? ''}
+                      onChange={(v) => setEndpointByNode((m) => ({ ...m, [p.node_id]: v }))}
+                    />
                     <Button variant="secondary" size="sm" onClick={() => loadConfig(p.node_id, p.node_name)} disabled={configLoading === p.node_id}>
                       <Download className="h-3.5 w-3.5" />
                       {configLoading === p.node_id ? 'Loading…' : 'Config'}
                     </Button>
+                    </div>
                   </div>
                 ))}
               </div>

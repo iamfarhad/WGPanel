@@ -72,7 +72,7 @@ func TestResellerAllowlist(t *testing.T) {
 	}
 	public := map[string]bool{
 		"GET /healthz": true, "POST /api/v1/auth/login": true, "POST /api/v1/auth/refresh": true,
-		"POST /api/v1/nodes/join": true, "GET /api/v1/sub/{token}": true, "GET /api/v1/sub/{token}/nodes": true,
+		"POST /api/v1/nodes/join": true, "GET /api/v1/sub/{token}": true, "GET /api/v1/sub/{token}/nodes": true, "GET /api/v1/sub/{token}/info": true,
 		"POST /api/v1/auth/mfa/totp": true, "POST /api/v1/auth/mfa/recovery": true,
 		"POST /api/v1/auth/mfa/passkey/begin": true, "POST /api/v1/auth/mfa/passkey/finish": true,
 		"POST /api/v1/auth/passkey/begin": true, "POST /api/v1/auth/passkey/finish": true,

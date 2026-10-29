@@ -40,6 +40,7 @@ func TestResellerEndToEnd(t *testing.T) {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	relaxAPIRate(t, st)
 	s := &Server{
 		Store: st, JWTSecret: gateTestSecret, APIHMACMasterKey: itHexKey, AccountKeyEncryptionKey: itHexKey,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),

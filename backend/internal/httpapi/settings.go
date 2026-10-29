@@ -23,6 +23,9 @@ type settingsResponse struct {
 	ClientDNS           string   `json:"client_dns"`
 	SubDomain           *string  `json:"sub_domain"`
 	SubPort             *int     `json:"sub_port"`
+	ClientMTU           int      `json:"client_mtu"`
+	APIRateRPS          int      `json:"api_rate_rps"`
+	APIRateBurst        int      `json:"api_rate_burst"`
 }
 
 func toSettingsResponse(p store.PanelSettings) settingsResponse {
@@ -36,6 +39,9 @@ func toSettingsResponse(p store.PanelSettings) settingsResponse {
 		ClientDNS:           p.ClientDNS,
 		SubDomain:           p.SubDomain,
 		SubPort:             p.SubPort,
+		ClientMTU:           p.ClientMTU,
+		APIRateRPS:          p.APIRateRPS,
+		APIRateBurst:        p.APIRateBurst,
 	}
 }
 
@@ -73,6 +79,12 @@ type updateSettingsRequest struct {
 	// omitted already means "unchanged".
 	SubDomain *string `json:"sub_domain"`
 	SubPort   *int    `json:"sub_port"`
+	// ClientMTU is the MTU = line of generated client configs (1200-1420, default
+	// 1280); an endpoint's own mtu overrides it. APIRateRPS/APIRateBurst tune the
+	// per-API-key token bucket of the Bot API.
+	ClientMTU    *int `json:"client_mtu"`
+	APIRateRPS   *int `json:"api_rate_rps"`
+	APIRateBurst *int `json:"api_rate_burst"`
 }
 
 type updateSettingsResponse struct {
@@ -117,6 +129,19 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.ClientMTU != nil && !validMTU(*req.ClientMTU) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "client_mtu must be between 1200 and 1420")
+		return
+	}
+	if req.APIRateRPS != nil && (*req.APIRateRPS < 1 || *req.APIRateRPS > 10000) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "api_rate_rps must be between 1 and 10000")
+		return
+	}
+	if req.APIRateBurst != nil && (*req.APIRateBurst < 1 || *req.APIRateBurst > 100000) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "api_rate_burst must be between 1 and 100000")
+		return
+	}
+
 	ctx := r.Context()
 
 	settings, err := s.Store.UpdateSettings(ctx, store.UpdateSettingsParams{
@@ -129,6 +154,9 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		ClientDNS:           req.ClientDNS,
 		SubDomain:           req.SubDomain,
 		SubPort:             req.SubPort,
+		ClientMTU:           req.ClientMTU,
+		APIRateRPS:          req.APIRateRPS,
+		APIRateBurst:        req.APIRateBurst,
 	})
 	if err != nil {
 		s.Logger.Error("update_settings_failed", "error", err)
@@ -136,6 +164,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resetAPIRateCache()
 	if identity, ok := callerIdentityFromContext(ctx); ok {
 		if err := s.Store.InsertAuditLog(ctx, identity.AdminUsername, "settings.updated", "panel_settings", nil, r.RemoteAddr); err != nil {
 			s.Logger.Error("audit_log_failed", "error", err)

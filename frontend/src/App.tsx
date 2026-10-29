@@ -17,6 +17,7 @@ import { ResellersPage } from './pages/ResellersPage'
 import { ReportsPage } from './pages/ReportsPage'
 import { SecurityPage } from './pages/SecurityPage'
 import { TemplatesPage } from './pages/TemplatesPage'
+import { SubscriptionPage } from './pages/SubscriptionPage'
 
 const queryClient = new QueryClient()
 
@@ -29,6 +30,8 @@ function App() {
             <ToastProvider>
               <Routes>
                 <Route path="/login" element={<LoginPage />} />
+                {/* Public customer page - the token in the URL is the credential. */}
+                <Route path="/s/:token" element={<SubscriptionPage />} />
                 <Route
                   element={
                     <ProtectedRoute>
