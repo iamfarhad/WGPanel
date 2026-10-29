@@ -1,7 +1,25 @@
 /** Persian UI strings, keyed by the English source text (see lib/i18n.tsx). Keep
  * technical values (IPs, keys, commands, file names) out of translations - they stay
  * in Latin script and render left-to-right. */
+import { common } from './fa/common'
+import { dashboard } from './fa/dashboard'
+import { auditlog } from './fa/auditlog'
+import { admins } from './fa/admins'
+import { apikeys } from './fa/apikeys'
+import { nodes } from './fa/nodes'
+import { settings } from './fa/settings'
+import { accounts } from './fa/accounts'
+
 export const fa: Record<string, string> = {
+  ...common,
+  ...dashboard,
+  ...auditlog,
+  ...admins,
+  ...apikeys,
+  ...nodes,
+  ...settings,
+  ...accounts,
+
   // Shell
   Dashboard: 'داشبورد',
   Infrastructure: 'زیرساخت',

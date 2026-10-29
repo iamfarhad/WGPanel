@@ -1,5 +1,6 @@
 import { Dialog } from './Dialog'
 import { Button } from './Button'
+import { useI18n } from '../../lib/i18n'
 
 export function ConfirmDialog({
   open,
@@ -7,7 +8,7 @@ export function ConfirmDialog({
   onConfirm,
   title,
   description,
-  confirmLabel = 'Confirm',
+  confirmLabel,
   danger = false,
   submitting = false,
 }: {
@@ -20,15 +21,16 @@ export function ConfirmDialog({
   danger?: boolean
   submitting?: boolean
 }) {
+  const { t } = useI18n()
   return (
     <Dialog open={open} onClose={onClose} title={title}>
       <p className="text-sm leading-relaxed text-muted">{description}</p>
       <div className="mt-6 flex justify-end gap-2">
         <Button variant="secondary" onClick={onClose} disabled={submitting}>
-          Cancel
+          {t('Cancel')}
         </Button>
         <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm} disabled={submitting}>
-          {submitting ? 'Working…' : confirmLabel}
+          {submitting ? t('Working…') : (confirmLabel ?? t('Confirm'))}
         </Button>
       </div>
     </Dialog>

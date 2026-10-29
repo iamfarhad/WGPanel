@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from 'react'
 import { CheckCircle2, XCircle } from 'lucide-react'
+import { useI18n } from './i18n'
 
 interface Toast {
   id: number
@@ -16,6 +17,7 @@ const ToastContext = createContext<ToastContextValue | undefined>(undefined)
 let nextId = 1
 
 export function ToastProvider({ children }: { children: ReactNode }) {
+  const { t: tr } = useI18n()
   const [toasts, setToasts] = useState<Toast[]>([])
 
   const push = useCallback((kind: Toast['kind'], message: string) => {
@@ -41,7 +43,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             ) : (
               <XCircle className="mt-px h-4.5 w-4.5 shrink-0 text-danger" />
             )}
-            {t.message}
+            {tr(t.message)}
           </div>
         ))}
       </div>

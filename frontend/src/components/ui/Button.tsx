@@ -1,4 +1,5 @@
 import type { ButtonHTMLAttributes } from 'react'
+import { useI18n } from '../../lib/i18n'
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger'
@@ -18,11 +19,14 @@ const sizes = {
   icon: 'h-8 w-8',
 }
 
-export function Button({ variant = 'primary', size = 'md', className = '', ...props }: ButtonProps) {
+export function Button({ variant = 'primary', size = 'md', className = '', children, ...props }: ButtonProps) {
+  const { t } = useI18n()
   return (
     <button
       className={`inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-control font-medium transition-[background-color,border-color,color,box-shadow] duration-150 outline-none focus-visible:ring-[3px] focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 ${variants[variant]} ${sizes[size]} ${className}`}
       {...props}
-    />
+    >
+      {typeof children === 'string' ? t(children) : children}
+    </button>
   )
 }
