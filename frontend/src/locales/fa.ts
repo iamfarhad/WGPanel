@@ -11,6 +11,11 @@ import { settings } from './fa/settings'
 import { accounts } from './fa/accounts'
 import { resellers } from './fa/resellers'
 import { reports } from './fa/reports'
+import { security } from './fa/security'
+import { lifecycle } from './fa/lifecycle'
+import { endpoints } from './fa/endpoints'
+import { subscription } from './fa/subscription'
+import { notifications } from './fa/notifications'
 
 export const fa: Record<string, string> = {
   ...common,
@@ -23,6 +28,11 @@ export const fa: Record<string, string> = {
   ...accounts,
   ...resellers,
   ...reports,
+  ...security,
+  ...lifecycle,
+  ...endpoints,
+  ...subscription,
+  ...notifications,
 
   // Shell
   Dashboard: 'داشبورد',

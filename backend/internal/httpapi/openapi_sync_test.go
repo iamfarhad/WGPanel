@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"os"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // The panel's API Docs page serves frontend/public/openapi.yaml (the frontend image
@@ -20,5 +22,23 @@ func TestOpenAPICopiesInSync(t *testing.T) {
 	}
 	if !bytes.Equal(docs, served) {
 		t.Fatal("frontend/public/openapi.yaml differs from docs/openapi.yaml - copy docs/openapi.yaml over it")
+	}
+}
+
+// An unquoted "key: value" inside a description, or a path/schema added twice by two
+// branches, still copies cleanly but breaks the API Docs page. yaml.v3 rejects both.
+func TestOpenAPIParses(t *testing.T) {
+	src, err := os.ReadFile("../../../docs/openapi.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec struct {
+		Paths map[string]any `yaml:"paths"`
+	}
+	if err := yaml.Unmarshal(src, &spec); err != nil {
+		t.Fatalf("docs/openapi.yaml is not valid YAML: %v", err)
+	}
+	if len(spec.Paths) < 20 {
+		t.Fatalf("only %d paths parsed - spec truncated?", len(spec.Paths))
 	}
 }

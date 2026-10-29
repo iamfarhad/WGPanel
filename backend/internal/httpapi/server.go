@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"wgpanel-api/internal/caddyadmin"
+	"wgpanel-api/internal/events"
 	"wgpanel-api/internal/nodeca"
 	"wgpanel-api/internal/store"
 )
@@ -47,6 +48,12 @@ type Server struct {
 	// ResellerLimitsLookup overrides the per-request reseller limits lookup in tests;
 	// nil means Store.GetResellerLimits (see reseller_gate.go).
 	ResellerLimitsLookup func(ctx context.Context, adminID string) (store.ResellerLimits, error)
+	// sec caches the admin sign-in security settings (see clientip.go).
+	sec securityRuntime
+	// Events is the internal domain-event bus (nil disables emission) and NotifyRT the
+	// overridable runtime of notifications/webhooks/backups - see eventsys.go.
+	Events   *events.Bus
+	NotifyRT NotifyRuntime
 }
 
 // Routes builds the full handler tree: public routes (proxied by Caddy), the
@@ -65,8 +72,13 @@ func (s *Server) Routes() http.Handler {
 	// token in the path IS the credential (a capability URL), so client apps can
 	// poll for their current config with no panel account. loggingMiddleware redacts
 	// the token from access logs (see redactPath).
-	mux.HandleFunc("GET /api/v1/sub/{token}", s.handleSubscriptionConfig)
-	mux.HandleFunc("GET /api/v1/sub/{token}/nodes", s.handleSubscriptionNodes)
+	// All three share a per-IP token bucket plus a stricter unknown-token allowance
+	// (see ratelimit.go). GET /sub/{token} content-negotiates: browsers (Accept:
+	// text/html) are redirected to the public page /s/{token}; everything else gets the
+	// config. /info feeds that page.
+	mux.HandleFunc("GET /api/v1/sub/{token}", s.subRateGate(s.handleSubscriptionConfig))
+	mux.HandleFunc("GET /api/v1/sub/{token}/nodes", s.subRateGate(s.handleSubscriptionNodes))
+	mux.HandleFunc("GET /api/v1/sub/{token}/info", s.subRateGate(s.handleSubscriptionInfo))
 
 	mux.Handle("GET /internal/healthz", s.internalOnly(http.HandlerFunc(s.handleInternalHealthz)))
 	mux.Handle("POST /internal/admins", s.internalOnly(http.HandlerFunc(s.handleCreateAdmin)))
@@ -85,6 +97,13 @@ func (s *Server) Routes() http.Handler {
 	// node_groups) - docs/PRD-telegram-bot-api.md §7. Mutating node routes stay admin-only.
 	mux.Handle("GET /api/v1/nodes", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleListNodes))))
 	mux.Handle("GET /api/v1/nodes/{id}", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleGetNode))))
+	// Per-node client entry endpoints / relays (migration 0027): staff only, never on the
+	// reseller allowlist. Reads for any staff role, writes operator and above.
+	mux.Handle("GET /api/v1/nodes/{id}/endpoints", s.requireAdmin(http.HandlerFunc(s.handleListNodeEndpoints)))
+	mux.Handle("POST /api/v1/nodes/{id}/endpoints", s.requireAdmin(s.requireRole("operator", http.HandlerFunc(s.handleCreateNodeEndpoint))))
+	mux.Handle("PATCH /api/v1/nodes/{id}/endpoints/{endpointId}", s.requireAdmin(s.requireRole("operator", http.HandlerFunc(s.handleUpdateNodeEndpoint))))
+	mux.Handle("DELETE /api/v1/nodes/{id}/endpoints/{endpointId}", s.requireAdmin(s.requireRole("operator", http.HandlerFunc(s.handleDeleteNodeEndpoint))))
+	mux.Handle("POST /api/v1/nodes/{id}/endpoints/{endpointId}/check", s.requireAdmin(s.requireRole("operator", http.HandlerFunc(s.handleCheckNodeEndpoint))))
 	// docs/STORY-10-monitoring-and-domain-management.md - node CPU/RAM history chart.
 	mux.Handle("GET /api/v1/nodes/{id}/metrics", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleGetNodeMetrics))))
 
@@ -94,6 +113,14 @@ func (s *Server) Routes() http.Handler {
 	// the bot API"). requirePermission enforces both API-key permission sets and the
 	// admin support-role's read-only restriction (docs/PRD-security-access-control.md §4).
 	mux.Handle("POST /api/v1/accounts", s.requireAdminOrAPIKey(s.requirePermission("create", http.HandlerFunc(s.handleCreateAccount))))
+	// Account lifecycle (on hold, scheduled reset, plan templates, bulk) - accounts_lifecycle.go.
+	// The bulk handler checks the per-action permission itself (create/update/suspend/delete).
+	mux.Handle("POST /api/v1/accounts/bulk", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleBulkAccounts))))
+	mux.Handle("GET /api/v1/templates", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleListTemplates))))
+	mux.Handle("GET /api/v1/templates/{id}", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleGetTemplate))))
+	mux.Handle("POST /api/v1/templates", s.requireAdminOrAPIKey(s.requirePermission("create", http.HandlerFunc(s.handleCreateTemplate))))
+	mux.Handle("PUT /api/v1/templates/{id}", s.requireAdminOrAPIKey(s.requirePermission("update", http.HandlerFunc(s.handleUpdateTemplate))))
+	mux.Handle("DELETE /api/v1/templates/{id}", s.requireAdminOrAPIKey(s.requirePermission("delete", http.HandlerFunc(s.handleDeleteTemplate))))
 	mux.Handle("GET /api/v1/accounts", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleListAccounts))))
 	mux.Handle("GET /api/v1/accounts/{id}", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleGetAccount))))
 	mux.Handle("PATCH /api/v1/accounts/{id}", s.requireAdminOrAPIKey(s.requirePermission("update", http.HandlerFunc(s.handleUpdateAccount))))
@@ -163,6 +190,9 @@ func (s *Server) Routes() http.Handler {
 	// password rides in the request body.
 	mux.Handle("POST /api/v1/backup", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleDownloadBackup))))
 	mux.Handle("POST /api/v1/backup/restore", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleRestoreBackup))))
+
+	s.registerSecurityRoutes(mux)
+	s.registerNotificationRoutes(mux)
 
 	return s.loggingMiddleware(mux)
 }

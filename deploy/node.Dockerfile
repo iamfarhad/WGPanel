@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
@@ -7,7 +7,10 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/wgpanel-agent ./cm
 
 # Debian (not distroless, unlike backend/Dockerfile's api image) - this container
 # needs a real userland: wg-quick is a bash script, plus iptables/iproute2 for the
-# NAT/forwarding setup install-node.sh normally does on a bare Linux host.
+# NAT/forwarding setup install-node.sh normally does on a bare Linux host. The
+# iptables package ships the xtables extensions node-entrypoint.sh uses (nat
+# MASQUERADE and the mangle TCPMSS clamp, for IPv4 and IPv6); the kernel modules come
+# from the host.
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
       wireguard-tools iptables iproute2 ca-certificates && \

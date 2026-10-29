@@ -41,6 +41,7 @@ interface Report {
     accounts_total: number
     accounts_active: number
     accounts_suspended: number
+    accounts_on_hold: number
     online_now: number
   }
   traffic_series: { ts: string; rx_bytes: number; tx_bytes: number; active_accounts: number }[]
@@ -110,6 +111,7 @@ const expiryMeta: Record<string, { label: string; tone: BarTone }> = {
   '30d': { label: 'Within 30 days', tone: 'accent' },
   later: { label: 'Later', tone: 'muted' },
   never: { label: 'No expiry', tone: 'muted' },
+  on_hold: { label: 'On hold (starts on first use)', tone: 'accent' },
 }
 
 function statusPart(status: string, reason: string | null): { key: string; label: string; tone: BarTone } {
@@ -273,7 +275,11 @@ export function ReportsPage() {
               icon={Activity}
               label="Active accounts"
               value={compact(report.totals.active_accounts)}
-              hint={t('Used the VPN in this range · {n} total', { n: report.totals.accounts_total })}
+              hint={
+                report.totals.accounts_on_hold > 0
+                  ? t('Used the VPN in this range · {n} total · {h} on hold', { n: report.totals.accounts_total, h: report.totals.accounts_on_hold })
+                  : t('Used the VPN in this range · {n} total', { n: report.totals.accounts_total })
+              }
             />
             <StatCard icon={UserPlus} label="New accounts" value={compact(report.totals.new_accounts)} hint={t('Created in this range')} />
             <StatCard

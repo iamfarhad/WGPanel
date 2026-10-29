@@ -17,13 +17,25 @@ import (
 // stays small and restorable while losing only chart history.
 var backupTables = []string{
 	"admins",
+	"admin_totp",
+	"admin_recovery_codes",
+	"admin_passkeys",
 	"nodes",
+	"node_endpoints",
 	"accounts",
 	"account_peers",
 	"account_devices",
 	"api_keys",
 	"panel_settings",
 	"audit_log",
+	"plan_templates",
+	// Notification/webhook configuration. Their secrets are encrypted with the same
+	// ACCOUNT_KEY_ENCRYPTION_KEY as account keys, so they restore wherever those do.
+	// Event state, the notification feed and delivery logs are transient and stay out,
+	// as does backup_schedule (it holds the backup's own password and destinations).
+	"notification_channels",
+	"webhooks",
+	"notify_settings",
 }
 
 // AppliedMigrations returns the filenames recorded in schema_migrations, sorted.

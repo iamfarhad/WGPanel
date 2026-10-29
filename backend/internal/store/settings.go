@@ -27,6 +27,12 @@ type PanelSettings struct {
 	// (subscription URLs stay on the panel's origin); nil SubPort = 443.
 	SubDomain *string
 	SubPort   *int
+	// ClientMTU (migration 0027) is the MTU = line of generated client configs unless
+	// the chosen endpoint overrides it. APIRateRPS/APIRateBurst are the per-API-key
+	// token-bucket parameters for the Bot API.
+	ClientMTU    int
+	APIRateRPS   int
+	APIRateBurst int
 }
 
 // GetSettings always returns the singleton row - it's seeded by migration 0009, so this
@@ -34,9 +40,9 @@ type PanelSettings struct {
 func (s *Store) GetSettings(ctx context.Context) (PanelSettings, error) {
 	var p PanelSettings
 	err := s.pool.QueryRow(ctx, `
-		SELECT public_base_url, default_data_quota_gb, default_device_limit, default_node_capacity, support_contact, panel_domain, client_dns, sub_domain, sub_port
+		SELECT public_base_url, default_data_quota_gb, default_device_limit, default_node_capacity, support_contact, panel_domain, client_dns, sub_domain, sub_port, client_mtu, api_rate_rps, api_rate_burst
 		FROM panel_settings WHERE id = 1
-	`).Scan(&p.PublicBaseURL, &p.DefaultDataQuotaGB, &p.DefaultDeviceLimit, &p.DefaultNodeCapacity, &p.SupportContact, &p.PanelDomain, &p.ClientDNS, &p.SubDomain, &p.SubPort)
+	`).Scan(&p.PublicBaseURL, &p.DefaultDataQuotaGB, &p.DefaultDeviceLimit, &p.DefaultNodeCapacity, &p.SupportContact, &p.PanelDomain, &p.ClientDNS, &p.SubDomain, &p.SubPort, &p.ClientMTU, &p.APIRateRPS, &p.APIRateBurst)
 	return p, err
 }
 
@@ -57,8 +63,11 @@ type UpdateSettingsParams struct {
 	// zero value explicitly resets the column back to NULL, because "turn the
 	// separate subscription origin off again" (and "back to the default port") must
 	// be expressible through this API where nil already means "unchanged".
-	SubDomain *string
-	SubPort   *int
+	SubDomain    *string
+	SubPort      *int
+	ClientMTU    *int
+	APIRateRPS   *int
+	APIRateBurst *int
 }
 
 func (s *Store) UpdateSettings(ctx context.Context, p UpdateSettingsParams) (PanelSettings, error) {
@@ -73,9 +82,12 @@ func (s *Store) UpdateSettings(ctx context.Context, p UpdateSettingsParams) (Pan
 			client_dns = COALESCE($7, client_dns),
 			sub_domain = CASE WHEN $8::text IS NULL THEN sub_domain WHEN $8 = '' THEN NULL ELSE $8 END,
 			sub_port = CASE WHEN $9::int IS NULL THEN sub_port WHEN $9 = 0 THEN NULL ELSE $9 END,
+			client_mtu = COALESCE($10, client_mtu),
+			api_rate_rps = COALESCE($11, api_rate_rps),
+			api_rate_burst = COALESCE($12, api_rate_burst),
 			updated_at = now()
 		WHERE id = 1
-	`, p.PublicBaseURL, p.DefaultDataQuotaGB, p.DefaultDeviceLimit, p.DefaultNodeCapacity, p.SupportContact, p.PanelDomain, p.ClientDNS, p.SubDomain, p.SubPort)
+	`, p.PublicBaseURL, p.DefaultDataQuotaGB, p.DefaultDeviceLimit, p.DefaultNodeCapacity, p.SupportContact, p.PanelDomain, p.ClientDNS, p.SubDomain, p.SubPort, p.ClientMTU, p.APIRateRPS, p.APIRateBurst)
 	if err != nil {
 		return PanelSettings{}, err
 	}

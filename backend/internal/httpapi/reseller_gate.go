@@ -21,6 +21,16 @@ var resellerRoutes = map[string]bool{
 	"GET /api/v1/me":          true,
 	"GET /api/v1/reseller/me": true,
 	"GET /api/v1/reports":     true, // always scoped to its own namespace
+	// Self-service two-factor / passkeys: the handlers act only on the session's own
+	// admin id.
+	"GET /api/v1/me/security":                  true,
+	"POST /api/v1/me/security/totp/enroll":     true,
+	"POST /api/v1/me/security/totp/confirm":    true,
+	"POST /api/v1/me/security/totp/disable":    true,
+	"POST /api/v1/me/security/recovery-codes":  true,
+	"POST /api/v1/me/security/passkeys/begin":  true,
+	"POST /api/v1/me/security/passkeys/finish": true,
+	"DELETE /api/v1/me/security/passkeys/{id}": true,
 	// A reseller manages only the API keys it owns (store-scoped, 404 otherwise).
 	"GET /api/v1/api-keys":              true,
 	"POST /api/v1/api-keys":             true,
@@ -28,9 +38,17 @@ var resellerRoutes = map[string]bool{
 	"POST /api/v1/api-keys/{id}/rotate": true,
 	// Read-only node visibility, filtered to the reseller's node groups, so it can
 	// pick a node when creating an account.
-	"GET /api/v1/nodes":                              true,
-	"GET /api/v1/nodes/{id}":                         true,
-	"POST /api/v1/accounts":                          true,
+	"GET /api/v1/nodes":      true,
+	"GET /api/v1/nodes/{id}": true,
+	"POST /api/v1/accounts":  true,
+	// Lifecycle: bulk actions (each item runs the single-account store call, scoped to the
+	// reseller's namespace and limits) and the reseller's own plan templates.
+	"POST /api/v1/accounts/bulk":                     true,
+	"GET /api/v1/templates":                          true,
+	"GET /api/v1/templates/{id}":                     true,
+	"POST /api/v1/templates":                         true,
+	"PUT /api/v1/templates/{id}":                     true,
+	"DELETE /api/v1/templates/{id}":                  true,
 	"GET /api/v1/accounts":                           true,
 	"GET /api/v1/accounts/{id}":                      true,
 	"PATCH /api/v1/accounts/{id}":                    true,
@@ -43,6 +61,19 @@ var resellerRoutes = map[string]bool{
 	"GET /api/v1/accounts/{id}/devices":              true,
 	"GET /api/v1/accounts/{id}/steer":                true,
 	"POST /api/v1/accounts/{id}/subscription/rotate": true,
+	// Notification center (scoped to the reseller's own namespace) and the reseller's
+	// own webhook endpoints (store-scoped by namespace, SSRF override never applies).
+	"GET /api/v1/notifications":                                     true,
+	"POST /api/v1/notifications/read-all":                           true,
+	"POST /api/v1/notifications/{id}/read":                          true,
+	"GET /api/v1/webhooks":                                          true,
+	"POST /api/v1/webhooks":                                         true,
+	"PATCH /api/v1/webhooks/{id}":                                   true,
+	"DELETE /api/v1/webhooks/{id}":                                  true,
+	"POST /api/v1/webhooks/{id}/rotate-secret":                      true,
+	"POST /api/v1/webhooks/{id}/test":                               true,
+	"GET /api/v1/webhooks/{id}/deliveries":                          true,
+	"POST /api/v1/webhooks/{id}/deliveries/{delivery_id}/redeliver": true,
 }
 
 // resellerLimits fetches the reseller's limits row (test hook: ResellerLimitsLookup).
@@ -60,6 +91,11 @@ func (s *Server) resellerLimits(ctx context.Context, adminID string) (store.Rese
 // row per request: a DB hit, but it makes "disabled" and "deleted" take effect on the
 // very next request instead of when the 15-minute access token expires.
 func (s *Server) admitAdminClaims(w http.ResponseWriter, r *http.Request, claims *authcrypto.Claims) (*CallerIdentity, bool) {
+	// The admin IP allowlist guards JWT sessions only; API-key, subscription and
+	// node-agent routes never pass through here.
+	if !s.enforceAdminIPAllowlist(w, r) {
+		return nil, false
+	}
 	identity := &CallerIdentity{IsAdmin: true, AdminID: claims.AdminID, AdminUsername: claims.Username, AdminRole: claims.Role}
 	if claims.Role != "reseller" {
 		return identity, true

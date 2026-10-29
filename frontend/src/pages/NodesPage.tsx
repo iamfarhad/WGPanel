@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, KeyRound, Copy, Activity, Pencil } from 'lucide-react'
+import { Plus, KeyRound, Copy, Activity, Pencil, Route } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { chartAxis, chartColors, chartGrid, chartLegend, chartTooltip } from '../lib/chartTheme'
 import { apiFetch, ApiError } from '../lib/api'
@@ -21,6 +21,7 @@ import { ErrorState } from '../components/ui/ErrorState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 import { RowActions } from '../components/ui/RowActions'
+import { NodeEndpointsDialog } from '../components/NodeEndpointsDialog'
 
 interface Node {
   id: string
@@ -109,6 +110,7 @@ export function NodesPage() {
   const [joinToken, setJoinToken] = useState<JoinToken | null>(null)
   const [detailNode, setDetailNode] = useState<Node | null>(null)
   const [editNode, setEditNode] = useState<Node | null>(null)
+  const [endpointsNode, setEndpointsNode] = useState<Node | null>(null)
 
   const nodesQuery = useQuery({
     queryKey: ['nodes'],
@@ -189,6 +191,9 @@ export function NodesPage() {
                       actions={[
                         { label: 'Metrics', icon: Activity, onSelect: () => setDetailNode(node) },
                         { label: 'Edit', icon: Pencil, onSelect: () => setEditNode(node) },
+                        ...(user?.role !== 'reseller'
+                          ? [{ label: 'Entry endpoints', icon: Route, onSelect: () => setEndpointsNode(node) }]
+                          : []),
                         ...(user?.role === 'super_admin'
                           ? [
                               {
@@ -236,6 +241,7 @@ export function NodesPage() {
       )}
 
       {detailNode && <NodeDetailDialog node={detailNode} onClose={() => setDetailNode(null)} />}
+      {endpointsNode && <NodeEndpointsDialog node={endpointsNode} onClose={() => setEndpointsNode(null)} />}
 
       {editNode && (
         <EditNodeDialog

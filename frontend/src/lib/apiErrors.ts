@@ -15,7 +15,39 @@ const codeMessages: Record<string, string> = {
   account_disabled: 'This account is disabled.',
   account_suspended_by_admin: 'An administrator suspended this account; only they can re-enable it.',
   reseller_has_accounts: 'This reseller still owns accounts. Delete or move them first.',
+  template_not_found: 'That template no longer exists, or you do not have access to it.',
+  duplicate_id: 'This account is listed more than once.',
+  reseller_reset_not_allowed: 'Your plan has a traffic credit, so usage cannot be reset. Renew with extra data instead.',
   username_taken: 'That username is already taken.',
+  too_many_attempts: 'Too many failed attempts. Try again later.',
+  invalid_mfa_code: 'That code is not valid. Check it and try again.',
+  mfa_token_invalid: 'The verification step expired. Sign in again.',
+  ip_not_allowed: 'Admin access is not permitted from your IP address.',
+  allowlist_excludes_you: 'That list would block your own IP address. Add it first.',
+  invalid_passkey: 'The passkey could not be verified.',
+  passkeys_unavailable: 'Passkeys need the panel to be opened over HTTPS on its configured domain.',
+  passkey_session_expired: 'The passkey step expired. Try again.',
+  passkey_verification_failed: 'The passkey could not be verified.',
+  passkey_exists: 'This passkey is already registered.',
+  passkey_limit: 'You have reached the maximum number of passkeys.',
+  passkey_not_found: 'That passkey no longer exists.',
+  no_passkeys: 'This account has no passkeys.',
+  totp_already_enabled: 'Two-factor authentication is already enabled.',
+  totp_not_pending: 'There is no pending two-factor setup. Start again.',
+  totp_not_enabled: 'Two-factor authentication is not enabled.',
+  endpoint_not_found: 'That endpoint no longer exists on this node.',
+  endpoint_label_taken: 'This node already has an endpoint with that label.',
+  endpoint_check_disabled: 'Health checks are turned off for this endpoint.',
+  rate_limited: 'Too many requests - wait a moment and try again.',
+  invalid_cursor: 'The page position is no longer valid - reload the list.',
+  webhook_url_blocked: 'That address points to a private or internal network and is not allowed for webhooks.',
+  webhook_not_found: 'That webhook no longer exists.',
+  delivery_not_found: 'That delivery no longer exists.',
+  channel_not_found: 'That notification channel no longer exists.',
+  channel_test_failed: 'The test message could not be delivered.',
+  notification_not_found: 'That notification no longer exists.',
+  backup_not_configured: 'Set a backup password and enable a destination first.',
+  backup_in_progress: 'A backup is already running.',
 }
 
 export function apiErrorMessage(err: unknown, t: (text: string) => string, fallback = 'Something went wrong'): string {
@@ -24,4 +56,11 @@ export function apiErrorMessage(err: unknown, t: (text: string) => string, fallb
     return known ? t(known) : err.message
   }
   return t(fallback)
+}
+
+/** Same lookup for a code/message pair that did not arrive as a thrown ApiError (a bulk
+ * response reports one error per item). */
+export function apiCodeMessage(code: string | undefined, message: string, t: (text: string) => string): string {
+  const known = code ? codeMessages[code] : undefined
+  return known ? t(known) : message
 }

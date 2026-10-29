@@ -11,6 +11,7 @@ import {
   Settings,
   Store,
   BarChart3,
+  Layers,
   Menu,
   X,
   Sun,
@@ -18,6 +19,8 @@ import {
   Monitor,
   BookOpen,
   ExternalLink,
+  Fingerprint,
+  Webhook,
 } from 'lucide-react'
 import { useAuth } from '../lib/auth'
 import type { AdminRole } from '../lib/auth'
@@ -25,6 +28,8 @@ import { useTheme, type Theme } from '../lib/theme'
 import { BrandLockup, BrandTile } from '../components/brand/Brand'
 import { LanguageToggle } from '../components/ui/LanguageToggle'
 import { useI18n } from '../lib/i18n'
+import { NotificationBell } from '../components/NotificationBell'
+import { ChannelBrokenBanner } from '../components/ChannelBrokenBanner'
 
 interface NavItem {
   to: string
@@ -58,6 +63,7 @@ const navGroups: NavGroup[] = [
     items: [
       { to: '/nodes', label: 'Nodes', icon: Server },
       { to: '/accounts', label: 'Accounts', icon: Users, reseller: true },
+      { to: '/templates', label: 'Templates', icon: Layers, reseller: true },
       { to: '/reports', label: 'Reports', icon: BarChart3, reseller: true },
     ],
   },
@@ -66,9 +72,12 @@ const navGroups: NavGroup[] = [
     items: [
       { to: '/resellers', label: 'Resellers', icon: Store, minRole: 'super_admin' },
       { to: '/api-keys', label: 'API Keys', icon: KeyRound, minRole: 'super_admin', reseller: true },
+      { to: '/webhooks', label: 'Webhooks', icon: Webhook, minRole: 'support', reseller: true },
       { to: '/admins', label: 'Admin Users', icon: ShieldCheck, minRole: 'super_admin' },
       { to: '/audit-log', label: 'Audit Log', icon: ScrollText, minRole: 'super_admin' },
       { to: '/settings', label: 'Settings', icon: Settings, minRole: 'super_admin' },
+      // Every role (resellers included) manages its own two-factor and passkeys here.
+      { to: '/security', label: 'Security', icon: Fingerprint, reseller: true },
       // No minRole: the Swagger page is a static asset nginx serves to anyone
       // with the URL anyway, so hiding the link would only be security theater.
       { to: '/api-docs.html', label: 'API Docs', icon: BookOpen, external: true, reseller: true },
@@ -208,6 +217,7 @@ export function DashboardLayout() {
             <p className="truncate text-sm font-medium text-fg">{user?.username}</p>
             <p className="text-xs text-faint">{t(roleLabels[user?.role ?? ''] ?? user?.role ?? '')}</p>
           </div>
+          <NotificationBell />
           <button
             onClick={logout}
             title={t('Log out')}
@@ -263,6 +273,9 @@ export function DashboardLayout() {
           </button>
           <BrandTile size="sm" />
           <span className="text-sm font-semibold text-fg">{currentLabel}</span>
+          <span className="ms-auto">
+            <NotificationBell />
+          </span>
         </header>
 
         <main className="relative flex-1 overflow-y-auto">
@@ -271,6 +284,7 @@ export function DashboardLayout() {
             aria-hidden
             className="pointer-events-none absolute inset-x-0 top-0 h-72 bg-[radial-gradient(70%_100%_at_50%_0%,var(--ui-accent-soft),transparent)] opacity-70"
           />
+          <ChannelBrokenBanner />
           <div className="relative mx-auto w-full max-w-7xl p-5 sm:p-8 lg:p-10">
             <Outlet />
           </div>

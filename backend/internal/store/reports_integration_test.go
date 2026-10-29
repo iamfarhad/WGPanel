@@ -200,7 +200,7 @@ func TestReportsIntegration(t *testing.T) {
 				t.Errorf("expiry %s = %d, want %d", b.Bucket, b.Count, wantExp[b.Bucket])
 			}
 		}
-		if len(r.QuotaBuckets) != 5 || len(r.ExpiryBuckets) != 7 {
+		if len(r.QuotaBuckets) != 5 || len(r.ExpiryBuckets) != 8 {
 			t.Fatalf("bucket lists not complete: %d/%d", len(r.QuotaBuckets), len(r.ExpiryBuckets))
 		}
 		if len(r.Expiring) != 2 || !r.Expiring[0].ExpiryAt.Before(r.Expiring[1].ExpiryAt) {

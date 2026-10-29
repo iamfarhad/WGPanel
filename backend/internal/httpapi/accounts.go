@@ -2,15 +2,17 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"wgpanel-api/internal/events"
 
 	"wgpanel-api/internal/store"
-	"wgpanel-api/internal/wgkeys"
 )
 
 type createAccountRequest struct {
@@ -21,6 +23,15 @@ type createAccountRequest struct {
 	ExpiryAt           *string  `json:"expiry_at"` // RFC3339
 	DeviceLimit        *int     `json:"device_limit"`
 	BandwidthLimitMbps *int     `json:"bandwidth_limit_mbps"` // omitted/null = unshaped
+	// TemplateID applies a plan template; any explicit field above overrides it.
+	TemplateID *string `json:"template_id"`
+	// OnHold starts the expiry clock at the first handshake instead of now; the
+	// duration is HoldDurationDays (or the template's duration_days). HoldDeadlineDays
+	// activates the account anyway after that many days without a handshake.
+	OnHold           *bool   `json:"on_hold"`
+	HoldDurationDays *int    `json:"hold_duration_days"`
+	HoldDeadlineDays *int    `json:"hold_deadline_days"`
+	ResetStrategy    *string `json:"reset_strategy"` // none|day|week|month|year
 }
 
 // maxBandwidthLimitMbps rejects obviously-nonsense rates (100 Gbps) before they
@@ -83,6 +94,26 @@ type accountResponse struct {
 	// owner is a reseller - what the UI joins against GET /api/v1/resellers.
 	Owner      *string `json:"owner"`
 	ResellerID *string `json:"reseller_id"`
+	// OnHold: the expiry clock has not started (expiry_at is null); it starts at the
+	// first handshake. The account is still status "active". HoldDurationDays is the
+	// validity it will get; HoldDeadlineAt (optional) activates it anyway.
+	OnHold           bool    `json:"on_hold"`
+	HoldDurationDays *int    `json:"hold_duration_days"`
+	HoldDeadlineAt   *string `json:"hold_deadline_at"`
+	ActivatedAt      *string `json:"activated_at"`
+	// ResetStrategy (none|day|week|month|year) zeroes the used traffic on schedule;
+	// NextResetAt is the next run, LastResetAt the last reset of any kind.
+	ResetStrategy string  `json:"reset_strategy"`
+	NextResetAt   *string `json:"next_reset_at"`
+	LastResetAt   *string `json:"last_reset_at"`
+}
+
+func rfc3339Ptr(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	v := t.Format(time.RFC3339)
+	return &v
 }
 
 // subscriptionBaseURL is the origin to prepend to subscription paths when a
@@ -185,6 +216,13 @@ func toAccountResponse(a store.Account, peers []store.AccountPeerWithNode, subBa
 		LastHandshakeAt:        accountLastHandshake,
 		NodeID:                 deprecatedNodeID,
 		AssignedIP:             deprecatedAssignedIP,
+		OnHold:                 a.OnHold(),
+		HoldDurationDays:       a.HoldDurationDays,
+		HoldDeadlineAt:         rfc3339Ptr(a.HoldDeadlineAt),
+		ActivatedAt:            rfc3339Ptr(a.ActivatedAt),
+		ResetStrategy:          a.ResetStrategy,
+		NextResetAt:            rfc3339Ptr(a.NextResetAt),
+		LastResetAt:            rfc3339Ptr(a.LastResetAt),
 	}
 }
 
@@ -233,116 +271,27 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var expiryAt *time.Time
-	if req.ExpiryAt != nil {
-		t, err := time.Parse(time.RFC3339, *req.ExpiryAt)
-		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid_request", "expiry_at must be RFC3339")
-			return
-		}
-		expiryAt = &t
-	}
-	var quotaBytes *int64
-	if req.DataQuotaGB != nil {
-		if *req.DataQuotaGB < 0 {
-			writeJSONError(w, http.StatusBadRequest, "invalid_request", "data_quota_gb must not be negative")
-			return
-		}
-		b := gbToBytes(*req.DataQuotaGB)
-		quotaBytes = &b
-	}
-	if req.BandwidthLimitMbps != nil && (*req.BandwidthLimitMbps < 1 || *req.BandwidthLimitMbps > maxBandwidthLimitMbps) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "bandwidth_limit_mbps must be between 1 and 100000 (omit for unlimited)")
-		return
-	}
-
-	subscriptionToken, err := newSubscriptionToken()
-	if err != nil {
-		s.Logger.Error("generate_subscription_token_failed", "error", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not generate subscription token")
-		return
-	}
-
-	kp, err := wgkeys.GenerateKeyPair()
-	if err != nil {
-		s.Logger.Error("generate_keypair_failed", "error", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not generate keypair")
-		return
-	}
-	encryptedPriv, err := wgkeys.Encrypt(s.AccountKeyEncryptionKey, kp.PrivateKey)
-	if err != nil {
-		s.Logger.Error("encrypt_private_key_failed", "error", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not secure private key")
-		return
-	}
-
 	ctx := r.Context()
 	identity, _ := callerIdentityFromContext(ctx)
 
-	var ownerNamespace *string
-	var allowedGroups []string
-	if identity.ResellerID != "" {
-		// The store re-reads the reseller's node_groups under its row lock, so a
-		// session passes none. A reseller-owned API key passes its own (narrower) set,
-		// which the store intersects with the reseller's.
-		ns := store.ResellerNamespace(identity.ResellerID)
-		ownerNamespace = &ns
-		if !identity.IsAdmin {
-			allowedGroups = identity.NodeGroups
-		}
-	} else if !identity.IsAdmin {
-		ns := identity.KeyNamespace
-		ownerNamespace = &ns
-		allowedGroups = identity.NodeGroups
+	tmpl, aerr := s.loadTemplate(ctx, req.TemplateID, callerNamespaceArg(identity))
+	if aerr != nil {
+		writeAPIError(w, aerr)
+		return
 	}
-
-	nodeIDOrAuto := ""
-	if req.NodeID != nil {
-		nodeIDOrAuto = *req.NodeID
+	spec, aerr := resolveAccountSpec(req, tmpl, time.Now())
+	if aerr != nil {
+		writeAPIError(w, aerr)
+		return
 	}
-
-	account, err := s.Store.CreateAccount(ctx, store.CreateAccountParams{
-		ExternalRef:         req.ExternalRef,
-		Label:               req.Label,
-		NodeIDOrAuto:        nodeIDOrAuto,
-		PublicKey:           kp.PublicKey,
-		PrivateKeyEncrypted: encryptedPriv,
-		DataQuotaBytes:      quotaBytes,
-		ExpiryAt:            expiryAt,
-		DeviceLimit:         req.DeviceLimit,
-		BandwidthLimitMbps:  req.BandwidthLimitMbps,
-		SubscriptionToken:   subscriptionToken,
-		OwnerKeyNamespace:   ownerNamespace,
-		AllowedNodeGroups:   allowedGroups,
-	})
-	switch {
-	case writeResellerError(w, err):
-		return
-	case errors.Is(err, store.ErrNodeNotFound):
-		writeJSONError(w, http.StatusNotFound, "node_not_found", "no node with that id")
-		return
-	case errors.Is(err, store.ErrNodeNotRegistered):
-		writeJSONError(w, http.StatusConflict, "node_not_registered", "node has not completed registration yet")
-		return
-	case errors.Is(err, store.ErrNodeGroupNotAllowed):
-		writeJSONError(w, http.StatusForbidden, "node_group_not_allowed", "this API key is not scoped to that node's group")
-		return
-	case errors.Is(err, store.ErrNodeCapacityExceeded):
-		writeJSONError(w, http.StatusConflict, "node_capacity_exceeded", "node has no remaining capacity")
-		return
-	case errors.Is(err, store.ErrNoAvailableNode):
-		writeJSONError(w, http.StatusConflict, "no_available_node", "no registered node has remaining capacity")
-		return
-	case errors.Is(err, store.ErrExternalRefTaken):
-		writeJSONError(w, http.StatusConflict, "external_ref_taken", "an account with this external_ref already exists")
-		return
-	case err != nil:
-		s.Logger.Error("create_account_failed", "error", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not create account")
+	account, aerr := s.createFromSpec(ctx, identity, spec, req.Label)
+	if aerr != nil {
+		writeAPIError(w, aerr)
 		return
 	}
 
-	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.created", account.ID, nil, r.RemoteAddr); err != nil {
+	s.emitAccountEvent(events.AccountCreated, account)
+	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.created", account.ID, createAuditDetail(req.TemplateID, account), r.RemoteAddr); err != nil {
 		s.Logger.Error("audit_log_failed", "error", err)
 	}
 
@@ -360,6 +309,8 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 
 	var accounts []store.Account
 	var err error
+	var nextCursor *string
+	cursorMode := false
 	if ref := q.Get("external_ref"); ref != "" {
 		// Exact-match lookup: limit, offset and the admin owner filters do not apply.
 		accounts, err = s.Store.FindAccountsByExternalRef(ctx, ref, ns)
@@ -372,6 +323,10 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 		// Unlike limit (a bad value falls back to the default), a bad offset is refused:
 		// silently serving page 0 would make a paging loop spin forever on page 0.
+		if q.Has("cursor") && q.Has("offset") {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", "use either cursor or offset, not both")
+			return
+		}
 		offset := 0
 		if q.Has("offset") {
 			n, perr := strconv.Atoi(q.Get("offset"))
@@ -393,7 +348,25 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 				ownerFilter = store.ResellerNamespace(v)
 			}
 		}
-		accounts, err = s.Store.ListAccounts(ctx, limit, offset, ns, ownerFilter)
+		if q.Has("cursor") {
+			// Keyset paging (?cursor= starts; then pass the previous next_cursor).
+			// One extra row is fetched to know whether another page exists.
+			afterAt, afterID, cerr := decodeAccountCursor(q.Get("cursor"))
+			if cerr != nil {
+				writeJSONError(w, http.StatusBadRequest, "invalid_cursor", "cursor is not valid - restart paging with an empty cursor")
+				return
+			}
+			accounts, err = s.Store.ListAccountsAfter(ctx, limit+1, afterAt, afterID, ns, ownerFilter)
+			if err == nil && len(accounts) > limit {
+				accounts = accounts[:limit]
+				last := accounts[len(accounts)-1]
+				c := encodeAccountCursor(last.CreatedAt, last.ID)
+				nextCursor = &c
+			}
+			cursorMode = true
+		} else {
+			accounts, err = s.Store.ListAccounts(ctx, limit, offset, ns, ownerFilter)
+		}
 	}
 	if err != nil {
 		s.Logger.Error("list_accounts_failed", "error", err)
@@ -412,7 +385,44 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, toAccountResponse(a, peers, subBase))
 	}
+	if cursorMode {
+		// next_cursor is null on the last page. Only present in cursor mode, so the
+		// limit/offset response shape is unchanged.
+		writeJSON(w, http.StatusOK, map[string]any{"accounts": out, "next_cursor": nextCursor})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
+}
+
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// encodeAccountCursor/decodeAccountCursor: an opaque keyset position
+// (created_at microseconds, id), the exact sort key of ListAccounts.
+func encodeAccountCursor(createdAt time.Time, id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(createdAt.UnixMicro(), 10) + "|" + id))
+}
+
+func decodeAccountCursor(c string) (*time.Time, string, error) {
+	if c == "" {
+		return nil, "", nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(c)
+	if err != nil {
+		return nil, "", err
+	}
+	micros, id, ok := strings.Cut(string(raw), "|")
+	if !ok || id == "" {
+		return nil, "", errors.New("malformed cursor")
+	}
+	n, err := strconv.ParseInt(micros, 10, 64)
+	if err != nil {
+		return nil, "", err
+	}
+	if !uuidPattern.MatchString(id) {
+		return nil, "", errors.New("malformed cursor id")
+	}
+	t := time.UnixMicro(n).UTC()
+	return &t, id, nil
 }
 
 func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
@@ -444,6 +454,11 @@ type updateAccountRequest struct {
 	// refused alongside a value for the same field; false/absent = no effect.
 	ClearDataQuota   *bool `json:"clear_data_quota"`
 	ClearDeviceLimit *bool `json:"clear_device_limit"`
+	// ResetStrategy: none|day|week|month|year (restarts the schedule from now).
+	// HoldDurationDays edits the duration of an account that is still on hold; setting
+	// expiry_at on an on-hold account activates it with that fixed date instead.
+	ResetStrategy    *string `json:"reset_strategy"`
+	HoldDurationDays *int    `json:"hold_duration_days"`
 }
 
 func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
@@ -476,6 +491,14 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.ResetStrategy != nil && !store.ValidResetStrategy(*req.ResetStrategy) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "reset_strategy must be none, day, week, month or year")
+		return
+	}
+	if req.HoldDurationDays != nil && (*req.HoldDurationDays < 1 || *req.HoldDurationDays > maxHoldDays) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "hold_duration_days must be between 1 and 3650")
+		return
+	}
 	clearQuota := req.ClearDataQuota != nil && *req.ClearDataQuota
 	clearDevices := req.ClearDeviceLimit != nil && *req.ClearDeviceLimit
 	if clearQuota && req.DataQuotaGB != nil {
@@ -499,6 +522,8 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		DeviceLimitHardEnforce: req.DeviceLimitHardEnforce,
 		ClearDataQuota:         clearQuota,
 		ClearDeviceLimit:       clearDevices,
+		ResetStrategy:          req.ResetStrategy,
+		HoldDurationDays:       req.HoldDurationDays,
 	})
 	if errors.Is(err, store.ErrAccountNotFound) {
 		writeJSONError(w, http.StatusNotFound, "account_not_found", "no account with that id")
@@ -546,6 +571,7 @@ func (s *Server) handleSuspendAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	detail := map[string]string{"reason": reason}
+	s.emitAccountEvent(events.AccountSuspended, account)
 	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.suspended", account.ID, detail, r.RemoteAddr); err != nil {
 		s.Logger.Error("audit_log_failed", "error", err)
 	}
@@ -577,6 +603,7 @@ func (s *Server) handleEnableAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.emitAccountEvent(events.AccountEnabled, account)
 	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.enabled", account.ID, nil, r.RemoteAddr); err != nil {
 		s.Logger.Error("audit_log_failed", "error", err)
 	}
@@ -600,35 +627,14 @@ func (s *Server) handleRenewAccount(w http.ResponseWriter, r *http.Request) {
 	identity, _ := callerIdentityFromContext(ctx)
 	ns := callerNamespaceArg(identity)
 
-	var addQuotaBytes *int64
-	if req.AddQuotaGB != nil {
-		b := gbToBytes(*req.AddQuotaGB)
-		addQuotaBytes = &b
-	}
-
-	var newExpiry *time.Time
-	if req.ExtendDays != nil {
-		existing, err := s.Store.GetAccount(ctx, id, ns)
-		if errors.Is(err, store.ErrAccountNotFound) {
-			writeJSONError(w, http.StatusNotFound, "account_not_found", "no account with that id")
-			return
-		}
-		if err != nil {
-			s.Logger.Error("get_account_failed", "error", err)
-			writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not renew account")
-			return
-		}
-		base := time.Now()
-		if existing.ExpiryAt != nil && existing.ExpiryAt.After(base) {
-			base = *existing.ExpiryAt
-		}
-		t := base.Add(time.Duration(*req.ExtendDays) * 24 * time.Hour)
-		newExpiry = &t
-	}
-
-	account, err := s.Store.RenewAccount(ctx, id, ns, addQuotaBytes, newExpiry)
+	account, err := s.renewAccount(ctx, id, ns, req.AddQuotaGB, req.ExtendDays)
 	if errors.Is(err, store.ErrAccountNotFound) {
 		writeJSONError(w, http.StatusNotFound, "account_not_found", "no account with that id")
+		return
+	}
+	var ae *apiError
+	if errors.As(err, &ae) {
+		writeAPIError(w, ae)
 		return
 	}
 	if writeResellerError(w, err) {
@@ -688,6 +694,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.emitAccountEvent(events.AccountDeleted, account)
 	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.deleted", account.ID, nil, r.RemoteAddr); err != nil {
 		s.Logger.Error("audit_log_failed", "error", err)
 	}
@@ -753,10 +760,22 @@ func (s *Server) handleGetAccountConfig(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Rendering (including the hard-won DNS and MTU=1280 choices) lives in
+	// ?endpoint_id= (staff only): a specific node endpoint's uuid, or "direct" for the
+	// node's public_endpoint. Without it the best healthy endpoint is chosen automatically.
+	endpointID := r.URL.Query().Get("endpoint_id")
+	if endpointID != "" && (identity.ResellerID != "" || !identity.IsAdmin) {
+		writeJSONError(w, http.StatusForbidden, "forbidden", "endpoint_id is available to panel staff only")
+		return
+	}
+
+	// Rendering (including the hard-won DNS and MTU choices) lives in
 	// renderPeerConfig, shared with the subscription endpoint so the two config
 	// surfaces can never drift apart.
-	config, err := s.renderPeerConfig(ctx, id, ns, target)
+	config, err := s.renderPeerConfig(ctx, id, ns, target, endpointID)
+	if errors.Is(err, errEndpointNotFound) {
+		writeJSONError(w, http.StatusNotFound, "endpoint_not_found", "that endpoint does not exist on this node")
+		return
+	}
 	if errors.Is(err, errNodeMissingPublicKey) {
 		writeJSONError(w, http.StatusConflict, "node_missing_public_key", "the node this account is on has no public key set yet")
 		return

@@ -31,14 +31,18 @@ func resellerTestServer(disabled bool) *Server {
 // route can't slip past the allowlist test unclassified.
 func routePatterns(t *testing.T) []string {
 	t.Helper()
-	src, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
 	re := regexp.MustCompile(`mux\.Handle(?:Func)?\("([A-Z]+ [^"]+)"`)
 	var out []string
-	for _, m := range re.FindAllStringSubmatch(string(src), -1) {
-		out = append(out, m[1])
+	// Routes live in server.go and in feature files that register their own groups
+	// (security.go: registerSecurityRoutes, notify_api.go: registerNotificationRoutes).
+	for _, file := range []string{"server.go", "security.go", "notify_api.go"} {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range re.FindAllStringSubmatch(string(src), -1) {
+			out = append(out, m[1])
+		}
 	}
 	if len(out) < 20 {
 		t.Fatalf("only found %d routes; regexp stale?", len(out))
@@ -69,14 +73,17 @@ func TestResellerAllowlist(t *testing.T) {
 	}
 	public := map[string]bool{
 		"GET /healthz": true, "POST /api/v1/auth/login": true, "POST /api/v1/auth/refresh": true,
-		"POST /api/v1/nodes/join": true, "GET /api/v1/sub/{token}": true, "GET /api/v1/sub/{token}/nodes": true,
+		"POST /api/v1/nodes/join": true, "GET /api/v1/sub/{token}": true, "GET /api/v1/sub/{token}/nodes": true, "GET /api/v1/sub/{token}/info": true,
+		"POST /api/v1/auth/mfa/totp": true, "POST /api/v1/auth/mfa/recovery": true,
+		"POST /api/v1/auth/mfa/passkey/begin": true, "POST /api/v1/auth/mfa/passkey/finish": true,
+		"POST /api/v1/auth/passkey/begin": true, "POST /api/v1/auth/passkey/finish": true,
 	}
 	for _, pattern := range routePatterns(t) {
 		if public[pattern] || strings.Contains(pattern, "/internal/") {
 			continue
 		}
 		method, path, _ := strings.Cut(pattern, " ")
-		path = strings.NewReplacer("{id}", "x").Replace(path)
+		path = strings.NewReplacer("{id}", "x", "{delivery_id}", "y").Replace(path)
 		_, reached := doAs(s, token, method, path)
 		if want := resellerRoutes[pattern]; reached != want {
 			t.Errorf("%s: reseller reached handler = %v, allowlist says %v", pattern, reached, want)

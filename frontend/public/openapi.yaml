@@ -54,6 +54,21 @@ info:
     `message` is a human-readable string that MAY change wording over time —
     integrate against `code`, not `message`.
 
+    ## Rate limiting
+
+    Bot API requests authenticated with an API key are limited by a token bucket
+    **per key** (default 20 requests/second, burst 40; both configurable in
+    Settings as `api_rate_rps` / `api_rate_burst`). The limiter runs after the
+    signature check, so a forged request can never use up a real key's budget.
+    Every response to a keyed request carries `X-RateLimit-Limit` (bucket
+    capacity), `X-RateLimit-Remaining` (whole tokens left) and
+    `X-RateLimit-Reset` (seconds until the bucket is full again). When the bucket
+    is empty the API answers `429` with code `rate_limited` and a `Retry-After`
+    header (seconds). The public subscription endpoints are limited **per client
+    IP** instead (a generous bucket, plus a much stricter allowance for unknown
+    tokens so token guessing stops after a handful of tries) and answer the same
+    `429`.
+
     ## Two listeners
 
     This spec documents two distinct HTTP servers this backend runs:
@@ -88,14 +103,22 @@ servers:
       override).
 
 tags:
+  - name: Notifications
+    description: In-panel notification center and Telegram/email notification channels.
+  - name: Webhooks
+    description: Signed outbound webhooks with a persistent retry queue and delivery log.
   - name: Reports
     description: Traffic, account-status, quota and expiry reporting for staff and resellers.
   - name: Resellers
     description: Reseller logins with account/traffic/expiry/node-group limits (super_admin manages; reseller self-service is limited to its own accounts).
   - name: Auth
     description: Admin login/session management.
+  - name: Security
+    description: Admin sign-in security - TOTP two-factor, recovery codes, passkeys (WebAuthn), login lockout and the admin IP allowlist.
   - name: Nodes
     description: WireGuard server (node) directory and lifecycle.
+  - name: Templates
+    description: Plan templates - named bundles of quota, duration, limits, reset schedule and on-hold settings used to create accounts.
   - name: Accounts
     description: >-
       WireGuard peer provisioning and lifecycle. **Limits are enforced by the
@@ -261,6 +284,15 @@ paths:
     post:
       tags: [Auth]
       summary: Log in with username/password
+      description: >-
+        If the admin has two-factor authentication (TOTP and/or passkeys) and the password is
+        correct, the response is `{mfa_required: true, mfa_token, methods}` with **no** session
+        tokens; finish with `POST /api/v1/auth/mfa/totp`, `/mfa/recovery` or
+        `/mfa/passkey/*`. Failed attempts are counted per username and per client IP in Redis
+        (defaults: 5 failures lock for 15 minutes, doubling on repeat lockouts; thresholds are in
+        Settings -> Security) - a locked caller gets `429 too_many_attempts` with a `Retry-After`
+        header, even with a correct password. When the admin IP allowlist is set, an address
+        outside it gets `403 ip_not_allowed`.
       security: []
       requestBody:
         required: true
@@ -283,12 +315,23 @@ paths:
                   access_token: { type: string, description: "JWT, 15 minute TTL" }
                   refresh_token: { type: string, description: "Redis-backed, 7 day TTL" }
                   expires_in_seconds: { type: integer, example: 900 }
+                  mfa_required: { type: boolean, description: "true instead of the tokens above when a second factor is needed" }
+                  mfa_token: { type: string, description: "Short-lived (5 min), single-use; exchange it at /auth/mfa/*" }
+                  methods:
+                    type: array
+                    items: { type: string, enum: [totp, recovery, passkey] }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401":
           description: Invalid username or password (same response for both cases, to avoid leaking which one was wrong).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "403":
+          description: "`ip_not_allowed` - the caller's IP is not on the admin IP allowlist."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/auth/refresh:
@@ -326,6 +369,442 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/auth/mfa/totp:
+    post:
+      tags: [Auth]
+      summary: Finish a two-factor login with an authenticator code
+      description: Exchanges `mfa_token` + a 6-digit TOTP code for the normal token pair. The token is single-use; 5 wrong codes burn it. Wrong codes count toward the login lockout.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mfa_token, code]
+              properties:
+                mfa_token: { type: string }
+                code: { type: string, example: "123456" }
+      responses:
+        "200": { $ref: "#/components/responses/SessionTokens" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: "`invalid_mfa_code` or `mfa_token_invalid` (expired / already used)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "403":
+          description: "`ip_not_allowed`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/auth/mfa/recovery:
+    post:
+      tags: [Auth]
+      summary: Finish a two-factor login with a one-time recovery code
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mfa_token, recovery_code]
+              properties:
+                mfa_token: { type: string }
+                recovery_code: { type: string, example: "abcde-fghij" }
+      responses:
+        "200": { $ref: "#/components/responses/SessionTokens" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: "`invalid_mfa_code` or `mfa_token_invalid`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "403":
+          description: "`ip_not_allowed`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/auth/mfa/passkey/begin:
+    post:
+      tags: [Auth]
+      summary: Start a passkey assertion as the second factor
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mfa_token]
+              properties:
+                mfa_token: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/PasskeyOptions" }
+        "400":
+          description: "`invalid_request`, `no_passkeys` or `passkeys_unavailable` (the page's Origin is not the panel domain over HTTPS, or http://localhost)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401":
+          description: "`mfa_token_invalid`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/auth/mfa/passkey/finish:
+    post:
+      tags: [Auth]
+      summary: Finish the passkey second factor
+      description: Body is the raw `PublicKeyCredential` JSON produced by `navigator.credentials.get()`. `session` is the `session_id` from begin.
+      security: []
+      parameters:
+        - { name: session, in: query, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: "WebAuthn assertion response (base64url fields)" }
+      responses:
+        "200": { $ref: "#/components/responses/SessionTokens" }
+        "400":
+          description: "`passkey_session_expired` or `passkeys_unavailable`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401":
+          description: "`invalid_mfa_code` (assertion failed, including a non-increasing signature counter) or `mfa_token_invalid`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/auth/passkey/begin:
+    post:
+      tags: [Auth]
+      summary: Start a passwordless passkey sign-in
+      description: Discoverable (usernameless) credentials; user verification is required. The RP ID is derived from the panel domain (or `localhost` over http for development).
+      security: []
+      responses:
+        "200": { $ref: "#/components/responses/PasskeyOptions" }
+        "400":
+          description: "`passkeys_unavailable`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "403":
+          description: "`ip_not_allowed`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/auth/passkey/finish:
+    post:
+      tags: [Auth]
+      summary: Finish a passwordless passkey sign-in
+      description: Body is the raw `PublicKeyCredential` JSON from `navigator.credentials.get()`. Returns the normal token pair.
+      security: []
+      parameters:
+        - { name: session, in: query, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: "WebAuthn assertion response (base64url fields)" }
+      responses:
+        "200": { $ref: "#/components/responses/SessionTokens" }
+        "400":
+          description: "`passkey_session_expired` or `passkeys_unavailable`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401":
+          description: "`invalid_passkey`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "403":
+          description: "`ip_not_allowed`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/me/security:
+    get:
+      tags: [Security]
+      summary: The caller's own two-factor / passkey status
+      description: Available to every admin role including resellers; always scoped to the session's own admin.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totp_enabled: { type: boolean }
+                  totp_pending: { type: boolean, description: "An enrolment was started but not confirmed." }
+                  recovery_codes_remaining: { type: integer }
+                  passkeys:
+                    type: array
+                    items: { $ref: "#/components/schemas/Passkey" }
+                  passkeys_supported: { type: boolean }
+
+  /api/v1/me/security/totp/enroll:
+    post:
+      tags: [Security]
+      summary: Start TOTP enrolment
+      description: Returns the Base32 secret and an `otpauth://` URI (render it as a QR code). Nothing is enforced until `confirm`. Calling again before confirming replaces the pending secret.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Pending secret.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { type: string }
+                  otpauth_uri: { type: string }
+        "409":
+          description: "`totp_already_enabled`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/me/security/totp/confirm:
+    post:
+      tags: [Security]
+      summary: Confirm TOTP enrolment with a code
+      description: Activates two-factor authentication and returns 10 one-time recovery codes **once** (stored only as hashes).
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/RecoveryCodes" }
+        "401":
+          description: "`invalid_mfa_code`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`totp_not_pending`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/me/security/totp/disable:
+    post:
+      tags: [Security]
+      summary: Disable TOTP (needs the password and a code)
+      description: Also removes the recovery codes. Passkeys are separate and stay. The code may be a TOTP code or an unused recovery code.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, code]
+              properties:
+                password: { type: string, format: password }
+                code: { type: string }
+      responses:
+        "204": { description: Disabled. }
+        "401":
+          description: "`invalid_credentials` or `invalid_mfa_code`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/me/security/recovery-codes:
+    post:
+      tags: [Security]
+      summary: Regenerate the recovery codes (needs the password and a code)
+      description: Invalidates every earlier recovery code and returns 10 new ones once.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, code]
+              properties:
+                password: { type: string, format: password }
+                code: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/RecoveryCodes" }
+        "401":
+          description: "`invalid_credentials` or `invalid_mfa_code`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`totp_not_enabled`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/TooManyAttempts" }
+
+  /api/v1/me/security/passkeys/begin:
+    post:
+      tags: [Security]
+      summary: Start registering a passkey
+      description: Creation options (discoverable credential, user verification required) plus a `session_id` held in Redis for 5 minutes. At most 10 passkeys per admin (`passkey_limit`).
+      security:
+        - BearerAuth: []
+      responses:
+        "200": { $ref: "#/components/responses/PasskeyOptions" }
+        "400":
+          description: "`passkeys_unavailable`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`passkey_limit`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/me/security/passkeys/finish:
+    post:
+      tags: [Security]
+      summary: Finish registering a passkey
+      description: Body is the raw `PublicKeyCredential` JSON from `navigator.credentials.create()`.
+      security:
+        - BearerAuth: []
+      parameters:
+        - { name: session, in: query, required: true, schema: { type: string } }
+        - { name: name, in: query, required: false, schema: { type: string, maxLength: 64 }, description: "Label shown in the list (default Passkey)." }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: "WebAuthn attestation response (base64url fields)" }
+      responses:
+        "201":
+          description: Registered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Passkey" }
+        "400":
+          description: "`passkey_session_expired`, `passkey_verification_failed` or `passkeys_unavailable`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`passkey_exists`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/me/security/passkeys/{id}:
+    delete:
+      tags: [Security]
+      summary: Delete one of the caller's passkeys
+      security:
+        - BearerAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Deleted. }
+        "404":
+          description: "`passkey_not_found`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/admins/{id}/mfa:
+    delete:
+      tags: [Security]
+      summary: Reset an admin's two-factor authentication (super_admin)
+      description: Removes the admin's TOTP secret, recovery codes and passkeys. Audited as `admin.mfa_reset`.
+      security:
+        - BearerAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Reset. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`admin_not_found`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/security/settings:
+    get:
+      tags: [Security]
+      summary: Login lockout thresholds and the admin IP allowlist (super_admin)
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current settings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecuritySettings" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    patch:
+      tags: [Security]
+      summary: Update the lockout thresholds / admin IP allowlist (super_admin)
+      description: >-
+        An empty `admin_ip_allowlist` removes the restriction. A non-empty list is refused with
+        `allowlist_excludes_you` (400) if it would not include the requesting admin's own IP. The
+        allowlist applies to the admin login flow and JWT-authenticated admin routes only - never to
+        subscription URLs, node-agent connections or API-key requests. Break-glass: run
+        `wgpanel clear-ip-allowlist` on the server.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                admin_ip_allowlist:
+                  type: array
+                  maxItems: 100
+                  items: { type: string, example: "203.0.113.0/24" }
+                login_max_failures: { type: integer, minimum: 1, maximum: 100 }
+                login_lockout_minutes: { type: integer, minimum: 1, maximum: 1440 }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecuritySettings" }
+        "400":
+          description: "`invalid_request` or `allowlist_excludes_you`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/v1/nodes/join:
     post:
@@ -473,6 +952,188 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/nodes/{id}/endpoints:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Nodes]
+      summary: List a node's entry endpoints (relays)
+      description: >-
+        Staff admin sessions only (any role; not available to resellers or API
+        keys). Besides its direct `public_endpoint`, a node can have several
+        entry endpoints - typically relay servers in a country where the node's
+        own address is blocked. Generated configs and subscriptions use the
+        **highest-`priority` enabled endpoint that is healthy** (health_check
+        `none`, or `tcp` with a recent `up` verdict) and fall back to the node's
+        `public_endpoint`, so a node without endpoints behaves exactly as before.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Endpoints, highest priority first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  endpoints:
+                    type: array
+                    items: { $ref: "#/components/schemas/NodeEndpoint" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [Nodes]
+      summary: Add an entry endpoint to a node
+      description: Admin session with role >= `operator`.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, address]
+              properties:
+                label: { type: string, maxLength: 64, description: Unique per node. }
+                address: { type: string, example: "relay.example.ir:51820", description: "host:port written into clients' `Endpoint =`." }
+                kind: { type: string, enum: [direct, relay], default: relay }
+                priority: { type: integer, default: 100, description: Higher wins. }
+                enabled: { type: boolean, default: true }
+                mtu: { type: integer, minimum: 1200, maximum: 1420, nullable: true, description: Per-endpoint client MTU override. }
+                health_check: { type: string, enum: [none, tcp], default: none }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NodeEndpoint" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`endpoint_label_taken`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/nodes/{id}/endpoints/{endpointId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: endpointId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Nodes]
+      summary: Update a node endpoint
+      description: >-
+        Admin session with role >= `operator`. Only provided fields change;
+        `clear_mtu: true` removes the MTU override. Changing `address` or
+        `health_check` resets the health verdict to `unknown`.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string }
+                address: { type: string }
+                kind: { type: string, enum: [direct, relay] }
+                priority: { type: integer }
+                enabled: { type: boolean }
+                mtu: { type: integer, minimum: 1200, maximum: 1420 }
+                clear_mtu: { type: boolean }
+                health_check: { type: string, enum: [none, tcp] }
+      responses:
+        "200":
+          description: Updated endpoint.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NodeEndpoint" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`endpoint_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`endpoint_label_taken`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [Nodes]
+      summary: Delete a node endpoint
+      description: Admin session with role >= `operator`.
+      security:
+        - BearerAuth: []
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`endpoint_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/nodes/{id}/endpoints/{endpointId}/check:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: endpointId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Nodes]
+      summary: Run an endpoint's health check now
+      description: >-
+        Admin session with role >= `operator`. Performs the endpoint's TCP-connect
+        check immediately (3 s timeout) and returns the refreshed endpoint. A
+        background job also re-checks each `tcp` endpoint at most once a minute.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Endpoint with fresh `last_status`/`last_checked_at`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NodeEndpoint" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`endpoint_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`endpoint_check_disabled` - the endpoint's health_check is `none`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/nodes/{id}/join-token:
     post:
       tags: [Nodes]
@@ -601,6 +1262,17 @@ paths:
             empty - is rejected with 400 `invalid_request` rather than silently
             read as 0. Ignored when `external_ref` is given.
           schema: { type: integer, minimum: 0, default: 0 }
+        - name: cursor
+          in: query
+          description: >-
+            Keyset (cursor) paging. Pass an empty value (`?cursor=`) for the
+            first page, then the previous response's `next_cursor` until it is
+            `null`. Cursor paging stays correct while accounts are created or
+            deleted between requests, unlike `offset`. Mutually exclusive with
+            `offset` (400 `invalid_request`); a malformed value is 400
+            `invalid_cursor`. The `next_cursor` field only appears in cursor
+            mode - the `limit`/`offset` response shape is unchanged.
+          schema: { type: string }
         - name: external_ref
           in: query
           description: >-
@@ -627,13 +1299,161 @@ paths:
                   accounts:
                     type: array
                     items: { $ref: "#/components/schemas/Account" }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Only present when `cursor` was passed. `null` on the last page.
         "400":
-          description: "`invalid_request` - `offset` is not an integer >= 0."
+          description: "`invalid_request` - `offset` is not an integer >= 0, or both `cursor` and `offset` were given; `invalid_cursor` - malformed `cursor`."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/accounts/bulk:
+    post:
+      tags: [Accounts]
+      summary: Run one action over many accounts
+      description: >-
+        Admin session (role >= `operator`), reseller session, or API key. `action` picks
+        the operation and the permission it needs, exactly as the single-account routes:
+        `create` -> `create`; `renew`, `reset_usage` -> `update`; `suspend`, `enable` ->
+        `suspend`; `delete` -> `delete`. At most 200 items per call. Every item runs the same
+        store operation as its single-account endpoint - its own transaction and, for a
+        reseller, its own limits-row lock - so `max_accounts`, the traffic credit, the plan
+        expiry and namespace scoping apply item by item. The call returns 200 with one
+        result per item whatever the outcome; a refused item has `ok: false` and an `error`
+        (the same codes as the single route, plus `duplicate_id`). A `create` batch stops
+        early once a reseller limit is hit and reports the remaining items as failed with
+        that code. Each successful item is audit-logged with `bulk: true`.
+        `reset_usage` is refused per item (`reseller_reset_not_allowed`) for a reseller that
+        has a traffic credit. Whole-request problems (unknown action, bad count, no ids,
+        batch too large) are 400.
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkAccountsRequest" }
+      responses:
+        "200":
+          description: Per-item results.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BulkAccountsResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/templates:
+    get:
+      tags: [Templates]
+      summary: List plan templates
+      description: >-
+        Staff see every template. A reseller or API key sees its own templates plus
+        global ones flagged `available_to_resellers`.
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Templates, ordered by name.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items: { $ref: "#/components/schemas/PlanTemplate" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Templates]
+      summary: Create a plan template
+      description: >-
+        Admin session (role >= `operator`), reseller session, or API key with `create`
+        permission. A staff-created template is global; any other caller's template lives in
+        its own namespace (and `available_to_resellers` is ignored).
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TemplateRequest" }
+      responses:
+        "201":
+          description: Template created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanTemplate" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/templates/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Templates]
+      summary: Get a plan template
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: The template.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanTemplate" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Templates]
+      summary: Replace a plan template
+      description: >-
+        Replaces every editable field. Staff may edit any template; everyone else only their
+        own (404 otherwise, including for a shared staff template). Existing accounts are
+        unaffected - they copy template values at creation.
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TemplateRequest" }
+      responses:
+        "200":
+          description: Template updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanTemplate" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Templates]
+      summary: Delete a plan template
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/accounts/{id}:
     parameters:
@@ -711,6 +1531,14 @@ paths:
                     (`data_used_bytes`) is not touched.
                 expiry_at: { type: string, format: date-time, nullable: true }
                 device_limit: { type: integer, nullable: true }
+                reset_strategy:
+                  type: string
+                  enum: [none, day, week, month, year]
+                  description: Scheduled usage reset; setting it restarts the schedule from now (`none` clears `next_reset_at`).
+                hold_duration_days:
+                  type: integer
+                  minimum: 1
+                  description: Changes the validity of an account that is still on hold (ignored once active). Setting `expiry_at` on an on-hold account instead activates it with that fixed date.
                 clear_device_limit:
                   type: boolean
                   description: >-
@@ -897,7 +1725,10 @@ paths:
                 extend_days:
                   type: integer
                   nullable: true
-                  description: Extends from the current expiry_at (or from now, if the account has none/has already expired).
+                  description: >-
+                    Extends from the current expiry_at (or from now, if the account has none/has already expired).
+                    For an account still **on hold** the clock has not started, so this lengthens its
+                    `hold_duration_days` instead and `expiry_at` stays null.
       responses:
         "200":
           description: Account renewed.
@@ -988,6 +1819,17 @@ paths:
           required: false
           schema: { type: string, format: uuid }
           description: Required if the account has peers on more than one node; optional (defaults to the only peer) otherwise.
+        - name: endpoint_id
+          in: query
+          required: false
+          schema: { type: string, description: "A node endpoint id, or the literal `direct` for the node's public_endpoint." }
+          description: >-
+            Staff admin sessions only (403 `forbidden` for resellers and API
+            keys). Renders the config for that specific entry endpoint of the
+            node, even if it is disabled or down. Without it the highest-priority
+            enabled, healthy node endpoint is used, falling back to the node's
+            `public_endpoint`. The `MTU` line is the endpoint's own `mtu` if set,
+            else the panel's `client_mtu` setting.
       security:
         - BearerAuth: []
         - ApiKeyAuth: []
@@ -1015,7 +1857,7 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404":
-          description: "`account_not_found`, or `node_not_found` if `node_id` doesn't match any of this account's peers."
+          description: "`account_not_found`, `node_not_found` if `node_id` doesn't match any of this account's peers, or `endpoint_not_found` if `endpoint_id` isn't an endpoint of that node."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
@@ -1165,11 +2007,27 @@ paths:
         Suspended/expired accounts get 403 `account_suspended` rather than a
         config that would silently fail to handshake. The token never appears
         in access logs (redacted by the logging middleware).
+
+
+        **Content negotiation.** A browser navigation (an `Accept` header that
+        lists `text/html`) is answered with `302` to `/s/{token}` on the same
+        origin - the public customer page, see `GET /api/v1/sub/{token}/info`.
+        Clients, bots and curl (no `Accept`, `*/*`, anything else) keep getting
+        the config exactly as before; `?format=conf` forces the config even for
+        a browser (the page's download button uses it). The config's `Endpoint`
+        is the best healthy node endpoint (relay) or the node's
+        `public_endpoint`; its `MTU` follows the `client_mtu` setting.
+        Rate limited per client IP (429 `rate_limited`).
       parameters:
         - name: token
           in: path
           required: true
           schema: { type: string }
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [conf] }
+          description: Force the config response (skip the browser redirect).
         - name: node_id
           in: query
           required: false
@@ -1188,11 +2046,16 @@ paths:
           content:
             application/octet-stream:
               schema: { type: string }
+        "302":
+          description: Browser navigation - redirect to the public page `/s/{token}` (same origin).
+          headers:
+            Location: { schema: { type: string, example: "/s/<token>" } }
         "403":
           description: "`account_suspended`"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "404":
           description: Unknown token, or `node_not_found` for an explicit `node_id` the account has no peer on.
           content:
@@ -1203,6 +2066,38 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/sub/{token}/info:
+    get:
+      tags: [Subscription]
+      summary: Account status for the public subscription page
+      description: >-
+        Feeds the customer-facing page at `/s/{token}` (mobile-first, Persian by
+        default with an English toggle): status, used/total traffic, days left,
+        active devices, support contact and the config/node download paths.
+        Unauthenticated - the token is the credential, and the response contains
+        only that one account's data (no ids, no token, no peer IPs, no device
+        endpoints). Unlike the config endpoint it also answers for a suspended
+        account, so the page can say why the link stopped working. Never cached.
+        Rate limited per client IP.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubscriptionInfo" }
+        "404":
+          description: Unknown token (or a deleted account).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/sub/{token}/nodes:
@@ -1989,6 +2884,380 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+
+  # ---- Notifications, webhooks and scheduled backups ----------------------------
+
+  /api/v1/notifications:
+    get:
+      tags: [Notifications]
+      summary: In-panel notification center
+      description: >-
+        Newest notifications visible to the caller, with the caller's read state.
+        Staff see every event; a reseller sees only events of its own namespace.
+        `broken_channels` (staff only) counts enabled notification channels that
+        failed 3 deliveries in a row, for the "channel broken" banner.
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 30 } }
+        - { name: unread, in: query, schema: { type: boolean } }
+      responses:
+        "200":
+          description: Notifications.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer, format: int64 }
+                        event: { type: string, example: node.down }
+                        severity: { type: string, enum: [info, warning, critical] }
+                        title: { type: string }
+                        body: { type: string }
+                        data: { type: object, additionalProperties: true }
+                        read: { type: boolean }
+                        created_at: { type: string, format: date-time }
+                  unread_count: { type: integer }
+                  broken_channels: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/notifications/read-all:
+    post:
+      tags: [Notifications]
+      summary: Mark every notification as read for the caller
+      security: [{ BearerAuth: [] }]
+      responses:
+        "204": { description: Done. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/notifications/{id}/read:
+    post:
+      tags: [Notifications]
+      summary: Mark one notification as read
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "204": { description: Done. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "`notification_not_found` - no such notification, or not visible to the caller." }
+
+  /api/v1/notification-channels:
+    get:
+      tags: [Notifications]
+      summary: List notification channels (Telegram / email)
+      description: >-
+        Requires role = `super_admin`. Bot tokens and SMTP passwords are stored
+        encrypted and never returned (`has_secret` only). `events` is the list of
+        subscribable event types.
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Channels.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/NotificationChannel" } }
+                  events: { type: array, items: { type: string } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Notifications]
+      summary: Create a notification channel
+      description: >-
+        `config` for `telegram` is `{chat_ids: [string]}` with the bot token in
+        `secret`; for `email` it is `{host, port, username, from, to: [string],
+        tls: starttls|tls|none}` with the SMTP password in `secret`. An empty
+        `events` list subscribes the channel to nothing. `lang` selects the message
+        language (`en` or `fa`).
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NotificationChannelWrite" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationChannel" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/notification-channels/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [Notifications]
+      summary: Update a notification channel
+      description: >-
+        Omitted fields are unchanged; an omitted or empty `secret` keeps the stored
+        one. Saving clears the channel's failure streak.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NotificationChannelWrite" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationChannel" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { description: "`channel_not_found`." }
+    delete:
+      tags: [Notifications]
+      summary: Delete a notification channel
+      security: [{ BearerAuth: [] }]
+      responses:
+        "204": { description: Deleted. }
+        "404": { description: "`channel_not_found`." }
+
+  /api/v1/notification-channels/{id}/test:
+    post:
+      tags: [Notifications]
+      summary: Send a test message through a channel
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Delivered. }
+        "404": { description: "`channel_not_found`." }
+        "502": { description: "`channel_test_failed` - the message states why delivery failed (credentials are never included)." }
+
+  /api/v1/webhooks:
+    get:
+      tags: [Webhooks]
+      summary: List webhook endpoints
+      description: >-
+        Staff see every endpoint (global ones have `namespace: null`); a reseller
+        sees only its own. The signing secret is never listed.
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Webhooks.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Webhook" } }
+                  events: { type: array, items: { type: string } }
+    post:
+      tags: [Webhooks]
+      summary: Register a webhook endpoint
+      description: >-
+        Requires role >= `operator`, or a reseller session. Staff-created endpoints
+        are global (all namespaces); reseller-created ones receive only that
+        reseller's events (`account.*`, `reseller.*`). The response is the only
+        time the signing `secret` is shown. Each delivery is a JSON POST signed with
+        `X-Jirjirak-Signature: t=<unix>,v1=<hex>` where `v1` is the hex
+        HMAC-SHA256 of `<t>.<raw body>` keyed with the secret; also sent are
+        `X-Jirjirak-Event` and `X-Jirjirak-Delivery`. A non-2xx answer or a timeout
+        (10 s) is retried after 1 min, 5 min, 30 min, 2 h and 6 h, then marked
+        `failed`. Targets resolving to private, loopback, link-local or metadata
+        addresses are refused (`webhook_url_blocked`) unless a super_admin enabled
+        the override, which never applies to reseller endpoints.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WebhookWrite" }
+      responses:
+        "201":
+          description: Created; includes the one-time `secret`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Webhook" }
+        "400": { description: "`invalid_request` or `webhook_url_blocked`." }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/webhooks/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [Webhooks]
+      summary: Update a webhook endpoint (url, description, events, enabled)
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WebhookWrite" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Webhook" }
+        "400": { description: "`invalid_request` or `webhook_url_blocked`." }
+        "404": { description: "`webhook_not_found`." }
+    delete:
+      tags: [Webhooks]
+      summary: Delete a webhook endpoint and its delivery log
+      security: [{ BearerAuth: [] }]
+      responses:
+        "204": { description: Deleted. }
+        "404": { description: "`webhook_not_found`." }
+
+  /api/v1/webhooks/{id}/rotate-secret:
+    post:
+      tags: [Webhooks]
+      summary: Rotate the signing secret
+      description: The previous secret stops working immediately. The new one is returned once.
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Rotated; includes the one-time `secret`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Webhook" }
+        "404": { description: "`webhook_not_found`." }
+
+  /api/v1/webhooks/{id}/test:
+    post:
+      tags: [Webhooks]
+      summary: Send a signed `ping` event now (no retries)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The resulting delivery (status code, latency, response excerpt).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookDelivery" }
+        "404": { description: "`webhook_not_found`." }
+
+  /api/v1/webhooks/{id}/deliveries:
+    get:
+      tags: [Webhooks]
+      summary: Delivery log of a webhook (newest first)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        "200":
+          description: Deliveries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/WebhookDelivery" } }
+        "404": { description: "`webhook_not_found`." }
+
+  /api/v1/webhooks/{id}/deliveries/{delivery_id}/redeliver:
+    post:
+      tags: [Webhooks]
+      summary: Queue a fresh delivery with the same payload
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: delivery_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "202":
+          description: Queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookDelivery" }
+        "404": { description: "`webhook_not_found` or `delivery_not_found`." }
+
+  /api/v1/webhook-settings:
+    get:
+      tags: [Webhooks]
+      summary: Webhook SSRF override setting
+      description: Requires role >= `operator`.
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Current setting.
+          content:
+            application/json:
+              schema: { type: object, properties: { allow_private_targets: { type: boolean } } }
+    patch:
+      tags: [Webhooks]
+      summary: Allow staff-owned webhooks to reach private networks
+      description: >-
+        Requires role = `super_admin`. Off by default. Applies only to staff-owned
+        (global) endpoints, never to reseller endpoints.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [allow_private_targets]
+              properties: { allow_private_targets: { type: boolean } }
+      responses:
+        "200": { description: Saved. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/backup-schedule:
+    get:
+      tags: [Backup]
+      summary: Scheduled off-box backup configuration and last results
+      description: >-
+        Requires role = `super_admin`. Secrets (backup password, Telegram token, S3
+        secret key) are never returned (`has_*` flags only). `last` holds the newest
+        result per destination (`telegram`, `s3`); `runs` the 20 newest.
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Schedule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupSchedule" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [Backup]
+      summary: Save the scheduled backup configuration
+      description: >-
+        Backups use the same password-encrypted envelope as `POST /api/v1/backup`,
+        so they restore through the same path. Empty `password`, `telegram.bot_token`
+        or `s3.secret_key` keep the stored value. Telegram documents are limited to
+        50 MB by the Bot API - a larger backup fails with a clear message and should
+        go to S3. S3 works with AWS, MinIO and ArvanCloud (set `endpoint`, and
+        `path_style` for MinIO/Arvan). After each upload only the newest
+        `retention_count` `wgpanel-backup-*.json` objects under the prefix are kept.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BackupSchedule" }
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupSchedule" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/backup-schedule/run:
+    post:
+      tags: [Backup]
+      summary: Run a backup now
+      description: Starts a backup in the background; poll `GET /api/v1/backup-schedule` for the per-destination result.
+      security: [{ BearerAuth: [] }]
+      responses:
+        "202": { description: Started. }
+        "400": { description: "`backup_not_configured` - set a password and enable a destination first." }
+        "409": { description: "`backup_in_progress`." }
+
 components:
   securitySchemes:
     BearerAuth:
@@ -2012,6 +3281,40 @@ components:
       description: Must equal the INTERNAL_API_TOKEN env var. Gates every /internal/* route.
 
   responses:
+    TooManyAttempts:
+      description: "`too_many_attempts` - the username or client IP is locked out after repeated failures. See the `Retry-After` header (seconds)."
+      headers:
+        Retry-After: { schema: { type: integer }, description: Seconds until the lockout ends. }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    SessionTokens:
+      description: Session issued.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              access_token: { type: string }
+              refresh_token: { type: string }
+              expires_in_seconds: { type: integer, example: 900 }
+    PasskeyOptions:
+      description: WebAuthn options (`options.publicKey`, base64url-encoded binary fields) and the Redis-held `session_id` to send back to the matching finish call.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              session_id: { type: string }
+              options: { type: object }
+    RecoveryCodes:
+      description: Ten one-time recovery codes, shown only this once.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              recovery_codes: { type: array, items: { type: string }, example: ["abcde-fghij"] }
     BadRequest:
       description: "`invalid_request` - malformed JSON body or missing/invalid required fields."
       content:
@@ -2037,6 +3340,26 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    RateLimited:
+      description: >-
+        `rate_limited` - the caller's token bucket is empty. Retry after the
+        `Retry-After` interval.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema: { type: integer, minimum: 1 }
+        X-RateLimit-Limit:
+          description: Bucket capacity (burst).
+          schema: { type: integer }
+        X-RateLimit-Remaining:
+          description: Whole tokens left (0 here).
+          schema: { type: integer }
+        X-RateLimit-Reset:
+          description: Seconds until the bucket is full again.
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
     InternalError:
       description: "`internal_error` - unexpected server-side failure."
       content:
@@ -2044,6 +3367,118 @@ components:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
   schemas:
+    NotificationChannel:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [telegram, email] }
+        name: { type: string }
+        enabled: { type: boolean }
+        config: { type: object, additionalProperties: true }
+        has_secret: { type: boolean }
+        events: { type: array, items: { type: string } }
+        lang: { type: string, enum: [en, fa] }
+        broken: { type: boolean, description: "3 or more consecutive delivery failures." }
+        consecutive_failures: { type: integer }
+        last_error: { type: string }
+        last_success_at: { type: string, format: date-time, nullable: true }
+        last_failure_at: { type: string, format: date-time, nullable: true }
+
+    NotificationChannelWrite:
+      type: object
+      properties:
+        kind: { type: string, enum: [telegram, email], description: Create only. }
+        name: { type: string }
+        enabled: { type: boolean }
+        config: { type: object, additionalProperties: true }
+        secret: { type: string, description: Bot token or SMTP password (write-only). }
+        events: { type: array, items: { type: string } }
+        lang: { type: string, enum: [en, fa] }
+
+    Webhook:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        namespace: { type: string, nullable: true, description: "null = global (staff-managed)." }
+        url: { type: string }
+        description: { type: string }
+        events: { type: array, items: { type: string }, description: "Empty = every event." }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        secret: { type: string, description: Present only in the create / rotate-secret response. }
+
+    WebhookWrite:
+      type: object
+      properties:
+        url: { type: string, format: uri }
+        description: { type: string }
+        events: { type: array, items: { type: string } }
+        enabled: { type: boolean }
+
+    WebhookDelivery:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        webhook_id: { type: string, format: uuid }
+        event: { type: string }
+        event_id: { type: string }
+        status: { type: string, enum: [pending, retrying, success, failed] }
+        attempts: { type: integer }
+        next_attempt_at: { type: string, format: date-time, nullable: true }
+        response_status: { type: integer, nullable: true }
+        latency_ms: { type: integer, nullable: true }
+        response_body: { type: string, description: Truncated to 1 KB. }
+        error: { type: string }
+        payload: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    BackupSchedule:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        interval_hours: { type: integer, minimum: 1, maximum: 8760 }
+        retention_count: { type: integer, minimum: 1, maximum: 365 }
+        password: { type: string, description: Write-only encryption password (min 8). }
+        has_password: { type: boolean }
+        telegram:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            bot_token: { type: string, description: Write-only. }
+            has_token: { type: boolean }
+            chat_id: { type: string }
+        s3:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            endpoint: { type: string, description: "Empty = AWS (https://s3.<region>.amazonaws.com)." }
+            region: { type: string }
+            bucket: { type: string }
+            prefix: { type: string }
+            access_key: { type: string }
+            secret_key: { type: string, description: Write-only. }
+            has_secret: { type: boolean }
+            path_style: { type: boolean }
+        last_run_at: { type: string, format: date-time, nullable: true }
+        running: { type: boolean }
+        last:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/BackupRun" }
+        runs: { type: array, items: { $ref: "#/components/schemas/BackupRun" } }
+
+    BackupRun:
+      type: object
+      properties:
+        run_id: { type: string }
+        destination: { type: string, enum: [telegram, s3] }
+        trigger: { type: string, enum: [schedule, manual] }
+        status: { type: string, enum: [success, failed] }
+        error: { type: string }
+        filename: { type: string }
+        size_bytes: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+
     Report:
       type: object
       properties:
@@ -2069,6 +3504,7 @@ components:
             accounts_total: { type: integer }
             accounts_active: { type: integer }
             accounts_suspended: { type: integer }
+            accounts_on_hold: { type: integer, description: "Subset of `accounts_active`: accounts still waiting for their first handshake." }
             online_now: { type: integer, description: Accounts with a peer handshake in the last 3 minutes. }
         traffic_series:
           type: array
@@ -2245,6 +3681,52 @@ components:
         created_at: { type: string, format: date-time }
       required: [id, name, node_group, public_endpoint, wg_subnet, capacity_max_peers, status, created_at]
 
+    NodeEndpoint:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        node_id: { type: string, format: uuid }
+        label: { type: string }
+        address: { type: string, example: "relay.example.ir:51820" }
+        kind: { type: string, enum: [direct, relay] }
+        priority: { type: integer, description: Higher wins. }
+        enabled: { type: boolean }
+        mtu: { type: integer, nullable: true, description: Per-endpoint client MTU override (1200-1420). }
+        health_check: { type: string, enum: [none, tcp], description: "`tcp` = TCP connect to `address` (many relays also listen on TCP on the same port)." }
+        last_status: { type: string, enum: [unknown, up, down] }
+        last_checked_at: { type: string, format: date-time, nullable: true }
+        last_latency_ms: { type: integer, nullable: true }
+        created_at: { type: string, format: date-time }
+      required: [id, node_id, label, address, kind, priority, enabled, health_check, last_status, created_at]
+
+    SubscriptionInfo:
+      type: object
+      properties:
+        label: { type: string }
+        status: { type: string, enum: [active, suspended] }
+        status_reason: { type: string, enum: [expired, quota_exceeded], nullable: true }
+        data_quota_bytes: { type: integer, format: int64, nullable: true, description: "null = unlimited. Decimal bytes (1 GB = 1e9)." }
+        data_used_bytes: { type: integer, format: int64 }
+        expiry_at: { type: string, format: date-time, nullable: true }
+        days_left: { type: integer, nullable: true, description: Whole days rounded up; negative once expired. }
+        device_limit: { type: integer, nullable: true }
+        devices_active: { type: integer }
+        last_handshake_at: { type: string, format: date-time, nullable: true }
+        support_contact: { type: string, nullable: true }
+        config_path: { type: string, example: "/api/v1/sub/<token>?format=conf" }
+        nodes:
+          type: array
+          items:
+            type: object
+            properties:
+              node_id: { type: string, format: uuid }
+              name: { type: string }
+              region: { type: string }
+              online: { type: boolean }
+              recommended: { type: boolean }
+              config_path: { type: string }
+      required: [label, status, data_used_bytes, config_path, nodes]
+
     NodeNetwork:
       type: object
       description: >-
@@ -2383,7 +3865,24 @@ components:
           nullable: true
           deprecated: true
           description: Deprecated - mirrors peers[0].assigned_ip. Use peers instead.
-      required: [id, label, public_key, peers, data_used_bytes, status, created_at, updated_at, last_handshake_at]
+        on_hold:
+          type: boolean
+          description: >-
+            True while the account waits for its first WireGuard handshake: its validity clock
+            has not started, `expiry_at` is null and `hold_duration_days` is the validity it
+            will get. An on-hold account is still `status: active` (it can connect) and still
+            counts in every `active` total; reports expose the subset as `accounts_on_hold`.
+        hold_duration_days: { type: integer, nullable: true, description: "Validity (days) granted at activation; non-null only while on hold." }
+        hold_deadline_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: If the account is still on hold at this time it is activated anyway (the clock starts then). Null = no deadline.
+        activated_at: { type: string, format: date-time, nullable: true, description: When an on-hold account left the hold (first handshake, deadline, or a fixed `expiry_at` set by PATCH). }
+        reset_strategy: { type: string, enum: [none, day, week, month, year], description: Scheduled reset of `data_used_bytes`. }
+        next_reset_at: { type: string, format: date-time, nullable: true, description: Next scheduled reset; null when the strategy is `none` or the account is still on hold. }
+        last_reset_at: { type: string, format: date-time, nullable: true, description: Last usage reset, manual or scheduled. }
+      required: [id, label, public_key, peers, data_used_bytes, status, created_at, updated_at, last_handshake_at, on_hold, reset_strategy]
 
     AccountPeer:
       type: object
@@ -2410,6 +3909,110 @@ components:
         expiry_at: { type: string, format: date-time, nullable: true }
         device_limit: { type: integer, nullable: true }
         bandwidth_limit_mbps: { type: integer, nullable: true, minimum: 1, maximum: 100000, description: Omit/null = unshaped. }
+        template_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            Plan template to start from (`GET /api/v1/templates`). Any field sent explicitly
+            overrides the template's value. A template's `node_group` narrows the automatic
+            node choice. 404 `template_not_found` if the template does not exist or is not
+            visible to the caller.
+        on_hold:
+          type: boolean
+          nullable: true
+          description: >-
+            Start the expiry clock at the first handshake instead of now. Needs
+            `hold_duration_days` (or a template `duration_days`); cannot be combined with
+            `expiry_at`. Overrides the template's `on_hold`.
+        hold_duration_days: { type: integer, nullable: true, minimum: 1, maximum: 3650, description: "Validity granted at activation (on hold only)." }
+        hold_deadline_days: { type: integer, nullable: true, minimum: 1, maximum: 3650, description: "Activate anyway this many days after creation if there was no handshake (on hold only)." }
+        reset_strategy: { type: string, nullable: true, enum: [none, day, week, month, year], description: "Zero data_used_bytes on a schedule." }
+
+    PlanTemplate:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        owner: { type: string, nullable: true, description: "Null = global (staff) template; otherwise the owner namespace." }
+        available_to_resellers: { type: boolean, description: "Global templates only: visible to resellers and API keys." }
+        data_quota_bytes: { type: integer, format: int64, nullable: true, description: "Null = unlimited." }
+        duration_days: { type: integer, nullable: true }
+        device_limit: { type: integer, nullable: true }
+        bandwidth_limit_mbps: { type: integer, nullable: true }
+        node_group: { type: string, nullable: true }
+        reset_strategy: { type: string, enum: [none, day, week, month, year] }
+        on_hold: { type: boolean }
+        hold_deadline_days: { type: integer, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, name, available_to_resellers, reset_strategy, on_hold, created_at, updated_at]
+
+    TemplateRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 100 }
+        available_to_resellers: { type: boolean, description: "Staff-created templates only; ignored otherwise." }
+        data_quota_gb: { type: number, nullable: true }
+        duration_days: { type: integer, nullable: true, minimum: 1, maximum: 3650 }
+        device_limit: { type: integer, nullable: true, minimum: 1 }
+        bandwidth_limit_mbps: { type: integer, nullable: true, minimum: 1, maximum: 100000 }
+        node_group: { type: string, nullable: true }
+        reset_strategy: { type: string, enum: [none, day, week, month, year] }
+        on_hold: { type: boolean, description: "Needs duration_days." }
+        hold_deadline_days: { type: integer, nullable: true, minimum: 1, maximum: 3650 }
+
+    BulkAccountsRequest:
+      type: object
+      required: [action]
+      properties:
+        action: { type: string, enum: [create, renew, suspend, enable, delete, reset_usage] }
+        count: { type: integer, minimum: 1, maximum: 200, description: "create: how many accounts." }
+        label_prefix: { type: string, description: "create: labels are `<prefix>-01`, `<prefix>-02`, ..." }
+        template_id: { type: string, format: uuid, nullable: true, description: "create: as in POST /accounts." }
+        data_quota_gb: { type: number, nullable: true, description: "create: as in POST /accounts (external_ref is not allowed)." }
+        expiry_at: { type: string, format: date-time, nullable: true }
+        device_limit: { type: integer, nullable: true }
+        bandwidth_limit_mbps: { type: integer, nullable: true }
+        node_id: { type: string, nullable: true }
+        on_hold: { type: boolean, nullable: true }
+        hold_duration_days: { type: integer, nullable: true }
+        hold_deadline_days: { type: integer, nullable: true }
+        reset_strategy: { type: string, nullable: true, enum: [none, day, week, month, year] }
+        ids:
+          type: array
+          maxItems: 200
+          items: { type: string, format: uuid }
+          description: "renew / suspend / enable / delete / reset_usage: the accounts to act on."
+        extend_days: { type: integer, minimum: 1, maximum: 3650, description: "renew: as in POST .../renew." }
+        add_quota_gb: { type: number, minimum: 0, description: "renew: as in POST .../renew." }
+
+    BulkAccountsResponse:
+      type: object
+      properties:
+        action: { type: string }
+        total: { type: integer }
+        succeeded: { type: integer }
+        failed: { type: integer }
+        results:
+          type: array
+          description: "One entry per item, in request order (create: in label order)."
+          items:
+            type: object
+            properties:
+              id: { type: string, nullable: true }
+              label: { type: string }
+              ok: { type: boolean }
+              account: { allOf: [{ $ref: "#/components/schemas/Account" }], nullable: true }
+              error:
+                type: object
+                nullable: true
+                properties:
+                  code: { type: string }
+                  message: { type: string }
+            required: [ok]
+      required: [action, total, succeeded, failed, results]
 
     ApiKey:
       type: object
@@ -2454,7 +4057,27 @@ components:
           type: string
           enum: [super_admin, operator, support]
         created_at: { type: string, format: date-time }
+        totp_enabled: { type: boolean, description: "List only: TOTP two-factor is confirmed." }
+        passkey_count: { type: integer, description: "List only: number of registered passkeys." }
       required: [id, username, role, created_at]
+
+    Passkey:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+      required: [id, name, created_at]
+
+    SecuritySettings:
+      type: object
+      properties:
+        admin_ip_allowlist: { type: array, items: { type: string } }
+        login_max_failures: { type: integer, example: 5 }
+        login_lockout_minutes: { type: integer, example: 15 }
+        your_ip: { type: string, description: "The caller's IP as the panel sees it." }
+      required: [admin_ip_allowlist, login_max_failures, login_lockout_minutes, your_ip]
 
     AdminCreateResponse:
       type: object
@@ -2485,6 +4108,27 @@ components:
     Settings:
       type: object
       properties:
+        client_mtu:
+          type: integer
+          minimum: 1200
+          maximum: 1420
+          default: 1280
+          description: >-
+            The `MTU =` line of generated client configs. Lower it if clients on
+            some networks connect but stall on large downloads; a node endpoint's
+            own `mtu` overrides it. Applies to the next config download.
+        api_rate_rps:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          default: 20
+          description: Bot API token-bucket refill rate per API key (requests/second).
+        api_rate_burst:
+          type: integer
+          minimum: 1
+          maximum: 100000
+          default: 40
+          description: Bot API token-bucket capacity per API key.
         public_base_url:
           type: string
           nullable: true

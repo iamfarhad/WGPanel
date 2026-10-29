@@ -104,7 +104,19 @@ The node appears as **online** in the panel within a few seconds. Every existing
 
 ### Clients that can't reach a node directly
 
-On networks that filter WireGuard to foreign servers, put a relay in front of the node. A relay is any server your users can reach that forwards UDP to the node's WireGuard port, for example over a reverse TCP tunnel. Then open **Nodes → Edit** and set the node's **Public endpoint** to the relay's `host:port`. Every config and subscription link the panel generates uses that endpoint from then on. The node itself, its subnet and its DNS stay as they are.
+On networks that filter WireGuard to foreign servers, put a relay in front of the node. A relay is any server your users can reach that forwards UDP to the node's WireGuard port, for example over a reverse TCP tunnel.
+
+Open **Nodes → ⋯ → Entry endpoints** and add the relay as an endpoint: a label, its `host:port`, a priority, an optional MTU and a health check. Generated configs and subscription links then point clients at the **highest-priority healthy** endpoint and fall back to the node's own **Public endpoint** when none is healthy, so a node without endpoints behaves exactly as before.
+
+- **Health check:** `TCP connect` dials the endpoint's `host:port` (many relays also listen on TCP on the same port) every minute with a 3 second timeout. `None` treats the endpoint as always healthy. **Check now** runs it on demand.
+- **Per-endpoint MTU:** overrides the panel-wide client MTU for clients that use this endpoint.
+- **Staff only:** resellers just benefit from the choice. In an account's detail you can download a config for a specific endpoint (`GET /api/v1/accounts/{id}/config?endpoint_id=<id|direct>`).
+
+## Subscription page for your customers
+
+Opening a subscription link in a browser shows a mobile-friendly page (Persian by default, with an English toggle) instead of a raw config. It shows the status, used and total traffic with a bar, days left, devices in use, a QR code, a config download, and install links for the official WireGuard apps (Android, iOS, Windows, macOS) with short instructions.
+
+The same URL still serves the config to WireGuard clients, curl and bots: a request is treated as a browser only when its `Accept` header lists `text/html`, and `?format=conf` always returns the config. The page itself lives at `/s/<token>` and reads `GET /api/v1/sub/<token>/info`. If you set a separate **Subscription domain**, that domain serves only the subscription endpoints and this page. Nothing of the admin panel is reachable on it. The info endpoint returns only the account the token belongs to, and the subscription endpoints are rate limited per client IP, with a much stricter allowance for unknown tokens.
 
 ## Resellers
 
@@ -132,12 +144,27 @@ X-Signature: hex(HMAC_SHA256(secret, METHOD + "\n" + PATH + "\n" + TIMESTAMP + "
 What a sales bot typically uses:
 
 - **Idempotent creates.** Send an `external_ref` that is unique per order (for example `tg:<user id>:<order id>`). If a create's answer is lost, the retry gets `409 external_ref_taken`. `GET /api/v1/accounts?external_ref=<ref>` then returns that account, including a deleted one, because a ref stays taken after a delete.
-- **Paging.** `GET /api/v1/accounts?limit=200&offset=<n>` lists the key's own accounts, oldest first, 200 per page.
+- **Paging.** `GET /api/v1/accounts?limit=200&offset=<n>` lists the key's own accounts, oldest first, 200 per page. For long lists prefer cursor paging: start with `?cursor=` (empty), then pass each response's `next_cursor` until it is `null`. It stays correct while accounts are created or deleted between pages.
+- **Rate limits.** Each key has a token bucket (default 20 requests/second, burst 40; change both under **Settings**). Every keyed response carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset`. When the bucket is empty you get `429 rate_limited` with a `Retry-After` header: wait that many seconds and retry.
 - **A fresh period.** `POST /api/v1/accounts/{id}/reset-usage` sets the usage back to zero and brings back an account that was suspended for running out of data. A reseller key whose reseller has a traffic credit gets `403 reseller_reset_not_allowed`; it renews with `add_quota_gb` instead, which spends credit.
 - **Removing a limit.** In `PATCH /api/v1/accounts/{id}`, `null` means "unchanged". To remove a cap, send `"clear_data_quota": true` or `"clear_device_limit": true`.
 - **Who is online.** Every account carries `last_handshake_at`, the newest handshake across its nodes.
 
 **Data caps are enforced.** An account whose usage reaches its quota is suspended with `suspend_reason: quota_exceeded` on the next traffic sample (it can go over by up to one heartbeat of traffic), and every node drops it. Raising the quota above the usage, a renewal, `reset-usage` or `clear_data_quota` brings it back. `POST …/enable` refuses an account still over its cap with `409 quota_exhausted`. If an account is both expired and over its cap, `expired` wins: adding data does not bring back an expired account. A quota of `0` is a zero-byte cap, not unlimited; omit the quota (or send `null`) for unlimited.
+
+## Speed and connection quality
+
+- **Client MTU.** **Settings → Client MTU** (default 1280, allowed 1200-1420) is the `MTU` line of every generated config. Raise it for speed on clean paths; keep it low if clients connect but large pages stall. An endpoint's own MTU overrides it. It applies to the next config download.
+- **MSS clamping.** Node containers add `iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu` (and the `ip6tables` twin when the kernel supports it) so forwarded TCP never exceeds the path MTU. Existing nodes pick it up when their container is recreated (`docker compose pull && docker compose up -d` in `/opt/wgpanel-node`).
+- **Host tuning.** Both installers apply it, and `wgpanel tune` does the same on an existing server. It writes `/etc/sysctl.d/90-wgpanel-net.conf` with BBR + `fq` (only if the kernel has BBR), 16 MB socket buffers, a larger packet backlog, a conntrack table sized to RAM and TCP MTU probing, plus a small `wgpanel-net-tune.service` that turns on UDP GRO forwarding for the default NIC at boot when it is supported. A knob the kernel lacks is skipped, never fatal.
+
+```bash
+sudo wgpanel tune status    # current vs target values (no root needed for status)
+sudo wgpanel tune apply     # write the sysctl file + unit and load them (idempotent)
+sudo wgpanel tune revert    # remove the file and unit and restore the previous values
+```
+
+On a node-only server (installed with `install-node.sh`) there is no `wgpanel` CLI, so re-run `install-node.sh` or copy `deploy/wgpanel` to the server to use `wgpanel tune`.
 
 ## Managing the stack
 
@@ -150,6 +177,7 @@ wgpanel backup               # dump the database + .env to deploy/backups
 wgpanel update               # backup, pull latest images, redeploy, auto-rollback on failed health check
 wgpanel doctor               # disk space, container/DB/Redis health, TLS cert expiry, backup freshness
 wgpanel create-admin         # add another admin account
+wgpanel tune [apply|status|revert]  # host network tuning (BBR, buffers, conntrack)
 ```
 
 Run `wgpanel` with no arguments for the full command list.
@@ -172,7 +200,7 @@ Architecture notes, the API reference and design docs for each feature area live
 
 | Path | What it is |
 | --- | --- |
-| `backend/` | Go 1.25 control plane. `cmd/api` (the panel API + node-agent server) and `cmd/agent` (the WireGuard node agent, including its DNS forwarder). SQL migrations in `internal/store/migrations`. |
+| `backend/` | Go 1.26 control plane. `cmd/api` (the panel API + node-agent server) and `cmd/agent` (the WireGuard node agent, including its DNS forwarder). SQL migrations in `internal/store/migrations`. |
 | `frontend/` | React 19 + TypeScript + Vite + Tailwind SPA. Translations live in `src/locales/` (English text is the key; Persian per page in `src/locales/fa/`). |
 | `deploy/` | Docker Compose, Caddy, the `install.sh` / `install-node.sh` installers and the `wgpanel` management CLI. |
 | `docs/` | Product/architecture docs, `openapi.yaml` and the README screenshots. |

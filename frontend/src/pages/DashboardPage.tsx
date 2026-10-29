@@ -33,6 +33,7 @@ interface Account {
   id: string
   label: string
   status: string
+  on_hold?: boolean
   data_used_bytes: number
   data_quota_bytes: number | null
   expiry_at: string | null
@@ -121,6 +122,8 @@ export function DashboardPage() {
 
   const onlineNodes = nodes.filter((n) => n.status === 'online' || n.status === 'registered').length
   const activeAccounts = accounts.filter((a) => a.status === 'active').length
+  // On-hold accounts are a subset of the active ones (they can already connect).
+  const onHoldAccounts = accounts.filter((a) => a.status === 'active' && a.on_hold).length
   const suspendedAccounts = accounts.filter((a) => a.status === 'suspended').length
   // Active accounts that run out within 3 days (expiry passed = already suspended).
   const expiringSoon = accounts.filter((a) => {
@@ -171,7 +174,7 @@ export function DashboardPage() {
             hint={t('of {n} accounts', { n: accounts.length })}
             positive={onlineAccounts > 0}
           />
-          <StatCard icon={Users} label="Active accounts" value={activeAccounts} hint={t('{n} total', { n: accounts.length })} />
+          <StatCard icon={Users} label="Active accounts" value={activeAccounts} hint={onHoldAccounts > 0 ? t('{n} total · {h} on hold', { n: accounts.length, h: onHoldAccounts }) : t('{n} total', { n: accounts.length })} />
           <StatCard
             icon={Server}
             label="Nodes online"

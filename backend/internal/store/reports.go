@@ -30,7 +30,10 @@ type ReportTotals struct {
 	AccountsTotal     int   `json:"accounts_total"`
 	AccountsActive    int   `json:"accounts_active"`
 	AccountsSuspended int   `json:"accounts_suspended"`
-	OnlineNow         int   `json:"online_now"`
+	// AccountsOnHold is a subset of AccountsActive (on-hold accounts stay status
+	// 'active'): accounts waiting for their first handshake to start their validity clock.
+	AccountsOnHold int `json:"accounts_on_hold"`
+	OnlineNow      int `json:"online_now"`
 }
 
 type TrafficPoint struct {

@@ -15,6 +15,11 @@ import { AuditLogPage } from './pages/AuditLogPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { ResellersPage } from './pages/ResellersPage'
 import { ReportsPage } from './pages/ReportsPage'
+import { SecurityPage } from './pages/SecurityPage'
+import { TemplatesPage } from './pages/TemplatesPage'
+import { SubscriptionPage } from './pages/SubscriptionPage'
+import { WebhooksPage } from './pages/WebhooksPage'
+import { NotificationsPage } from './pages/NotificationsPage'
 
 const queryClient = new QueryClient()
 
@@ -27,6 +32,8 @@ function App() {
             <ToastProvider>
               <Routes>
                 <Route path="/login" element={<LoginPage />} />
+                {/* Public customer page - the token in the URL is the credential. */}
+                <Route path="/s/:token" element={<SubscriptionPage />} />
                 <Route
                   element={
                     <ProtectedRoute>
@@ -37,12 +44,16 @@ function App() {
                   <Route path="/dashboard" element={<DashboardPage />} />
                   <Route path="/nodes" element={<NodesPage />} />
                   <Route path="/accounts" element={<AccountsPage />} />
+                  <Route path="/templates" element={<TemplatesPage />} />
                   <Route path="/api-keys" element={<ApiKeysPage />} />
                   <Route path="/admins" element={<AdminUsersPage />} />
                   <Route path="/audit-log" element={<AuditLogPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                   <Route path="/resellers" element={<ResellersPage />} />
                   <Route path="/reports" element={<ReportsPage />} />
+                  <Route path="/security" element={<SecurityPage />} />
+                  <Route path="/webhooks" element={<WebhooksPage />} />
+                  <Route path="/notifications" element={<NotificationsPage />} />
                 </Route>
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
               </Routes>

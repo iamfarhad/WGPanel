@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Download, Ban, CheckCircle2, RotateCcw, Trash2, Server, Copy, FileDown, Link2, RefreshCw, MonitorSmartphone, Search, Pencil, Eye, Activity } from 'lucide-react'
+import { Plus, Download, Ban, CheckCircle2, RotateCcw, Trash2, Server, Copy, FileDown, Link2, RefreshCw, MonitorSmartphone, Search, Pencil, Eye, Activity, Layers, CalendarClock } from 'lucide-react'
 import QRCode from 'qrcode'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { chartAxis, chartColors, chartGrid, chartTooltip } from '../lib/chartTheme'
@@ -27,6 +27,11 @@ import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 import { RowActions } from '../components/ui/RowActions'
 import { Progress } from '../components/ui/Progress'
 import { ExpiryBadge } from '../components/ui/ExpiryBadge'
+import { BulkActionBar, BulkCreateDialog, BulkRenewDialog, BulkResultDialog, type BulkAccount } from '../components/accounts/BulkActions'
+import { LifecycleFields } from '../components/accounts/LifecycleFields'
+import { emptyLifecycle, lifecycleBody, lifecycleFromTemplate, type LifecycleState } from '../lib/lifecycleForm'
+import { resetStrategies, useTemplates, type BulkAction, type BulkResponse, type ResetStrategy } from '../lib/lifecycle'
+import { PeerEndpointSelect } from '../components/NodeEndpointsDialog'
 
 interface Node {
   id: string
@@ -69,9 +74,20 @@ interface Account {
   // anything else = an API key's (see the reseller API).
   owner: string | null
   reseller_id: string | null
+  // On hold: the validity clock starts at the first connection (expiry_at is null until
+  // then). The account is still status "active".
+  on_hold: boolean
+  hold_duration_days: number | null
+  hold_deadline_at: string | null
+  activated_at: string | null
+  reset_strategy: ResetStrategy
+  next_reset_at: string | null
+  last_reset_at: string | null
   created_at: string
   updated_at: string
 }
+
+type StatusFilter = 'all' | 'active' | 'on_hold' | 'suspended'
 
 type OwnerFilter = 'all' | 'admin' | 'api' | `reseller:${string}`
 
@@ -145,6 +161,12 @@ export function AccountsPage() {
   const [detailInitialTab, setDetailInitialTab] = useState<DetailTab>('overview')
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
   const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [bulkCreateOpen, setBulkCreateOpen] = useState(false)
+  const [bulkRenewOpen, setBulkRenewOpen] = useState(false)
+  const [bulkConfirm, setBulkConfirm] = useState<Exclude<BulkAction, 'create' | 'renew' | 'enable'> | null>(null)
+  const [bulkResult, setBulkResult] = useState<BulkResponse<BulkAccount> | null>(null)
 
   const accountsQuery = useQuery({
     queryKey: ['accounts'],
@@ -175,12 +197,34 @@ export function AccountsPage() {
 
   const query = search.trim().toLowerCase()
   const filteredAccounts = accounts.filter((a) => {
+    if (statusFilter === 'on_hold' ? !a.on_hold : statusFilter !== 'all' && a.status !== statusFilter) return false
     if (query && !(a.label.toLowerCase().includes(query) || a.external_ref?.toLowerCase().includes(query))) return false
     if (ownerFilter === 'all') return true
     if (ownerFilter === 'admin' || ownerFilter === 'api') return ownerKind(a) === ownerFilter
     return a.owner === ownerFilter
   })
   const showOwner = !isReseller
+  // Drop selected ids that no longer exist (deleted, or another page refetch).
+  const knownIds = new Set(accounts.map((a) => a.id))
+  const liveSelected = [...selected].filter((id) => knownIds.has(id))
+  const filteredIds = filteredAccounts.map((a) => a.id)
+  const allFilteredSelected = filteredIds.length > 0 && filteredIds.every((id) => selected.has(id))
+  function toggleOne(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  function toggleAllFiltered() {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (allFilteredSelected) filteredIds.forEach((id) => next.delete(id))
+      else filteredIds.forEach((id) => next.add(id))
+      return next
+    })
+  }
 
   function openDetail(account: Account, tab: DetailTab = 'overview') {
     setDetailInitialTab(tab)
@@ -247,6 +291,24 @@ export function AccountsPage() {
     onError: (err) => push('error', apiErrorMessage(err, t, 'Failed to update account')),
   })
 
+  const bulkMutation = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      apiFetch<BulkResponse<BulkAccount>>('/api/v1/accounts/bulk', { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: (res) => {
+      invalidate()
+      setBulkConfirm(null)
+      setBulkRenewOpen(false)
+      setBulkResult(res)
+      // Keep only the ones that failed selected, so a retry is one click.
+      setSelected(new Set(res.results.filter((r) => !r.ok && r.id).map((r) => r.id!)))
+    },
+    onError: (err) => push('error', apiErrorMessage(err, t, 'Bulk action failed')),
+  })
+
+  function runBulk(action: Exclude<BulkAction, 'create'>, extra: Record<string, unknown> = {}) {
+    bulkMutation.mutate({ action, ids: liveSelected, ...extra })
+  }
+
   const rotateSubscriptionMutation = useMutation({
     mutationFn: (id: string) => apiFetch<Account>(`/api/v1/accounts/${id}/subscription/rotate`, { method: 'POST' }),
     onSuccess: (account) => {
@@ -263,10 +325,16 @@ export function AccountsPage() {
         title="Accounts"
         description="WireGuard peer accounts - each one gets a peer on every eligible node, not just one."
         action={
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="h-4 w-4" />
-            New account
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={() => setBulkCreateOpen(true)}>
+              <Layers className="h-4 w-4" />
+              Create in bulk
+            </Button>
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus className="h-4 w-4" />
+              New account
+            </Button>
+          </div>
         }
       />
 
@@ -282,6 +350,17 @@ export function AccountsPage() {
               aria-label={t('Search accounts')}
             />
           </div>
+          <Select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+            aria-label={t('Filter by status')}
+            className="w-full max-w-44"
+          >
+            <option value="all">{t('All statuses')}</option>
+            <option value="active">{t('Active')}</option>
+            <option value="on_hold">{t('On hold')}</option>
+            <option value="suspended">{t('Suspended')}</option>
+          </Select>
           {showOwner && (
             <Select
               value={ownerFilter}
@@ -303,7 +382,7 @@ export function AccountsPage() {
       )}
 
       <Card className="overflow-hidden">
-        {accountsQuery.isLoading && <TableSkeleton cols={5} />}
+        {accountsQuery.isLoading && <TableSkeleton cols={6} />}
         {accountsQuery.isError && <ErrorState title="Could not load accounts." onRetry={() => accountsQuery.refetch()} />}
         {!accountsQuery.isLoading && !accountsQuery.isError && accounts.length === 0 && (
           <EmptyState
@@ -325,6 +404,15 @@ export function AccountsPage() {
           <Table>
             <THead>
               <tr>
+                <Th className="w-10 pe-0">
+                  <input
+                    type="checkbox"
+                    aria-label={t('Select all')}
+                    checked={allFilteredSelected}
+                    onChange={toggleAllFiltered}
+                    className="cursor-pointer"
+                  />
+                </Th>
                 <Th>Label</Th>
                 <Th>Nodes</Th>
                 <Th>Connection</Th>
@@ -344,12 +432,21 @@ export function AccountsPage() {
                   return latest
                 }, null)
                 return (
-                  <Tr key={a.id} interactive onClick={() => openDetail(a)}>
+                  <Tr key={a.id} interactive onClick={() => openDetail(a)} className={selected.has(a.id) ? 'bg-accent-soft/40' : ''}>
+                    <Td className="w-10 pe-0" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        aria-label={t('Select {name}', { name: a.label })}
+                        checked={selected.has(a.id)}
+                        onChange={() => toggleOne(a.id)}
+                        className="cursor-pointer"
+                      />
+                    </Td>
                     <Td className="font-medium text-fg">{a.label}</Td>
                     <Td className="whitespace-nowrap text-muted">
                       <span className="inline-flex items-center gap-1.5">
                         <Server className="h-3.5 w-3.5 text-faint" />
-                        {a.peers.length === 0 ? t('none yet') : t('{n} nodes', { n: a.peers.length })}
+                        {a.peers.length === 0 ? t('none yet') : a.peers.length === 1 ? t('1 node') : t('{n} nodes', { n: a.peers.length })}
                       </span>
                     </Td>
                     <Td className="whitespace-nowrap text-muted">
@@ -375,7 +472,13 @@ export function AccountsPage() {
                       )}
                     </Td>
                     <Td className="whitespace-nowrap">
-                      <ExpiryBadge expiresAt={a.expiry_at} />
+                      {a.on_hold ? (
+                        <span className="text-xs text-muted">
+                          {t('{n} days from first use', { n: a.hold_duration_days ?? 0 })}
+                        </span>
+                      ) : (
+                        <ExpiryBadge expiresAt={a.expiry_at} />
+                      )}
                     </Td>
                     {showOwner && (
                       <Td className="whitespace-nowrap text-muted">
@@ -391,6 +494,7 @@ export function AccountsPage() {
                     <Td>
                       <span className="inline-flex flex-wrap items-center gap-1">
                         <Badge dot tone={statusTone(a.status)}>{a.status}</Badge>
+                        {a.on_hold && <Badge tone="blue">{t('On hold')}</Badge>}
                         {a.device_limit_exceeded && <Badge tone="amber">{t('over device limit')}</Badge>}
                       </span>
                     </Td>
@@ -411,6 +515,51 @@ export function AccountsPage() {
           </Table>
         )}
       </Card>
+
+      <BulkActionBar
+        count={liveSelected.length}
+        busy={bulkMutation.isPending}
+        onClear={() => setSelected(new Set())}
+        onAction={(action) => {
+          if (action === 'renew') setBulkRenewOpen(true)
+          else if (action === 'enable') runBulk('enable')
+          else setBulkConfirm(action)
+        }}
+      />
+      <BulkRenewDialog
+        open={bulkRenewOpen}
+        count={liveSelected.length}
+        submitting={bulkMutation.isPending}
+        onClose={() => setBulkRenewOpen(false)}
+        onSubmit={(v) => runBulk('renew', { extend_days: v.extendDays, add_quota_gb: v.addQuotaGb })}
+      />
+      {bulkConfirm && (
+        <ConfirmDialog
+          open
+          onClose={() => setBulkConfirm(null)}
+          onConfirm={() => runBulk(bulkConfirm)}
+          title={
+            bulkConfirm === 'delete' ? 'Delete accounts' : bulkConfirm === 'suspend' ? 'Suspend accounts' : 'Reset usage'
+          }
+          description={
+            bulkConfirm === 'delete'
+              ? t('This will permanently delete {n} accounts and release their IPs. This cannot be undone.', { n: liveSelected.length })
+              : bulkConfirm === 'suspend'
+                ? t('Suspend {n} accounts? They lose access until you enable them again.', { n: liveSelected.length })
+                : t('Reset the used traffic of {n} accounts to zero? Accounts suspended only for reaching their quota are reactivated.', { n: liveSelected.length })
+          }
+          confirmLabel={bulkConfirm === 'delete' ? 'Delete' : bulkConfirm === 'suspend' ? 'Suspend' : 'Reset usage'}
+          danger={bulkConfirm === 'delete'}
+          submitting={bulkMutation.isPending}
+        />
+      )}
+      <BulkResultDialog result={bulkResult} onClose={() => setBulkResult(null)} />
+      <BulkCreateDialog
+        open={bulkCreateOpen}
+        nodes={nodes}
+        onClose={() => setBulkCreateOpen(false)}
+        onCreated={invalidate}
+      />
 
       <CreateAccountDialog
         open={createOpen}
@@ -487,7 +636,23 @@ function CreateAccountDialog({
   const [bandwidthMbps, setBandwidthMbps] = useState('')
   const [duration, setDuration] = useState('none')
   const [customExpiry, setCustomExpiry] = useState('')
+  const [templateId, setTemplateId] = useState('')
+  const [life, setLife] = useState<LifecycleState>(emptyLifecycle)
   const [error, setError] = useState<string | null>(null)
+  const templatesQuery = useTemplates()
+  const templates = templatesQuery.data?.templates ?? []
+
+  function pickTemplate(id: string) {
+    setTemplateId(id)
+    const tmpl = templates.find((x) => x.id === id)
+    if (!tmpl) return
+    setQuotaGb(tmpl.data_quota_bytes != null ? String(tmpl.data_quota_bytes / 1e9) : '')
+    setDeviceLimit(tmpl.device_limit?.toString() ?? '')
+    setBandwidthMbps(tmpl.bandwidth_limit_mbps?.toString() ?? '')
+    setDuration(!tmpl.on_hold && tmpl.duration_days ? String(tmpl.duration_days) : 'none')
+    setCustomExpiry('')
+    setLife(lifecycleFromTemplate(tmpl))
+  }
 
   // The dialog stays mounted (just hidden) between opens, so plain useState
   // initializers only ever see the settings-derived defaults from the very first
@@ -501,6 +666,8 @@ function CreateAccountDialog({
     setBandwidthMbps('')
     setDuration('none')
     setCustomExpiry('')
+    setTemplateId('')
+    setLife(emptyLifecycle)
     setError(null)
   }, [open, defaultQuotaGb, defaultDeviceLimit])
 
@@ -523,7 +690,9 @@ function CreateAccountDialog({
           data_quota_gb: quotaGb ? Number(quotaGb) : undefined,
           device_limit: deviceLimit ? Number(deviceLimit) : undefined,
           bandwidth_limit_mbps: bandwidthMbps ? Number(bandwidthMbps) : undefined,
-          expiry_at: resolveExpiryAt(),
+          expiry_at: life.onHold ? undefined : resolveExpiryAt(),
+          template_id: templateId || undefined,
+          ...lifecycleBody(life),
         }),
       }),
     onSuccess: () => {
@@ -549,6 +718,18 @@ function CreateAccountDialog({
   return (
     <Dialog open={open} onClose={onClose} title="New account">
       <form onSubmit={handleSubmit} className="space-y-4">
+        {templates.length > 0 && (
+          <Field label="Template" labelSuffix="(optional)" hint="Fills in the plan below; anything you change here overrides the template.">
+            <Select value={templateId} onChange={(e) => pickTemplate(e.target.value)}>
+              <option value="">{t('No template')}</option>
+              {templates.map((x) => (
+                <option key={x.id} value={x.id}>
+                  {x.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
         <Field label="Label">
           <Input value={label} onChange={(e) => setLabel(e.target.value)} required placeholder={t('e.g. alice-laptop')} />
         </Field>
@@ -579,9 +760,13 @@ function CreateAccountDialog({
             <Input type="number" min="1" value={bandwidthMbps} onChange={(e) => setBandwidthMbps(e.target.value)} placeholder={t('Unlimited')} />
           </Field>
         </div>
-        <Field label="Expires">
+        {!life.onHold && <Field label="Expires">
           <Select value={duration} onChange={(e) => setDuration(e.target.value)}>
             <option value="none">{t('Never')}</option>
+            {/* A template can bring a duration that is not one of the presets. */}
+            {/^\d+$/.test(duration) && ![7, 30, 90, 180, 365].includes(Number(duration)) && (
+              <option value={duration}>{t('In {n} days', { n: duration })}</option>
+            )}
             <option value="7">{t('In {n} days', { n: 7 })}</option>
             <option value="30">{t('In {n} days', { n: 30 })}</option>
             <option value="90">{t('In {n} days', { n: 90 })}</option>
@@ -599,7 +784,8 @@ function CreateAccountDialog({
               required
             />
           )}
-        </Field>
+        </Field>}
+        <LifecycleFields value={life} onChange={setLife} />
         {error && <p className="text-sm text-danger-fg">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
@@ -659,6 +845,8 @@ function AccountDetailDialog({
   const [configNodeName, setConfigNodeName] = useState<string | null>(null)
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
   const [configLoading, setConfigLoading] = useState<string | null>(null)
+  // Staff may pin the entry endpoint (relay) per node; '' = automatic.
+  const [endpointByNode, setEndpointByNode] = useState<Record<string, string>>({})
 
   // Prefer the separate subscription origin (Settings -> Subscription domain &
   // port) when one is configured; otherwise the links live on the panel's origin.
@@ -695,7 +883,8 @@ function AccountDetailDialog({
     setQrDataUrl(null)
     setConfigNodeName(nodeName)
     try {
-      const res = await fetch(`/api/v1/accounts/${account.id}/config?node_id=${nodeId}`, {
+      const endpointId = endpointByNode[nodeId]
+      const res = await fetch(`/api/v1/accounts/${account.id}/config?node_id=${nodeId}${endpointId ? `&endpoint_id=${encodeURIComponent(endpointId)}` : ''}`, {
         headers: { Authorization: `Bearer ${getAccessToken() ?? ''}` },
       })
       if (!res.ok) {
@@ -730,6 +919,7 @@ function AccountDetailDialog({
       {/* Status strip - always visible regardless of tab */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <Badge dot tone={statusTone(account.status)}>{account.status}</Badge>
+        {account.on_hold && <Badge tone="blue">{t('On hold')}</Badge>}
         {account.device_limit_exceeded && <Badge tone="amber">{t('over device limit')}</Badge>}
         {account.suspend_reason && (
           <span className="text-xs text-muted">{t('reason: {reason}', { reason: account.suspend_reason })}</span>
@@ -769,7 +959,9 @@ function AccountDetailDialog({
               </span>
             </Row>
             <Row label="Expires">
-              {account.expiry_at ? (
+              {account.on_hold ? (
+                <span className="text-muted">{t('{n} days from first use', { n: account.hold_duration_days ?? 0 })}</span>
+              ) : account.expiry_at ? (
                 <span className="inline-flex flex-wrap items-center gap-2">
                   {formatDate(account.expiry_at)}
                   <ExpiryBadge expiresAt={account.expiry_at} />
@@ -778,6 +970,24 @@ function AccountDetailDialog({
                 t('Never')
               )}
             </Row>
+            {account.on_hold && account.hold_deadline_at && (
+              <Row label="Activates anyway on">{formatDate(account.hold_deadline_at, { dateStyle: 'medium' })}</Row>
+            )}
+            {!account.on_hold && account.activated_at && (
+              <Row label="Activated">{formatDate(account.activated_at, { dateStyle: 'medium' })}</Row>
+            )}
+            {account.reset_strategy !== 'none' && (
+              <Row label="Usage resets">
+                <span className="inline-flex flex-wrap items-center justify-end gap-1.5">
+                  <CalendarClock className="h-3.5 w-3.5 text-faint" />
+                  {t(resetStrategies.find((r) => r.value === account.reset_strategy)?.label ?? 'Never')}
+                  {' · '}
+                  {account.next_reset_at
+                    ? t('next {date}', { date: formatDate(account.next_reset_at, { dateStyle: 'medium' }) })
+                    : t('starts after first use')}
+                </span>
+              </Row>
+            )}
             <Row label="Device limit">{account.device_limit ?? t('Unlimited')}</Row>
             <Row label="Bandwidth limit">
               {account.bandwidth_limit_mbps != null ? `${account.bandwidth_limit_mbps} Mbps` : t('Unlimited')}
@@ -841,10 +1051,17 @@ function AccountDetailDialog({
                       </p>
                       <p className="mt-0.5 font-mono text-xs text-muted">{p.assigned_ip}</p>
                     </div>
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                    <PeerEndpointSelect
+                      nodeId={p.node_id}
+                      value={endpointByNode[p.node_id] ?? ''}
+                      onChange={(v) => setEndpointByNode((m) => ({ ...m, [p.node_id]: v }))}
+                    />
                     <Button variant="secondary" size="sm" onClick={() => loadConfig(p.node_id, p.node_name)} disabled={configLoading === p.node_id}>
                       <Download className="h-3.5 w-3.5" />
                       {configLoading === p.node_id ? 'Loading…' : 'Config'}
                     </Button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1041,6 +1258,8 @@ function EditAccountForm({
       deviceLimit: account.device_limit?.toString() ?? '',
       bandwidth: account.bandwidth_limit_mbps?.toString() ?? '',
       expiry: account.expiry_at ? toDateInputValue(account.expiry_at) : '',
+      holdDays: account.hold_duration_days?.toString() ?? '',
+      reset: account.reset_strategy,
     }),
     [account.id, account.updated_at], // eslint-disable-line react-hooks/exhaustive-deps
   )
@@ -1050,6 +1269,8 @@ function EditAccountForm({
   const [deviceLimit, setDeviceLimit] = useState(initial.deviceLimit)
   const [bandwidth, setBandwidth] = useState(initial.bandwidth)
   const [expiry, setExpiry] = useState(initial.expiry)
+  const [holdDays, setHoldDays] = useState(initial.holdDays)
+  const [reset, setReset] = useState<ResetStrategy>(initial.reset)
 
   useEffect(() => {
     setLabel(initial.label)
@@ -1057,6 +1278,8 @@ function EditAccountForm({
     setDeviceLimit(initial.deviceLimit)
     setBandwidth(initial.bandwidth)
     setExpiry(initial.expiry)
+    setHoldDays(initial.holdDays)
+    setReset(initial.reset)
   }, [initial])
 
   // Only changed fields are sent - the PATCH endpoint treats omitted fields as
@@ -1069,6 +1292,8 @@ function EditAccountForm({
   if (deviceLimit !== initial.deviceLimit && deviceLimit !== '' && Number(deviceLimit) >= 1) changes.device_limit = Number(deviceLimit)
   if (bandwidth !== initial.bandwidth) changes.bandwidth_limit_mbps = bandwidth === '' ? 0 : Number(bandwidth)
   if (expiry !== initial.expiry && expiry !== '') changes.expiry_at = new Date(`${expiry}T23:59:59`).toISOString()
+  if (account.on_hold && holdDays !== initial.holdDays && Number(holdDays) >= 1) changes.hold_duration_days = Number(holdDays)
+  if (reset !== initial.reset) changes.reset_strategy = reset
   const hasChanges = Object.keys(changes).length > 0
 
   function handleSubmit(e: FormEvent) {
@@ -1098,11 +1323,25 @@ function EditAccountForm({
         <Field label="Bandwidth (Mbps)" hint="Blank removes the limit (unshaped).">
           <Input type="number" min="0" value={bandwidth} onChange={(e) => setBandwidth(e.target.value)} placeholder={t('Unlimited')} />
         </Field>
+        {account.on_hold && (
+          <Field label="Valid for (days)" hint="Counted from the first connection.">
+            <Input type="number" min="1" max="3650" value={holdDays} onChange={(e) => setHoldDays(e.target.value)} />
+          </Field>
+        )}
         <Field
           label="Expires"
-          hint={account.expiry_at ? t('Pick a new date to move the expiry. Cannot be cleared back to never - use Renew to extend.') : t('Currently never expires - pick a date to add an expiry.')}
+          hint={account.on_hold ? t('Picking a date starts the account now with that fixed expiry instead of waiting for the first connection.') : account.expiry_at ? t('Pick a new date to move the expiry. Cannot be cleared back to never - use Renew to extend.') : t('Currently never expires - pick a date to add an expiry.')}
         >
           <Input type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} min={new Date().toISOString().slice(0, 10)} />
+        </Field>
+        <Field label="Reset used traffic" hint="Zeroes the used data on this schedule while keeping the quota.">
+          <Select value={reset} onChange={(e) => setReset(e.target.value as ResetStrategy)}>
+            {resetStrategies.map((r) => (
+              <option key={r.value} value={r.value}>
+                {t(r.label)}
+              </option>
+            ))}
+          </Select>
         </Field>
       </div>
       <div className="flex items-center justify-end gap-3 border-t border-edge pt-4">
