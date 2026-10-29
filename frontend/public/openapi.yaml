@@ -88,6 +88,8 @@ servers:
       override).
 
 tags:
+  - name: Resellers
+    description: Reseller logins with account/traffic/expiry/node-group limits (super_admin manages; reseller self-service is limited to its own accounts).
   - name: Auth
     description: Admin login/session management.
   - name: Nodes
@@ -478,7 +480,17 @@ paths:
                 type: object
                 properties:
                   token: { type: string }
-                  expires_at: { type: string, format: date-time }
+                  expires_at: { type: string, format: date-time, nullable: true }
+                  unlimited: { type: boolean }
+                  panel_addr:
+                    type: string
+                    nullable: true
+                    description: >-
+                      The exact host:port to give install-node.sh as the control-plane
+                      address: the panel domain (falling back to the Host this request
+                      was made on, for IP-only deployments) + NODE_AGENT_PORT. This is
+                      NOT the panel's web/HTTPS port.
+                    example: panel.example.com:48443
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -544,6 +556,14 @@ paths:
         - name: limit
           in: query
           schema: { type: integer, default: 50, maximum: 200, minimum: 1 }
+        - name: owner
+          in: query
+          description: Staff admins only (ignored for resellers/API keys). `admin` = created by an admin; otherwise an exact owner namespace such as `reseller:<id>`.
+          schema: { type: string }
+        - name: reseller_id
+          in: query
+          description: Staff admins only. Shorthand for `owner=reseller:<id>`.
+          schema: { type: string, format: uuid }
       responses:
         "200":
           description: OK
@@ -951,9 +971,13 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: wg-quick config text (Content-Disposition attachment).
+          description: >-
+            wg-quick config text (Content-Disposition attachment). Served as
+            `application/octet-stream` rather than `text/plain` so Android
+            Chrome keeps the `.conf` extension instead of renaming the
+            download to `.conf.txt`, which the WireGuard app can't import.
           content:
-            text/plain:
+            application/octet-stream:
               schema: { type: string }
         "403":
           description: "`account_suspended`"
@@ -1158,6 +1182,7 @@ paths:
                   type: string
                   enum: [super_admin, operator, support]
                   default: support
+                  description: "`reseller` is not accepted here; use POST /api/v1/resellers. Resellers are hidden from GET /admins and rejected by PATCH/DELETE /admins/{id} (409 managed_via_resellers)."
       responses:
         "201":
           description: Admin created.
@@ -1193,6 +1218,204 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/me:
+    get:
+      tags: [Resellers]
+      summary: Who am I (any admin session)
+      description: >-
+        Returns the logged-in admin's id, username and role. `role` is also the `role`
+        claim of the JWT. For a `reseller` session `reseller` carries its limits and
+        live usage; otherwise it is null.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current user.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  username: { type: string }
+                  role: { type: string, enum: [super_admin, operator, support, reseller] }
+                  reseller:
+                    nullable: true
+                    allOf: [{ $ref: "#/components/schemas/Reseller" }]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/reseller/me:
+    get:
+      tags: [Resellers]
+      summary: A reseller's own limits and usage
+      description: Reseller sessions only (403 for anyone else).
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Limits and usage.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reseller" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/resellers:
+    get:
+      tags: [Resellers]
+      summary: List resellers with limits and usage
+      description: Requires role `super_admin`.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Resellers.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resellers:
+                    type: array
+                    items: { $ref: "#/components/schemas/Reseller" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Resellers]
+      summary: Create a reseller
+      description: Requires role `super_admin`. Omitted/null limits are unlimited; empty `node_groups` means all groups.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password, minLength: 8 }
+                notes: { type: string }
+                disabled: { type: boolean }
+                max_accounts: { type: integer, nullable: true, minimum: 0 }
+                data_limit_gb: { type: number, nullable: true, minimum: 0 }
+                node_groups: { type: array, items: { type: string } }
+                max_expiry_days: { type: integer, nullable: true, minimum: 1 }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reseller" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: "`username_taken`." }
+
+  /api/v1/resellers/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Resellers]
+      summary: Get a reseller
+      description: Requires role `super_admin`.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Reseller.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reseller" }
+        "404": { description: "`reseller_not_found`." }
+    patch:
+      tags: [Resellers]
+      summary: Update limits, notes, disabled flag or password
+      description: >-
+        Requires role `super_admin`. Omitted fields are unchanged; an explicit `null`
+        on `max_accounts`/`data_limit_gb`/`max_expiry_days` means unlimited. Lowering a
+        limit below current usage is allowed (blocks growth only). Disabling takes
+        effect on the reseller's next request.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                password: { type: string, format: password, minLength: 8 }
+                notes: { type: string }
+                disabled: { type: boolean }
+                max_accounts: { type: integer, nullable: true }
+                data_limit_gb: { type: number, nullable: true }
+                node_groups: { type: array, items: { type: string } }
+                max_expiry_days: { type: integer, nullable: true }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reseller" }
+        "404": { description: "`reseller_not_found`." }
+    delete:
+      tags: [Resellers]
+      summary: Delete a reseller
+      description: Requires role `super_admin`. Refused with 409 `reseller_has_accounts` while it owns non-deleted accounts.
+      security:
+        - BearerAuth: []
+      responses:
+        "204": { description: Deleted. }
+        "404": { description: "`reseller_not_found`." }
+        "409": { description: "`reseller_has_accounts`." }
+
+  /api/v1/resellers/{id}/suspend-accounts:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [Resellers]
+      summary: Suspend all of a reseller's active accounts
+      description: Requires role `super_admin`. Sets `suspend_reason = reseller_suspended`; the reseller cannot re-enable these.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Count suspended.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suspended: { type: integer }
+                  reason: { type: string, example: reseller_suspended }
+        "404": { description: "`reseller_not_found`." }
+
+  /api/v1/resellers/{id}/reactivate-accounts:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [Resellers]
+      summary: Reactivate accounts suspended by the bulk action
+      description: >-
+        Requires role `super_admin`. Touches only `reseller_suspended` accounts; one that
+        has since expired or exhausted its quota stays suspended with the real reason
+        and is counted in `still_suspended`.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reactivated: { type: integer }
+                  still_suspended: { type: integer }
+        "404": { description: "`reseller_not_found`." }
 
   /api/v1/audit-log:
     get:
@@ -1569,6 +1792,33 @@ components:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
   schemas:
+    Reseller:
+      type: object
+      description: >-
+        A reseller login with its limits (null = unlimited; empty node_groups = all
+        groups) and live usage. Reseller quota errors on account create/update/renew use
+        codes `reseller_account_limit_reached` (409), `reseller_data_credit_exceeded` (409),
+        `reseller_unlimited_not_allowed` (422), `reseller_expiry_too_long` (422),
+        `reseller_expiry_required` (422), `reseller_node_group_not_allowed` (422),
+        `reseller_disabled` (403), `account_suspended_by_admin` (403).
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        namespace: { type: string, example: "reseller:6f0c..." }
+        disabled: { type: boolean }
+        notes: { type: string }
+        max_accounts: { type: integer, nullable: true }
+        data_limit_bytes: { type: integer, format: int64, nullable: true }
+        node_groups: { type: array, items: { type: string } }
+        max_expiry_days: { type: integer, nullable: true }
+        usage:
+          type: object
+          properties:
+            accounts_used: { type: integer }
+            data_allocated_bytes: { type: integer, format: int64 }
+            data_used_bytes: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
     ErrorEnvelope:
       type: object
       properties:
@@ -1664,6 +1914,14 @@ components:
       type: object
       properties:
         id: { type: string, format: uuid }
+        owner:
+          type: string
+          nullable: true
+          description: Owner namespace - `reseller:<admin id>`, an API key id, or null for accounts created by a staff admin.
+        reseller_id:
+          type: string
+          nullable: true
+          description: Admin id of the owning reseller, when the owner is a reseller.
         external_ref:
           type: string
           nullable: true
