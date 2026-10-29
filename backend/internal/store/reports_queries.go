@@ -108,11 +108,12 @@ func (q reportQuery) accountTotals(r *Report) error {
 		SELECT count(*)::int,
 		       count(*) FILTER (WHERE a.status = 'active')::int,
 		       count(*) FILTER (WHERE a.status = 'suspended')::int,
+		       count(*) FILTER (WHERE a.hold_duration_days IS NOT NULL)::int,
 		       count(*) FILTER (WHERE EXISTS (
 		           SELECT 1 FROM account_peers ap
 		           WHERE ap.account_id = a.id AND ap.last_handshake_at > now() - interval '3 minutes'))::int
 		FROM accounts a WHERE a.status != 'deleted' AND `+reportScopeSQL("a"), q.ns, q.owner).
-		Scan(&r.Totals.AccountsTotal, &r.Totals.AccountsActive, &r.Totals.AccountsSuspended, &r.Totals.OnlineNow)
+		Scan(&r.Totals.AccountsTotal, &r.Totals.AccountsActive, &r.Totals.AccountsSuspended, &r.Totals.AccountsOnHold, &r.Totals.OnlineNow)
 }
 
 func (q reportQuery) statusBreakdown(r *Report) error {
@@ -178,7 +179,8 @@ func (q reportQuery) quotaBuckets(r *Report) (err error) {
 // "today" runs to the end of the current UTC day.
 func (q reportQuery) expiryBuckets(r *Report) (err error) {
 	r.ExpiryBuckets, err = q.bucketCounts(`
-		SELECT CASE WHEN a.expiry_at IS NULL THEN 'never'
+		SELECT CASE WHEN a.hold_duration_days IS NOT NULL THEN 'on_hold'
+		            WHEN a.expiry_at IS NULL THEN 'never'
 		            WHEN a.expiry_at <= now() THEN 'expired'
 		            WHEN a.expiry_at < date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' + interval '1 day' THEN 'today'
 		            WHEN a.expiry_at <= now() + interval '3 days' THEN '3d'
@@ -186,7 +188,7 @@ func (q reportQuery) expiryBuckets(r *Report) (err error) {
 		            WHEN a.expiry_at <= now() + interval '30 days' THEN '30d'
 		            ELSE 'later' END AS b, count(*)::int
 		FROM accounts a WHERE a.status != 'deleted' AND `+reportScopeSQL("a")+` GROUP BY 1`,
-		[]string{"expired", "today", "3d", "7d", "30d", "later", "never"}, q.ns, q.owner)
+		[]string{"expired", "today", "3d", "7d", "30d", "later", "never", "on_hold"}, q.ns, q.owner)
 	return
 }
 

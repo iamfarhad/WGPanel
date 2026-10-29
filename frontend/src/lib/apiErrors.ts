@@ -15,6 +15,9 @@ const codeMessages: Record<string, string> = {
   account_disabled: 'This account is disabled.',
   account_suspended_by_admin: 'An administrator suspended this account; only they can re-enable it.',
   reseller_has_accounts: 'This reseller still owns accounts. Delete or move them first.',
+  template_not_found: 'That template no longer exists, or you do not have access to it.',
+  duplicate_id: 'This account is listed more than once.',
+  reseller_reset_not_allowed: 'Your plan has a traffic credit, so usage cannot be reset. Renew with extra data instead.',
   username_taken: 'That username is already taken.',
   too_many_attempts: 'Too many failed attempts. Try again later.',
   invalid_mfa_code: 'That code is not valid. Check it and try again.',
@@ -40,4 +43,11 @@ export function apiErrorMessage(err: unknown, t: (text: string) => string, fallb
     return known ? t(known) : err.message
   }
   return t(fallback)
+}
+
+/** Same lookup for a code/message pair that did not arrive as a thrown ApiError (a bulk
+ * response reports one error per item). */
+export function apiCodeMessage(code: string | undefined, message: string, t: (text: string) => string): string {
+  const known = code ? codeMessages[code] : undefined
+  return known ? t(known) : message
 }

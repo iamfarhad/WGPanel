@@ -62,8 +62,22 @@ func (s *Store) IngestHeartbeatTelemetry(ctx context.Context, nodeID string, tra
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	var deviceEvents []deviceLimitEvent
+	var activated []ActivatedAccount
 	if len(traffic) > 0 {
 		accountByKey, err := ingestPeerTraffic(ctx, tx, nodeID, traffic)
+		if err != nil {
+			return err
+		}
+
+		// On-hold accounts (migration 0025) start their validity clock at the first
+		// handshake, in the same transaction that records it.
+		var handshook []string
+		for _, t := range traffic {
+			if id, known := accountByKey[t.PublicKey]; known && t.LastHandshake != nil {
+				handshook = append(handshook, id)
+			}
+		}
+		activated, err = activateOnHandshakeTx(ctx, tx, handshook)
 		if err != nil {
 			return err
 		}
@@ -108,6 +122,10 @@ func (s *Store) IngestHeartbeatTelemetry(ctx context.Context, nodeID string, tra
 
 	// Audit rows only after the transaction they describe actually committed -
 	// best-effort by design, same as every handler's InsertAuditLog call.
+	for _, a := range activated {
+		_ = s.InsertAuditLog(ctx, "system", "account.activated", a.ID,
+			map[string]any{"trigger": a.Trigger, "expiry_at": a.ExpiryAt.Format(time.RFC3339)}, "")
+	}
 	for _, ev := range deviceEvents {
 		detail := map[string]any{
 			"active_devices": ev.ActiveDevices,

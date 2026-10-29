@@ -12,6 +12,7 @@ import { accounts } from './fa/accounts'
 import { resellers } from './fa/resellers'
 import { reports } from './fa/reports'
 import { security } from './fa/security'
+import { lifecycle } from './fa/lifecycle'
 
 export const fa: Record<string, string> = {
   ...common,
@@ -25,6 +26,7 @@ export const fa: Record<string, string> = {
   ...resellers,
   ...reports,
   ...security,
+  ...lifecycle,
 
   // Shell
   Dashboard: 'داشبورد',

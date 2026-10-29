@@ -38,9 +38,17 @@ var resellerRoutes = map[string]bool{
 	"POST /api/v1/api-keys/{id}/rotate": true,
 	// Read-only node visibility, filtered to the reseller's node groups, so it can
 	// pick a node when creating an account.
-	"GET /api/v1/nodes":                              true,
-	"GET /api/v1/nodes/{id}":                         true,
-	"POST /api/v1/accounts":                          true,
+	"GET /api/v1/nodes":      true,
+	"GET /api/v1/nodes/{id}": true,
+	"POST /api/v1/accounts":  true,
+	// Lifecycle: bulk actions (each item runs the single-account store call, scoped to the
+	// reseller's namespace and limits) and the reseller's own plan templates.
+	"POST /api/v1/accounts/bulk":                     true,
+	"GET /api/v1/templates":                          true,
+	"GET /api/v1/templates/{id}":                     true,
+	"POST /api/v1/templates":                         true,
+	"PUT /api/v1/templates/{id}":                     true,
+	"DELETE /api/v1/templates/{id}":                  true,
 	"GET /api/v1/accounts":                           true,
 	"GET /api/v1/accounts/{id}":                      true,
 	"PATCH /api/v1/accounts/{id}":                    true,

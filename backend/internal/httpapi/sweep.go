@@ -42,6 +42,9 @@ func (s *Server) RunOfflineSweepLoop(ctx context.Context) {
 			}
 
 			tick++
+			if tick%lifecycleSweepEveryNTicks == 0 {
+				s.runLifecycleSweep(ctx)
+			}
 			if tick%deviceSweepEveryNTicks == 0 {
 				pruned, err := s.Store.PruneStaleDevices(ctx, deviceRetention)
 				if err != nil {

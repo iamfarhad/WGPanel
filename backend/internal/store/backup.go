@@ -27,6 +27,7 @@ var backupTables = []string{
 	"api_keys",
 	"panel_settings",
 	"audit_log",
+	"plan_templates",
 }
 
 // AppliedMigrations returns the filenames recorded in schema_migrations, sorted.

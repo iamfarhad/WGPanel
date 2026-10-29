@@ -16,6 +16,7 @@ import { SettingsPage } from './pages/SettingsPage'
 import { ResellersPage } from './pages/ResellersPage'
 import { ReportsPage } from './pages/ReportsPage'
 import { SecurityPage } from './pages/SecurityPage'
+import { TemplatesPage } from './pages/TemplatesPage'
 
 const queryClient = new QueryClient()
 
@@ -38,6 +39,7 @@ function App() {
                   <Route path="/dashboard" element={<DashboardPage />} />
                   <Route path="/nodes" element={<NodesPage />} />
                   <Route path="/accounts" element={<AccountsPage />} />
+                  <Route path="/templates" element={<TemplatesPage />} />
                   <Route path="/api-keys" element={<ApiKeysPage />} />
                   <Route path="/admins" element={<AdminUsersPage />} />
                   <Route path="/audit-log" element={<AuditLogPage />} />

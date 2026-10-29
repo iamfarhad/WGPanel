@@ -98,6 +98,8 @@ tags:
     description: Admin sign-in security - TOTP two-factor, recovery codes, passkeys (WebAuthn), login lockout and the admin IP allowlist.
   - name: Nodes
     description: WireGuard server (node) directory and lifecycle.
+  - name: Templates
+    description: Plan templates - named bundles of quota, duration, limits, reset schedule and on-hold settings used to create accounts.
   - name: Accounts
     description: >-
       WireGuard peer provisioning and lifecycle. **Limits are enforced by the
@@ -1093,6 +1095,149 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/accounts/bulk:
+    post:
+      tags: [Accounts]
+      summary: Run one action over many accounts
+      description: >-
+        Admin session (role >= `operator`), reseller session, or API key. `action` picks
+        the operation and the permission it needs, exactly as the single-account routes:
+        `create` -> `create`; `renew`, `reset_usage` -> `update`; `suspend`, `enable` ->
+        `suspend`; `delete` -> `delete`. At most 200 items per call. Every item runs the same
+        store operation as its single-account endpoint - its own transaction and, for a
+        reseller, its own limits-row lock - so `max_accounts`, the traffic credit, the plan
+        expiry and namespace scoping apply item by item. The call returns 200 with one
+        result per item whatever the outcome; a refused item has `ok: false` and an `error`
+        (the same codes as the single route, plus `duplicate_id`). A `create` batch stops
+        early once a reseller limit is hit and reports the remaining items as failed with
+        that code. Each successful item is audit-logged with `bulk: true`.
+        `reset_usage` is refused per item (`reseller_reset_not_allowed`) for a reseller that
+        has a traffic credit. Whole-request problems (unknown action, bad count, no ids,
+        batch too large) are 400.
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkAccountsRequest" }
+      responses:
+        "200":
+          description: Per-item results.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BulkAccountsResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/templates:
+    get:
+      tags: [Templates]
+      summary: List plan templates
+      description: >-
+        Staff see every template. A reseller or API key sees its own templates plus
+        global ones flagged `available_to_resellers`.
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Templates, ordered by name.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items: { $ref: "#/components/schemas/PlanTemplate" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Templates]
+      summary: Create a plan template
+      description: >-
+        Admin session (role >= `operator`), reseller session, or API key with `create`
+        permission. A staff-created template is global; any other caller's template lives in
+        its own namespace (and `available_to_resellers` is ignored).
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TemplateRequest" }
+      responses:
+        "201":
+          description: Template created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanTemplate" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/templates/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Templates]
+      summary: Get a plan template
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: The template.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanTemplate" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Templates]
+      summary: Replace a plan template
+      description: >-
+        Replaces every editable field. Staff may edit any template; everyone else only their
+        own (404 otherwise, including for a shared staff template). Existing accounts are
+        unaffected - they copy template values at creation.
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TemplateRequest" }
+      responses:
+        "200":
+          description: Template updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanTemplate" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Templates]
+      summary: Delete a plan template
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/accounts/{id}:
     parameters:
       - name: id
@@ -1169,6 +1314,14 @@ paths:
                     (`data_used_bytes`) is not touched.
                 expiry_at: { type: string, format: date-time, nullable: true }
                 device_limit: { type: integer, nullable: true }
+                reset_strategy:
+                  type: string
+                  enum: [none, day, week, month, year]
+                  description: Scheduled usage reset; setting it restarts the schedule from now (`none` clears `next_reset_at`).
+                hold_duration_days:
+                  type: integer
+                  minimum: 1
+                  description: Changes the validity of an account that is still on hold (ignored once active). Setting `expiry_at` on an on-hold account instead activates it with that fixed date.
                 clear_device_limit:
                   type: boolean
                   description: >-
@@ -1355,7 +1508,10 @@ paths:
                 extend_days:
                   type: integer
                   nullable: true
-                  description: Extends from the current expiry_at (or from now, if the account has none/has already expired).
+                  description: >-
+                    Extends from the current expiry_at (or from now, if the account has none/has already expired).
+                    For an account still **on hold** the clock has not started, so this lengthens its
+                    `hold_duration_days` instead and `expiry_at` stays null.
       responses:
         "200":
           description: Account renewed.
@@ -2561,6 +2717,7 @@ components:
             accounts_total: { type: integer }
             accounts_active: { type: integer }
             accounts_suspended: { type: integer }
+            accounts_on_hold: { type: integer, description: "Subset of `accounts_active`: accounts still waiting for their first handshake." }
             online_now: { type: integer, description: Accounts with a peer handshake in the last 3 minutes. }
         traffic_series:
           type: array
@@ -2875,7 +3032,24 @@ components:
           nullable: true
           deprecated: true
           description: Deprecated - mirrors peers[0].assigned_ip. Use peers instead.
-      required: [id, label, public_key, peers, data_used_bytes, status, created_at, updated_at, last_handshake_at]
+        on_hold:
+          type: boolean
+          description: >-
+            True while the account waits for its first WireGuard handshake: its validity clock
+            has not started, `expiry_at` is null and `hold_duration_days` is the validity it
+            will get. An on-hold account is still `status: active` (it can connect) and still
+            counts in every `active` total; reports expose the subset as `accounts_on_hold`.
+        hold_duration_days: { type: integer, nullable: true, description: "Validity (days) granted at activation; non-null only while on hold." }
+        hold_deadline_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: If the account is still on hold at this time it is activated anyway (the clock starts then). Null = no deadline.
+        activated_at: { type: string, format: date-time, nullable: true, description: When an on-hold account left the hold (first handshake, deadline, or a fixed `expiry_at` set by PATCH). }
+        reset_strategy: { type: string, enum: [none, day, week, month, year], description: Scheduled reset of `data_used_bytes`. }
+        next_reset_at: { type: string, format: date-time, nullable: true, description: Next scheduled reset; null when the strategy is `none` or the account is still on hold. }
+        last_reset_at: { type: string, format: date-time, nullable: true, description: Last usage reset, manual or scheduled. }
+      required: [id, label, public_key, peers, data_used_bytes, status, created_at, updated_at, last_handshake_at, on_hold, reset_strategy]
 
     AccountPeer:
       type: object
@@ -2902,6 +3076,110 @@ components:
         expiry_at: { type: string, format: date-time, nullable: true }
         device_limit: { type: integer, nullable: true }
         bandwidth_limit_mbps: { type: integer, nullable: true, minimum: 1, maximum: 100000, description: Omit/null = unshaped. }
+        template_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            Plan template to start from (`GET /api/v1/templates`). Any field sent explicitly
+            overrides the template's value. A template's `node_group` narrows the automatic
+            node choice. 404 `template_not_found` if the template does not exist or is not
+            visible to the caller.
+        on_hold:
+          type: boolean
+          nullable: true
+          description: >-
+            Start the expiry clock at the first handshake instead of now. Needs
+            `hold_duration_days` (or a template `duration_days`); cannot be combined with
+            `expiry_at`. Overrides the template's `on_hold`.
+        hold_duration_days: { type: integer, nullable: true, minimum: 1, maximum: 3650, description: "Validity granted at activation (on hold only)." }
+        hold_deadline_days: { type: integer, nullable: true, minimum: 1, maximum: 3650, description: "Activate anyway this many days after creation if there was no handshake (on hold only)." }
+        reset_strategy: { type: string, nullable: true, enum: [none, day, week, month, year], description: "Zero data_used_bytes on a schedule." }
+
+    PlanTemplate:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        owner: { type: string, nullable: true, description: "Null = global (staff) template; otherwise the owner namespace." }
+        available_to_resellers: { type: boolean, description: "Global templates only: visible to resellers and API keys." }
+        data_quota_bytes: { type: integer, format: int64, nullable: true, description: "Null = unlimited." }
+        duration_days: { type: integer, nullable: true }
+        device_limit: { type: integer, nullable: true }
+        bandwidth_limit_mbps: { type: integer, nullable: true }
+        node_group: { type: string, nullable: true }
+        reset_strategy: { type: string, enum: [none, day, week, month, year] }
+        on_hold: { type: boolean }
+        hold_deadline_days: { type: integer, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, name, available_to_resellers, reset_strategy, on_hold, created_at, updated_at]
+
+    TemplateRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 100 }
+        available_to_resellers: { type: boolean, description: "Staff-created templates only; ignored otherwise." }
+        data_quota_gb: { type: number, nullable: true }
+        duration_days: { type: integer, nullable: true, minimum: 1, maximum: 3650 }
+        device_limit: { type: integer, nullable: true, minimum: 1 }
+        bandwidth_limit_mbps: { type: integer, nullable: true, minimum: 1, maximum: 100000 }
+        node_group: { type: string, nullable: true }
+        reset_strategy: { type: string, enum: [none, day, week, month, year] }
+        on_hold: { type: boolean, description: "Needs duration_days." }
+        hold_deadline_days: { type: integer, nullable: true, minimum: 1, maximum: 3650 }
+
+    BulkAccountsRequest:
+      type: object
+      required: [action]
+      properties:
+        action: { type: string, enum: [create, renew, suspend, enable, delete, reset_usage] }
+        count: { type: integer, minimum: 1, maximum: 200, description: "create: how many accounts." }
+        label_prefix: { type: string, description: "create: labels are `<prefix>-01`, `<prefix>-02`, ..." }
+        template_id: { type: string, format: uuid, nullable: true, description: "create: as in POST /accounts." }
+        data_quota_gb: { type: number, nullable: true, description: "create: as in POST /accounts (external_ref is not allowed)." }
+        expiry_at: { type: string, format: date-time, nullable: true }
+        device_limit: { type: integer, nullable: true }
+        bandwidth_limit_mbps: { type: integer, nullable: true }
+        node_id: { type: string, nullable: true }
+        on_hold: { type: boolean, nullable: true }
+        hold_duration_days: { type: integer, nullable: true }
+        hold_deadline_days: { type: integer, nullable: true }
+        reset_strategy: { type: string, nullable: true, enum: [none, day, week, month, year] }
+        ids:
+          type: array
+          maxItems: 200
+          items: { type: string, format: uuid }
+          description: "renew / suspend / enable / delete / reset_usage: the accounts to act on."
+        extend_days: { type: integer, minimum: 1, maximum: 3650, description: "renew: as in POST .../renew." }
+        add_quota_gb: { type: number, minimum: 0, description: "renew: as in POST .../renew." }
+
+    BulkAccountsResponse:
+      type: object
+      properties:
+        action: { type: string }
+        total: { type: integer }
+        succeeded: { type: integer }
+        failed: { type: integer }
+        results:
+          type: array
+          description: One entry per item, in request order (create: in label order).
+          items:
+            type: object
+            properties:
+              id: { type: string, nullable: true }
+              label: { type: string }
+              ok: { type: boolean }
+              account: { allOf: [{ $ref: "#/components/schemas/Account" }], nullable: true }
+              error:
+                type: object
+                nullable: true
+                properties:
+                  code: { type: string }
+                  message: { type: string }
+            required: [ok]
+      required: [action, total, succeeded, failed, results]
 
     ApiKey:
       type: object

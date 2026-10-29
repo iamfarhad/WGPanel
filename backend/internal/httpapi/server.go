@@ -96,6 +96,14 @@ func (s *Server) Routes() http.Handler {
 	// the bot API"). requirePermission enforces both API-key permission sets and the
 	// admin support-role's read-only restriction (docs/PRD-security-access-control.md §4).
 	mux.Handle("POST /api/v1/accounts", s.requireAdminOrAPIKey(s.requirePermission("create", http.HandlerFunc(s.handleCreateAccount))))
+	// Account lifecycle (on hold, scheduled reset, plan templates, bulk) - accounts_lifecycle.go.
+	// The bulk handler checks the per-action permission itself (create/update/suspend/delete).
+	mux.Handle("POST /api/v1/accounts/bulk", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleBulkAccounts))))
+	mux.Handle("GET /api/v1/templates", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleListTemplates))))
+	mux.Handle("GET /api/v1/templates/{id}", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleGetTemplate))))
+	mux.Handle("POST /api/v1/templates", s.requireAdminOrAPIKey(s.requirePermission("create", http.HandlerFunc(s.handleCreateTemplate))))
+	mux.Handle("PUT /api/v1/templates/{id}", s.requireAdminOrAPIKey(s.requirePermission("update", http.HandlerFunc(s.handleUpdateTemplate))))
+	mux.Handle("DELETE /api/v1/templates/{id}", s.requireAdminOrAPIKey(s.requirePermission("delete", http.HandlerFunc(s.handleDeleteTemplate))))
 	mux.Handle("GET /api/v1/accounts", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleListAccounts))))
 	mux.Handle("GET /api/v1/accounts/{id}", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleGetAccount))))
 	mux.Handle("PATCH /api/v1/accounts/{id}", s.requireAdminOrAPIKey(s.requirePermission("update", http.HandlerFunc(s.handleUpdateAccount))))
