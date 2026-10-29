@@ -88,6 +88,10 @@ servers:
       override).
 
 tags:
+  - name: Notifications
+    description: In-panel notification center and Telegram/email notification channels.
+  - name: Webhooks
+    description: Signed outbound webhooks with a persistent retry queue and delivery log.
   - name: Reports
     description: Traffic, account-status, quota and expiry reporting for staff and resellers.
   - name: Resellers
@@ -1989,6 +1993,380 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+
+  # ---- Notifications, webhooks and scheduled backups ----------------------------
+
+  /api/v1/notifications:
+    get:
+      tags: [Notifications]
+      summary: In-panel notification center
+      description: >-
+        Newest notifications visible to the caller, with the caller's read state.
+        Staff see every event; a reseller sees only events of its own namespace.
+        `broken_channels` (staff only) counts enabled notification channels that
+        failed 3 deliveries in a row, for the "channel broken" banner.
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 30 } }
+        - { name: unread, in: query, schema: { type: boolean } }
+      responses:
+        "200":
+          description: Notifications.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer, format: int64 }
+                        event: { type: string, example: node.down }
+                        severity: { type: string, enum: [info, warning, critical] }
+                        title: { type: string }
+                        body: { type: string }
+                        data: { type: object, additionalProperties: true }
+                        read: { type: boolean }
+                        created_at: { type: string, format: date-time }
+                  unread_count: { type: integer }
+                  broken_channels: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/notifications/read-all:
+    post:
+      tags: [Notifications]
+      summary: Mark every notification as read for the caller
+      security: [{ BearerAuth: [] }]
+      responses:
+        "204": { description: Done. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/notifications/{id}/read:
+    post:
+      tags: [Notifications]
+      summary: Mark one notification as read
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "204": { description: Done. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "`notification_not_found` - no such notification, or not visible to the caller." }
+
+  /api/v1/notification-channels:
+    get:
+      tags: [Notifications]
+      summary: List notification channels (Telegram / email)
+      description: >-
+        Requires role = `super_admin`. Bot tokens and SMTP passwords are stored
+        encrypted and never returned (`has_secret` only). `events` is the list of
+        subscribable event types.
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Channels.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/NotificationChannel" } }
+                  events: { type: array, items: { type: string } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Notifications]
+      summary: Create a notification channel
+      description: >-
+        `config` for `telegram` is `{chat_ids: [string]}` with the bot token in
+        `secret`; for `email` it is `{host, port, username, from, to: [string],
+        tls: starttls|tls|none}` with the SMTP password in `secret`. An empty
+        `events` list subscribes the channel to nothing. `lang` selects the message
+        language (`en` or `fa`).
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NotificationChannelWrite" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationChannel" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/notification-channels/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [Notifications]
+      summary: Update a notification channel
+      description: >-
+        Omitted fields are unchanged; an omitted or empty `secret` keeps the stored
+        one. Saving clears the channel's failure streak.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NotificationChannelWrite" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationChannel" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { description: "`channel_not_found`." }
+    delete:
+      tags: [Notifications]
+      summary: Delete a notification channel
+      security: [{ BearerAuth: [] }]
+      responses:
+        "204": { description: Deleted. }
+        "404": { description: "`channel_not_found`." }
+
+  /api/v1/notification-channels/{id}/test:
+    post:
+      tags: [Notifications]
+      summary: Send a test message through a channel
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Delivered. }
+        "404": { description: "`channel_not_found`." }
+        "502": { description: "`channel_test_failed` - the message states why delivery failed (credentials are never included)." }
+
+  /api/v1/webhooks:
+    get:
+      tags: [Webhooks]
+      summary: List webhook endpoints
+      description: >-
+        Staff see every endpoint (global ones have `namespace: null`); a reseller
+        sees only its own. The signing secret is never listed.
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Webhooks.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Webhook" } }
+                  events: { type: array, items: { type: string } }
+    post:
+      tags: [Webhooks]
+      summary: Register a webhook endpoint
+      description: >-
+        Requires role >= `operator`, or a reseller session. Staff-created endpoints
+        are global (all namespaces); reseller-created ones receive only that
+        reseller's events (`account.*`, `reseller.*`). The response is the only
+        time the signing `secret` is shown. Each delivery is a JSON POST signed with
+        `X-Jirjirak-Signature: t=<unix>,v1=<hex>` where `v1` is the hex
+        HMAC-SHA256 of `<t>.<raw body>` keyed with the secret; also sent are
+        `X-Jirjirak-Event` and `X-Jirjirak-Delivery`. A non-2xx answer or a timeout
+        (10 s) is retried after 1 min, 5 min, 30 min, 2 h and 6 h, then marked
+        `failed`. Targets resolving to private, loopback, link-local or metadata
+        addresses are refused (`webhook_url_blocked`) unless a super_admin enabled
+        the override, which never applies to reseller endpoints.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WebhookWrite" }
+      responses:
+        "201":
+          description: Created; includes the one-time `secret`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Webhook" }
+        "400": { description: "`invalid_request` or `webhook_url_blocked`." }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/webhooks/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [Webhooks]
+      summary: Update a webhook endpoint (url, description, events, enabled)
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WebhookWrite" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Webhook" }
+        "400": { description: "`invalid_request` or `webhook_url_blocked`." }
+        "404": { description: "`webhook_not_found`." }
+    delete:
+      tags: [Webhooks]
+      summary: Delete a webhook endpoint and its delivery log
+      security: [{ BearerAuth: [] }]
+      responses:
+        "204": { description: Deleted. }
+        "404": { description: "`webhook_not_found`." }
+
+  /api/v1/webhooks/{id}/rotate-secret:
+    post:
+      tags: [Webhooks]
+      summary: Rotate the signing secret
+      description: The previous secret stops working immediately. The new one is returned once.
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Rotated; includes the one-time `secret`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Webhook" }
+        "404": { description: "`webhook_not_found`." }
+
+  /api/v1/webhooks/{id}/test:
+    post:
+      tags: [Webhooks]
+      summary: Send a signed `ping` event now (no retries)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The resulting delivery (status code, latency, response excerpt).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookDelivery" }
+        "404": { description: "`webhook_not_found`." }
+
+  /api/v1/webhooks/{id}/deliveries:
+    get:
+      tags: [Webhooks]
+      summary: Delivery log of a webhook (newest first)
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        "200":
+          description: Deliveries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/WebhookDelivery" } }
+        "404": { description: "`webhook_not_found`." }
+
+  /api/v1/webhooks/{id}/deliveries/{delivery_id}/redeliver:
+    post:
+      tags: [Webhooks]
+      summary: Queue a fresh delivery with the same payload
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: delivery_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "202":
+          description: Queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookDelivery" }
+        "404": { description: "`webhook_not_found` or `delivery_not_found`." }
+
+  /api/v1/webhook-settings:
+    get:
+      tags: [Webhooks]
+      summary: Webhook SSRF override setting
+      description: Requires role >= `operator`.
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Current setting.
+          content:
+            application/json:
+              schema: { type: object, properties: { allow_private_targets: { type: boolean } } }
+    patch:
+      tags: [Webhooks]
+      summary: Allow staff-owned webhooks to reach private networks
+      description: >-
+        Requires role = `super_admin`. Off by default. Applies only to staff-owned
+        (global) endpoints, never to reseller endpoints.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [allow_private_targets]
+              properties: { allow_private_targets: { type: boolean } }
+      responses:
+        "200": { description: Saved. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/backup-schedule:
+    get:
+      tags: [Backup]
+      summary: Scheduled off-box backup configuration and last results
+      description: >-
+        Requires role = `super_admin`. Secrets (backup password, Telegram token, S3
+        secret key) are never returned (`has_*` flags only). `last` holds the newest
+        result per destination (`telegram`, `s3`); `runs` the 20 newest.
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Schedule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupSchedule" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [Backup]
+      summary: Save the scheduled backup configuration
+      description: >-
+        Backups use the same password-encrypted envelope as `POST /api/v1/backup`,
+        so they restore through the same path. Empty `password`, `telegram.bot_token`
+        or `s3.secret_key` keep the stored value. Telegram documents are limited to
+        50 MB by the Bot API - a larger backup fails with a clear message and should
+        go to S3. S3 works with AWS, MinIO and ArvanCloud (set `endpoint`, and
+        `path_style` for MinIO/Arvan). After each upload only the newest
+        `retention_count` `wgpanel-backup-*.json` objects under the prefix are kept.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BackupSchedule" }
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupSchedule" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/backup-schedule/run:
+    post:
+      tags: [Backup]
+      summary: Run a backup now
+      description: Starts a backup in the background; poll `GET /api/v1/backup-schedule` for the per-destination result.
+      security: [{ BearerAuth: [] }]
+      responses:
+        "202": { description: Started. }
+        "400": { description: "`backup_not_configured` - set a password and enable a destination first." }
+        "409": { description: "`backup_in_progress`." }
+
 components:
   securitySchemes:
     BearerAuth:
@@ -2044,6 +2422,118 @@ components:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
   schemas:
+    NotificationChannel:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [telegram, email] }
+        name: { type: string }
+        enabled: { type: boolean }
+        config: { type: object, additionalProperties: true }
+        has_secret: { type: boolean }
+        events: { type: array, items: { type: string } }
+        lang: { type: string, enum: [en, fa] }
+        broken: { type: boolean, description: "3 or more consecutive delivery failures." }
+        consecutive_failures: { type: integer }
+        last_error: { type: string }
+        last_success_at: { type: string, format: date-time, nullable: true }
+        last_failure_at: { type: string, format: date-time, nullable: true }
+
+    NotificationChannelWrite:
+      type: object
+      properties:
+        kind: { type: string, enum: [telegram, email], description: Create only. }
+        name: { type: string }
+        enabled: { type: boolean }
+        config: { type: object, additionalProperties: true }
+        secret: { type: string, description: Bot token or SMTP password (write-only). }
+        events: { type: array, items: { type: string } }
+        lang: { type: string, enum: [en, fa] }
+
+    Webhook:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        namespace: { type: string, nullable: true, description: "null = global (staff-managed)." }
+        url: { type: string }
+        description: { type: string }
+        events: { type: array, items: { type: string }, description: "Empty = every event." }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        secret: { type: string, description: Present only in the create / rotate-secret response. }
+
+    WebhookWrite:
+      type: object
+      properties:
+        url: { type: string, format: uri }
+        description: { type: string }
+        events: { type: array, items: { type: string } }
+        enabled: { type: boolean }
+
+    WebhookDelivery:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        webhook_id: { type: string, format: uuid }
+        event: { type: string }
+        event_id: { type: string }
+        status: { type: string, enum: [pending, retrying, success, failed] }
+        attempts: { type: integer }
+        next_attempt_at: { type: string, format: date-time, nullable: true }
+        response_status: { type: integer, nullable: true }
+        latency_ms: { type: integer, nullable: true }
+        response_body: { type: string, description: Truncated to 1 KB. }
+        error: { type: string }
+        payload: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    BackupSchedule:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        interval_hours: { type: integer, minimum: 1, maximum: 8760 }
+        retention_count: { type: integer, minimum: 1, maximum: 365 }
+        password: { type: string, description: Write-only encryption password (min 8). }
+        has_password: { type: boolean }
+        telegram:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            bot_token: { type: string, description: Write-only. }
+            has_token: { type: boolean }
+            chat_id: { type: string }
+        s3:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            endpoint: { type: string, description: "Empty = AWS (https://s3.<region>.amazonaws.com)." }
+            region: { type: string }
+            bucket: { type: string }
+            prefix: { type: string }
+            access_key: { type: string }
+            secret_key: { type: string, description: Write-only. }
+            has_secret: { type: boolean }
+            path_style: { type: boolean }
+        last_run_at: { type: string, format: date-time, nullable: true }
+        running: { type: boolean }
+        last:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/BackupRun" }
+        runs: { type: array, items: { $ref: "#/components/schemas/BackupRun" } }
+
+    BackupRun:
+      type: object
+      properties:
+        run_id: { type: string }
+        destination: { type: string, enum: [telegram, s3] }
+        trigger: { type: string, enum: [schedule, manual] }
+        status: { type: string, enum: [success, failed] }
+        error: { type: string }
+        filename: { type: string }
+        size_bytes: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+
     Report:
       type: object
       properties:

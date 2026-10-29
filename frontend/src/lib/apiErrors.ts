@@ -16,6 +16,14 @@ const codeMessages: Record<string, string> = {
   account_suspended_by_admin: 'An administrator suspended this account; only they can re-enable it.',
   reseller_has_accounts: 'This reseller still owns accounts. Delete or move them first.',
   username_taken: 'That username is already taken.',
+  webhook_url_blocked: 'That address points to a private or internal network and is not allowed for webhooks.',
+  webhook_not_found: 'That webhook no longer exists.',
+  delivery_not_found: 'That delivery no longer exists.',
+  channel_not_found: 'That notification channel no longer exists.',
+  channel_test_failed: 'The test message could not be delivered.',
+  notification_not_found: 'That notification no longer exists.',
+  backup_not_configured: 'Set a backup password and enable a destination first.',
+  backup_in_progress: 'A backup is already running.',
 }
 
 export function apiErrorMessage(err: unknown, t: (text: string) => string, fallback = 'Something went wrong'): string {
