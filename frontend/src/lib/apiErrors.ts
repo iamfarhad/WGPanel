@@ -16,6 +16,11 @@ const codeMessages: Record<string, string> = {
   account_suspended_by_admin: 'An administrator suspended this account; only they can re-enable it.',
   reseller_has_accounts: 'This reseller still owns accounts. Delete or move them first.',
   username_taken: 'That username is already taken.',
+  endpoint_not_found: 'That endpoint no longer exists on this node.',
+  endpoint_label_taken: 'This node already has an endpoint with that label.',
+  endpoint_check_disabled: 'Health checks are turned off for this endpoint.',
+  rate_limited: 'Too many requests - wait a moment and try again.',
+  invalid_cursor: 'The page position is no longer valid - reload the list.',
 }
 
 export function apiErrorMessage(err: unknown, t: (text: string) => string, fallback = 'Something went wrong'): string {

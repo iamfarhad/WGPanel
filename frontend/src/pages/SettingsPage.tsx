@@ -28,6 +28,9 @@ interface Settings {
   client_dns: string
   sub_domain: string | null
   sub_port: number | null
+  client_mtu: number
+  api_rate_rps: number
+  api_rate_burst: number
 }
 
 interface UpdateSettingsResult extends Settings {
@@ -331,6 +334,9 @@ export function SettingsPage() {
   // or a custom resolver list - edited as a mode plus the list.
   const [clientDnsMode, setClientDnsMode] = useState<'node' | 'custom'>('node')
   const [clientDnsCustom, setClientDnsCustom] = useState('')
+  const [clientMtu, setClientMtu] = useState('1280')
+  const [apiRateRps, setApiRateRps] = useState('20')
+  const [apiRateBurst, setApiRateBurst] = useState('40')
   const [panelDomain, setPanelDomain] = useState('')
   const [subDomain, setSubDomain] = useState('')
   const [subPort, setSubPort] = useState('')
@@ -347,6 +353,9 @@ export function SettingsPage() {
     const dns = settingsQuery.data.client_dns
     setClientDnsMode(dns === 'node' ? 'node' : 'custom')
     setClientDnsCustom(dns === 'node' ? '' : dns)
+    setClientMtu(String(settingsQuery.data.client_mtu ?? 1280))
+    setApiRateRps(String(settingsQuery.data.api_rate_rps ?? 20))
+    setApiRateBurst(String(settingsQuery.data.api_rate_burst ?? 40))
     setPanelDomain(settingsQuery.data.panel_domain ?? '')
     setSubDomain(settingsQuery.data.sub_domain ?? '')
     setSubPort(settingsQuery.data.sub_port?.toString() ?? '')
@@ -363,6 +372,9 @@ export function SettingsPage() {
           default_node_capacity: Number(defaultNodeCapacity),
           support_contact: supportContact || null,
           client_dns: clientDnsMode === 'node' ? 'node' : clientDnsCustom || null,
+          client_mtu: Number(clientMtu),
+          api_rate_rps: Number(apiRateRps),
+          api_rate_burst: Number(apiRateBurst),
         }),
       }),
     onSuccess: (settings) => {
@@ -562,6 +574,33 @@ export function SettingsPage() {
                   />
                 )}
               </Field>
+
+              <Field
+                label="Client MTU"
+                hint="The MTU line of generated WireGuard configs (1200-1420). 1280 is the safe default. Raise it (for example 1380 or 1420) for better speed on clean paths, or keep it low if clients connect but large pages stall. A node endpoint can override it. Takes effect on the next config download."
+              >
+                <Input
+                  type="number"
+                  min="1200"
+                  max="1420"
+                  className="ltr"
+                  value={clientMtu}
+                  onChange={(e) => setClientMtu(e.target.value)}
+                  required
+                />
+              </Field>
+
+              <div className="grid grid-cols-2 gap-4">
+                <Field
+                  label="Bot API rate (requests/second per key)"
+                  hint="Refill rate of each API key's token bucket. Requests over the limit get 429 with Retry-After."
+                >
+                  <Input type="number" min="1" max="10000" className="ltr" value={apiRateRps} onChange={(e) => setApiRateRps(e.target.value)} required />
+                </Field>
+                <Field label="Bot API burst" hint="How many requests a key may send at once before being limited.">
+                  <Input type="number" min="1" max="100000" className="ltr" value={apiRateBurst} onChange={(e) => setApiRateBurst(e.target.value)} required />
+                </Field>
+              </div>
 
               <Field
                 label="Support contact"
