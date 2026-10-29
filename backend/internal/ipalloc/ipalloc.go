@@ -42,6 +42,18 @@ func NextFree(cidr string, allocated []string) (string, error) {
 	return "", ErrSubnetExhausted
 }
 
+// Gateway returns the node's own WireGuard interface address for cidr, with the
+// subnet's prefix length (e.g. "10.66.0.1/24") - exactly the address NextFree
+// reserves, so the node's interface and the peer allocator can't disagree.
+func Gateway(cidr string) (string, error) {
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return "", fmt.Errorf("parse subnet %q: %w", cidr, err)
+	}
+	ones, _ := ipNet.Mask.Size()
+	return fmt.Sprintf("%s/%d", nextIP(ipNet.IP.Mask(ipNet.Mask)), ones), nil
+}
+
 func nextIP(ip net.IP) net.IP {
 	next := make(net.IP, len(ip))
 	copy(next, ip)

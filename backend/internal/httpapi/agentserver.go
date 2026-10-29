@@ -36,6 +36,7 @@ func (s *Server) AgentTLSConfig() (*tls.Config, error) {
 // TLS config above - entirely separate from Routes()'s admin/bot-facing surface.
 func (s *Server) AgentRoutes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /agent/preflight", s.handleAgentPreflight)
 	mux.HandleFunc("POST /agent/register", s.handleAgentRegister)
 	mux.HandleFunc("POST /agent/heartbeat", s.handleAgentHeartbeat)
 	return s.loggingMiddleware(mux)
@@ -54,6 +55,49 @@ type agentRegisterResponse struct {
 	NodeID           string `json:"node_id"`
 	CertificatePEM   string `json:"certificate_pem"`
 	CACertificatePEM string `json:"ca_certificate_pem"`
+	// The agent checks its real WireGuard interface against these before it starts
+	// (cmd/agent's checkNodeNetwork); older agents ignore them.
+	nodeNetwork
+}
+
+type agentPreflightRequest struct {
+	JoinToken string `json:"join_token"`
+}
+
+type agentPreflightResponse struct {
+	NodeID string `json:"node_id"`
+	Name   string `json:"name"`
+	nodeNetwork
+}
+
+// handleAgentPreflight tells install-node.sh which node a join token belongs to and
+// the WireGuard settings the panel expects of it, WITHOUT redeeming the token - so the
+// installer can fill in the interface address and listen port itself instead of
+// asking the operator to retype values that must match the panel exactly. Same
+// credential as /agent/register: possession of the token.
+func (s *Server) handleAgentPreflight(w http.ResponseWriter, r *http.Request) {
+	var req agentPreflightRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.JoinToken == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "join_token is required")
+		return
+	}
+
+	node, err := s.Store.PeekJoinToken(r.Context(), req.JoinToken)
+	if errors.Is(err, store.ErrInvalidOrUsedToken) {
+		writeJSONError(w, http.StatusUnauthorized, "invalid_token", "join token is invalid, expired, or already used")
+		return
+	}
+	if err != nil {
+		s.Logger.Error("peek_join_token_failed", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not check token")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, agentPreflightResponse{
+		NodeID:      node.ID,
+		Name:        node.Name,
+		nodeNetwork: nodeNetworkFor(node),
+	})
 }
 
 // handleAgentRegister redeems a join token (reusing store.RedeemJoinToken from
@@ -106,6 +150,7 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 		NodeID:           node.ID,
 		CertificatePEM:   certPEM,
 		CACertificatePEM: string(s.CA.CertPEM),
+		nodeNetwork:      nodeNetworkFor(node),
 	})
 }
 
@@ -127,6 +172,9 @@ type agentHeartbeatRequest struct {
 	CPUPercent    *float32                `json:"cpu_percent"`
 	MemUsedBytes  *int64                  `json:"mem_used_bytes"`
 	MemTotalBytes *int64                  `json:"mem_total_bytes"`
+	// DNSForwarder: the agent serves DNS for its clients on the node's tunnel address
+	// (migration 0020). Absent (false) from older agents.
+	DNSForwarder bool `json:"dns_forwarder"`
 }
 
 type agentHeartbeatPeer struct {
@@ -141,6 +189,13 @@ type agentHeartbeatPeer struct {
 type agentHeartbeatResponse struct {
 	Status string               `json:"status"`
 	Peers  []agentHeartbeatPeer `json:"peers"`
+	// Network lets agents registered before /agent/register returned it check their
+	// interface too (cmd/agent's checkNodeNetwork) - nodes installed before that
+	// check existed are exactly the ones that may be running on a wrong address.
+	Network *nodeNetwork `json:"network,omitempty"`
+	// ClientDNS is the DNS = value client configs carry; the agent checks the node can
+	// reach those resolvers, since client traffic egresses through the node.
+	ClientDNS string `json:"client_dns,omitempty"`
 }
 
 // handleAgentHeartbeat requires a client certificate that both chains to our CA
@@ -167,7 +222,7 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req) // malformed/absent body isn't fatal - traffic/metrics are best-effort
 
 	ctx := r.Context()
-	err := s.Store.RecordHeartbeat(ctx, nodeID, fingerprint)
+	err := s.Store.RecordHeartbeat(ctx, nodeID, fingerprint, req.DNSForwarder)
 	switch {
 	case errors.Is(err, store.ErrNodeNotFound):
 		writeJSONError(w, http.StatusNotFound, "node_not_found", "no node matches this certificate's identity")
@@ -224,5 +279,15 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, agentHeartbeatResponse{Status: "ok", Peers: peers})
+	resp := agentHeartbeatResponse{Status: "ok", Peers: peers}
+	// Best-effort like telemetry: a failed lookup only skips the agent's checks this tick.
+	if node, err := s.Store.GetNode(ctx, nodeID); err == nil {
+		network := nodeNetworkFor(node)
+		resp.Network = &network
+		resp.ClientDNS = resolveClientDNS(s.clientDNS(ctx), node.WGSubnet, req.DNSForwarder)
+	} else {
+		s.Logger.Error("get_node_for_heartbeat_failed", "error", err)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }

@@ -21,7 +21,7 @@ export function Field({
     <div>
       <label htmlFor={htmlFor} className="mb-1.5 block text-sm font-medium text-fg">
         {label}
-        {labelSuffix && <span className="ml-1 font-normal text-faint">{labelSuffix}</span>}
+        {labelSuffix && <span className="ms-1 font-normal text-faint">{labelSuffix}</span>}
       </label>
       {children}
       {hint && <p className="mt-1.5 text-xs leading-relaxed text-muted">{hint}</p>}

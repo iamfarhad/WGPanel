@@ -75,6 +75,8 @@ type AccountPeerWithNode struct {
 	NodeName           string
 	NodePublicEndpoint string
 	NodePublicKey      *string
+	NodeWGSubnet       string
+	NodeDNSForwarder   bool // see migration 0020
 }
 
 const accountColumns = `id, external_ref, label, public_key, data_quota_bytes, data_used_bytes, expiry_at, device_limit, device_limit_hard_enforce, device_limit_exceeded_at, bandwidth_limit_mbps, subscription_token, status, suspend_reason, ip_release_at, owner_key_namespace, created_at, updated_at`
@@ -346,7 +348,7 @@ func (s *Store) ListAccountPeersWithNode(ctx context.Context, accountID string, 
 	rows, err := s.pool.Query(ctx, `
 		SELECT ap.id, ap.account_id, ap.node_id, ap.assigned_ip,
 		       ap.last_receive_bytes, ap.last_transmit_bytes, ap.last_handshake_at, ap.created_at,
-		       n.name, n.public_endpoint, n.public_key
+		       n.name, n.public_endpoint, n.public_key, n.wg_subnet, n.dns_forwarder
 		FROM account_peers ap
 		JOIN nodes n ON n.id = ap.node_id
 		JOIN accounts a ON a.id = ap.account_id
@@ -364,7 +366,7 @@ func (s *Store) ListAccountPeersWithNode(ctx context.Context, accountID string, 
 		if err := rows.Scan(
 			&p.ID, &p.AccountID, &p.NodeID, &p.AssignedIP,
 			&p.LastReceiveBytes, &p.LastTransmitBytes, &p.LastHandshakeAt, &p.CreatedAt,
-			&p.NodeName, &p.NodePublicEndpoint, &p.NodePublicKey,
+			&p.NodeName, &p.NodePublicEndpoint, &p.NodePublicKey, &p.NodeWGSubnet, &p.NodeDNSForwarder,
 		); err != nil {
 			return nil, err
 		}

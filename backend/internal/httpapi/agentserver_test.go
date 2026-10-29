@@ -45,3 +45,15 @@ func TestHandleAgentRegisterRejectsMissingFields(t *testing.T) {
 		t.Fatalf("expected 400 for missing join_token/csr_pem, got %d", rr.Code)
 	}
 }
+
+func TestHandleAgentPreflightRejectsMissingToken(t *testing.T) {
+	s := &Server{}
+
+	req := httptest.NewRequest(http.MethodPost, "/agent/preflight", strings.NewReader(`{}`))
+	rr := httptest.NewRecorder()
+	s.handleAgentPreflight(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a missing join_token, got %d", rr.Code)
+	}
+}

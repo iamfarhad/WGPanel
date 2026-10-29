@@ -55,7 +55,7 @@ export function Dialog({ open, onClose, title, children, maxWidthClassName = 'ma
 
   return (
     <div
-      className="animate-backdrop-in fixed inset-0 z-40 flex items-center justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-[2px]"
+      className="animate-backdrop-in fixed inset-0 z-40 flex items-center justify-center overflow-y-auto bg-overlay p-4"
       onClick={onClose}
     >
       {/* flex-col + max-h caps the dialog to the viewport and keeps the header
@@ -67,15 +67,15 @@ export function Dialog({ open, onClose, title, children, maxWidthClassName = 'ma
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`animate-dialog-in flex max-h-[85vh] w-full flex-col rounded-2xl border border-edge bg-surface shadow-2xl shadow-slate-950/20 ${maxWidthClassName}`}
+        className={`animate-dialog-in flex max-h-[85vh] w-full flex-col rounded-modal border border-edge bg-surface shadow-pop ${maxWidthClassName}`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-edge px-6 py-4">
-          <h2 className="text-base font-semibold tracking-tight text-fg">{title}</h2>
+          <h2 className="text-base font-semibold text-fg">{title}</h2>
           <button
             type="button"
             onClick={onClose}
-            className="-mr-1.5 cursor-pointer rounded-lg p-1.5 text-faint transition-colors hover:bg-inset hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+            className="-me-1.5 cursor-pointer rounded-lg p-1.5 text-faint transition-colors hover:bg-inset hover:text-fg focus-visible:ring-[3px] focus-visible:ring-ring focus-visible:outline-none"
             aria-label="Close"
           >
             <X className="h-4.5 w-4.5" />

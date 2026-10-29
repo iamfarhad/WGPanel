@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"wgpanel-api/internal/caddyadmin"
@@ -61,8 +62,9 @@ type updateSettingsRequest struct {
 	// domain_live_applied/domain_apply_error on the response.
 	PanelDomain *string `json:"panel_domain"`
 	// ClientDNS is the DNS = line baked into generated wg-quick configs (migration
-	// 0018). Non-nil/non-empty replaces it; takes effect on the next config download,
-	// not retroactively for configs already handed out.
+	// 0018): "node" (each node's own forwarder, migration 0020) or a comma-separated
+	// list. Non-nil replaces it; takes effect on the next config download, not
+	// retroactively for configs already handed out.
 	ClientDNS *string `json:"client_dns"`
 	// SubDomain/SubPort configure the separate subscription origin (migration 0019)
 	// and trigger the same live Caddy push as PanelDomain. Unlike the fields above,
@@ -101,9 +103,13 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "panel_domain must not be empty")
 		return
 	}
-	if req.ClientDNS != nil && *req.ClientDNS == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "client_dns must not be empty")
-		return
+	if req.ClientDNS != nil {
+		trimmed := strings.TrimSpace(*req.ClientDNS)
+		req.ClientDNS = &trimmed
+		if err := validateClientDNS(trimmed); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
 	}
 	// 0 is the explicit "reset to default 443" sentinel (see updateSettingsRequest).
 	if req.SubPort != nil && *req.SubPort != 0 && (*req.SubPort < 1 || *req.SubPort > 65535) {

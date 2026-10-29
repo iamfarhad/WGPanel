@@ -10,6 +10,7 @@ import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
+import { Select } from '../components/ui/Select'
 import { Field } from '../components/ui/Field'
 import { Skeleton } from '../components/ui/Skeleton'
 import { Dialog } from '../components/ui/Dialog'
@@ -119,7 +120,7 @@ function BackupCard() {
       push('success', 'Backup restored')
     } catch (err) {
       if (err instanceof SyntaxError) {
-        push('error', 'That file is not a WGPanel backup')
+        push('error', 'That file is not a Jirjirak WireGuard backup')
       } else {
         push('error', err instanceof ApiError ? err.message : 'Restore failed')
       }
@@ -167,7 +168,7 @@ function BackupCard() {
         </div>
 
         {restoreResult && (
-          <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2.5 text-sm leading-relaxed text-emerald-700 dark:text-emerald-400">
+          <div className="rounded-control border border-success/25 bg-success-soft px-3 py-2.5 text-sm leading-relaxed text-success-fg">
             <p>
               Restored {restoreResult.restored.accounts ?? 0} accounts, {restoreResult.restored.nodes ?? 0} nodes,{' '}
               {restoreResult.restored.admins ?? 0} admins and {restoreResult.restored.api_keys ?? 0} API keys.
@@ -214,7 +215,7 @@ function BackupCard() {
             />
           </Field>
           {downloadPasswordConfirm.length > 0 && downloadPassword !== downloadPasswordConfirm && (
-            <p className="text-sm text-rose-600 dark:text-rose-400">Passwords do not match.</p>
+            <p className="text-sm text-danger-fg">Passwords do not match.</p>
           )}
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="secondary" type="button" onClick={closeDownload} disabled={downloading}>
@@ -296,7 +297,10 @@ export function SettingsPage() {
   const [defaultDeviceLimit, setDefaultDeviceLimit] = useState('')
   const [defaultNodeCapacity, setDefaultNodeCapacity] = useState('250')
   const [supportContact, setSupportContact] = useState('')
-  const [clientDns, setClientDns] = useState('1.1.1.1, 1.0.0.1')
+  // client_dns is either the 'node' sentinel (each node resolves for its own clients)
+  // or a custom resolver list - edited as a mode plus the list.
+  const [clientDnsMode, setClientDnsMode] = useState<'node' | 'custom'>('node')
+  const [clientDnsCustom, setClientDnsCustom] = useState('')
   const [panelDomain, setPanelDomain] = useState('')
   const [subDomain, setSubDomain] = useState('')
   const [subPort, setSubPort] = useState('')
@@ -310,7 +314,9 @@ export function SettingsPage() {
     setDefaultDeviceLimit(settingsQuery.data.default_device_limit?.toString() ?? '')
     setDefaultNodeCapacity(settingsQuery.data.default_node_capacity.toString())
     setSupportContact(settingsQuery.data.support_contact ?? '')
-    setClientDns(settingsQuery.data.client_dns)
+    const dns = settingsQuery.data.client_dns
+    setClientDnsMode(dns === 'node' ? 'node' : 'custom')
+    setClientDnsCustom(dns === 'node' ? '' : dns)
     setPanelDomain(settingsQuery.data.panel_domain ?? '')
     setSubDomain(settingsQuery.data.sub_domain ?? '')
     setSubPort(settingsQuery.data.sub_port?.toString() ?? '')
@@ -326,7 +332,7 @@ export function SettingsPage() {
           default_device_limit: defaultDeviceLimit ? Number(defaultDeviceLimit) : null,
           default_node_capacity: Number(defaultNodeCapacity),
           support_contact: supportContact || null,
-          client_dns: clientDns || null,
+          client_dns: clientDnsMode === 'node' ? 'node' : clientDnsCustom || null,
         }),
       }),
     onSuccess: (settings) => {
@@ -415,10 +421,10 @@ export function SettingsPage() {
                 </Field>
               </div>
               {domainLiveApplied && !domainApplyError && (
-                <p className="text-sm text-emerald-600 dark:text-emerald-400">Applied live - Caddy is now serving with this configuration.</p>
+                <p className="text-sm text-success-fg">Applied live - Caddy is now serving with this configuration.</p>
               )}
               {domainApplyError && (
-                <p className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-sm leading-relaxed text-amber-700 dark:text-amber-400">
+                <p className="rounded-control border border-warning/25 bg-warning-soft px-3 py-2.5 text-sm leading-relaxed text-warning-fg">
                   Saved, but the live push to Caddy failed: {domainApplyError}. The API retries it automatically on its
                   next restart.
                 </p>
@@ -446,7 +452,7 @@ export function SettingsPage() {
               ))}
             </div>
           ) : settingsQuery.isError ? (
-            <p className="p-6 text-sm text-rose-600 dark:text-rose-400">Could not load settings.</p>
+            <p className="p-6 text-sm text-danger-fg">Could not load settings.</p>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-6 p-6">
               <Field
@@ -493,22 +499,33 @@ export function SettingsPage() {
               </Field>
 
               <Field
-                label="Client DNS server(s)"
+                label="Client DNS"
                 hint={
                   <>
-                    Written into every generated WireGuard config's <code>DNS =</code> line (comma-separated). Since clients
-                    full-tunnel, they can only resolve names through this server - if it's unreachable from where your nodes
-                    egress, clients connect but have "no internet". The Cloudflare default is blocked on some networks; use a
-                    resolver you've confirmed works from the node. Takes effect on the next config download.
+                    The <code>DNS =</code> line of every generated WireGuard config. Clients full-tunnel, so they can only
+                    resolve names through it - a resolver unreachable from where a node egresses means clients connect but
+                    have "no internet". <span className="font-medium text-fg">Each node</span> avoids that: clients ask the
+                    node itself, which resolves through whatever its server uses (nodes running an older agent fall back to
+                    1.1.1.1). Takes effect on the next config download or subscription refresh.
                   </>
                 }
               >
-                <Input
-                  value={clientDns}
-                  onChange={(e) => setClientDns(e.target.value)}
-                  placeholder="1.1.1.1, 1.0.0.1"
-                  required
-                />
+                <Select
+                  value={clientDnsMode}
+                  onChange={(e) => setClientDnsMode(e.target.value as 'node' | 'custom')}
+                >
+                  <option value="node">Each node resolves for its clients (recommended)</option>
+                  <option value="custom">Custom resolvers…</option>
+                </Select>
+                {clientDnsMode === 'custom' && (
+                  <Input
+                    className="mt-2"
+                    value={clientDnsCustom}
+                    onChange={(e) => setClientDnsCustom(e.target.value)}
+                    placeholder="1.1.1.1, 1.0.0.1"
+                    required
+                  />
+                )}
               </Field>
 
               <Field

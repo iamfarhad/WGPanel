@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AuthProvider } from './lib/auth'
 import { ToastProvider } from './lib/toast'
+import { I18nProvider } from './lib/i18n'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { LoginPage } from './pages/LoginPage'
 import { DashboardLayout } from './pages/DashboardLayout'
@@ -18,31 +19,33 @@ const queryClient = new QueryClient()
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AuthProvider>
-          <ToastProvider>
-            <Routes>
-              <Route path="/login" element={<LoginPage />} />
-              <Route
-                element={
-                  <ProtectedRoute>
-                    <DashboardLayout />
-                  </ProtectedRoute>
-                }
-              >
-                <Route path="/dashboard" element={<DashboardPage />} />
-                <Route path="/nodes" element={<NodesPage />} />
-                <Route path="/accounts" element={<AccountsPage />} />
-                <Route path="/api-keys" element={<ApiKeysPage />} />
-                <Route path="/admins" element={<AdminUsersPage />} />
-                <Route path="/audit-log" element={<AuditLogPage />} />
-                <Route path="/settings" element={<SettingsPage />} />
-              </Route>
-              <Route path="*" element={<Navigate to="/dashboard" replace />} />
-            </Routes>
-          </ToastProvider>
-        </AuthProvider>
-      </BrowserRouter>
+      <I18nProvider>
+        <BrowserRouter>
+          <AuthProvider>
+            <ToastProvider>
+              <Routes>
+                <Route path="/login" element={<LoginPage />} />
+                <Route
+                  element={
+                    <ProtectedRoute>
+                      <DashboardLayout />
+                    </ProtectedRoute>
+                  }
+                >
+                  <Route path="/dashboard" element={<DashboardPage />} />
+                  <Route path="/nodes" element={<NodesPage />} />
+                  <Route path="/accounts" element={<AccountsPage />} />
+                  <Route path="/api-keys" element={<ApiKeysPage />} />
+                  <Route path="/admins" element={<AdminUsersPage />} />
+                  <Route path="/audit-log" element={<AuditLogPage />} />
+                  <Route path="/settings" element={<SettingsPage />} />
+                </Route>
+                <Route path="*" element={<Navigate to="/dashboard" replace />} />
+              </Routes>
+            </ToastProvider>
+          </AuthProvider>
+        </BrowserRouter>
+      </I18nProvider>
     </QueryClientProvider>
   )
 }
