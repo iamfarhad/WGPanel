@@ -17,7 +17,7 @@ import (
 const rotationGracePeriod = 24 * time.Hour
 
 var validPermissions = map[string]bool{
-	"read": true, "create": true, "update": true, "suspend": true, "delete": true,
+	"read": true, "create": true, "update": true, "suspend": true, "delete": true, "webhooks": true,
 }
 
 type createAPIKeyRequest struct {

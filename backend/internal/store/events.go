@@ -107,13 +107,14 @@ type AccountThresholdRow struct {
 	DataQuotaBytes *int64
 	DataUsedBytes  int64
 	ExpiryAt       *time.Time
+	ExternalRef    *string
 }
 
 // ListAccountThresholdRows returns every non-deleted account that has a quota or an
 // expiry, for the threshold sweep.
 func (s *Store) ListAccountThresholdRows(ctx context.Context) ([]AccountThresholdRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, label, COALESCE(owner_key_namespace, ''), status, data_quota_bytes, data_used_bytes, expiry_at
+		SELECT id, label, COALESCE(owner_key_namespace, ''), status, data_quota_bytes, data_used_bytes, expiry_at, external_ref
 		FROM accounts
 		WHERE status != 'deleted' AND (data_quota_bytes IS NOT NULL OR expiry_at IS NOT NULL)`)
 	if err != nil {
@@ -123,7 +124,7 @@ func (s *Store) ListAccountThresholdRows(ctx context.Context) ([]AccountThreshol
 	var out []AccountThresholdRow
 	for rows.Next() {
 		var a AccountThresholdRow
-		if err := rows.Scan(&a.ID, &a.Label, &a.Namespace, &a.Status, &a.DataQuotaBytes, &a.DataUsedBytes, &a.ExpiryAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.Label, &a.Namespace, &a.Status, &a.DataQuotaBytes, &a.DataUsedBytes, &a.ExpiryAt, &a.ExternalRef); err != nil {
 			return nil, err
 		}
 		out = append(out, a)

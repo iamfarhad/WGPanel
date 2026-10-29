@@ -57,11 +57,18 @@ func toDeliveryResponse(d store.WebhookDelivery) deliveryResponse {
 		Error: d.Error, Payload: d.Payload, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt}
 }
 
-// webhookScope returns (callerNamespace for queries, isReseller). Staff get nil: they
-// see and manage every webhook; their own creations are global.
+// webhookCaller returns (callerNamespace for queries, scoped). Staff sessions get nil:
+// they see and manage every webhook, and their own creations are global. A reseller
+// (session or reseller-owned key) and an admin-owned API key are scoped to their own
+// namespace - the same one their accounts' events carry - and get the reseller rules
+// (account.*/reseller.* events only, no private-target override).
 func webhookCaller(identity *CallerIdentity) (*string, bool) {
 	if identity.ResellerID != "" {
 		ns := store.ResellerNamespace(identity.ResellerID)
+		return &ns, true
+	}
+	if !identity.IsAdmin {
+		ns := identity.KeyNamespace
 		return &ns, true
 	}
 	return nil, false

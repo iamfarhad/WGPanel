@@ -258,5 +258,9 @@ func (s *Server) emitAccountEvent(typ string, a store.Account) {
 	if a.OwnerKeyNamespace != nil {
 		ns = *a.OwnerKeyNamespace
 	}
-	s.emit(typ, ns, map[string]any{"account_id": a.ID, "label": a.Label, "status": a.Status})
+	data := map[string]any{"account_id": a.ID, "label": a.Label, "status": a.Status}
+	if a.ExternalRef != nil {
+		data["external_ref"] = *a.ExternalRef
+	}
+	s.emit(typ, ns, data)
 }

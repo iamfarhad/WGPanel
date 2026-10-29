@@ -85,6 +85,9 @@ func (s *Server) runThresholdSweep(ctx context.Context, now time.Time) error {
 	}
 	for _, a := range accounts {
 		data := map[string]any{"account_id": a.ID, "label": a.Label}
+		if a.ExternalRef != nil {
+			data["external_ref"] = *a.ExternalRef
+		}
 		if a.DataQuotaBytes != nil && *a.DataQuotaBytes > 0 {
 			q := *a.DataQuotaBytes
 			data["quota_bytes"], data["used_bytes"] = q, a.DataUsedBytes
