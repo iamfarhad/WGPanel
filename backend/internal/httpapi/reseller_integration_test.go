@@ -60,6 +60,17 @@ func TestResellerEndToEnd(t *testing.T) {
 	if _, err := conn.Exec(ctx, `UPDATE nodes SET status = 'online' WHERE id = $1`, node.ID); err != nil {
 		t.Fatal(err)
 	}
+	// Take the node out of rotation when done: store.TestStoreIntegration asserts how many
+	// online nodes exist, and this one (500 slots, left online) made it fail whenever
+	// the httpapi package ran first.
+	t.Cleanup(func() {
+		c, err := pgx.Connect(context.Background(), dsn)
+		if err != nil {
+			return
+		}
+		defer c.Close(context.Background())
+		_, _ = c.Exec(context.Background(), `UPDATE nodes SET status = 'pending' WHERE id = $1`, node.ID)
+	})
 
 	one, limit := 1, int64(10_000_000_000)
 	mkRes := func(name string, p store.NewResellerParams) store.Reseller {

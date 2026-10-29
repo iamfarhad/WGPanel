@@ -30,6 +30,7 @@ var (
 	ErrResellerAccountLimit        = errors.New("reseller account limit reached")
 	ErrResellerDataCredit          = errors.New("reseller data credit exceeded")
 	ErrResellerUnlimitedNotAllowed = errors.New("reseller may not create unlimited-quota accounts")
+	ErrResellerResetNotAllowed     = errors.New("a reseller with a traffic credit may not reset usage")
 	ErrResellerExpiryTooLong       = errors.New("expiry is beyond the reseller's maximum validity")
 	ErrResellerExpiryRequired      = errors.New("reseller must give accounts an expiry")
 	ErrResellerNodeGroupNotAllowed = errors.New("reseller is not allowed to place accounts on that node's group")

@@ -551,6 +551,25 @@ paths:
         callers only ever see accounts under their own key's namespace
         (`owner_key_namespace`) - admins see every account. `limit` defaults to
         50, capped at 200.
+
+
+        Accounts are ordered by `created_at`, then `id` (a stable tiebreak, so
+        `limit`/`offset` paging never skips or repeats a row), and
+        soft-deleted accounts (`status: deleted`) are left out.
+
+
+        **Lookup by `external_ref`.** With a non-empty `external_ref` the
+        response is the exact-match lookup instead: `{"accounts": [...]}`
+        holding the one account in the caller's namespace whose `external_ref`
+        equals the value, or an empty array when there is none. Unlike every
+        other read it **includes** an account whose `status` is `deleted`:
+        `external_ref` stays unique after a soft delete, so a deleted account
+        still blocks re-using its ref (`409 external_ref_taken` on create) and
+        this is how a client finds it. `limit`, `offset` and the staff-only
+        `owner`/`reseller_id` filters are ignored in this mode. An
+        `external_ref` held by an account in another namespace looks like no
+        match (empty array) here, even though create would still answer
+        `external_ref_taken`.
       security:
         - BearerAuth: []
         - ApiKeyAuth: []
@@ -558,6 +577,21 @@ paths:
         - name: limit
           in: query
           schema: { type: integer, default: 50, maximum: 200, minimum: 1 }
+        - name: offset
+          in: query
+          description: >-
+            Number of accounts to skip, for paging with `limit`. Must be an
+            integer >= 0 (default 0); anything else - negative, non-numeric,
+            empty - is rejected with 400 `invalid_request` rather than silently
+            read as 0. Ignored when `external_ref` is given.
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: external_ref
+          in: query
+          description: >-
+            Exact-match lookup by `external_ref`, including a soft-deleted
+            account (see the operation description). An empty value is treated
+            as absent. Passing it makes `limit`/`offset` irrelevant.
+          schema: { type: string }
         - name: owner
           in: query
           description: Staff admins only (ignored for resellers/API keys). `admin` = created by an admin; otherwise an exact owner namespace such as `reseller:<id>`.
@@ -577,6 +611,11 @@ paths:
                   accounts:
                     type: array
                     items: { $ref: "#/components/schemas/Account" }
+        "400":
+          description: "`invalid_request` - `offset` is not an integer >= 0."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -604,7 +643,12 @@ paths:
     patch:
       tags: [Accounts]
       summary: Update mutable account fields
-      description: Admin session (role >= `operator`) or API key with `update` permission. All fields optional; only provided fields change.
+      description: >-
+        Admin session (role >= `operator`) or API key with `update` permission.
+        All fields optional; only provided fields change. An omitted (or
+        `null`) `data_quota_gb`/`device_limit` means "leave unchanged", so
+        removing a limit - making the account unlimited - takes the explicit
+        `clear_data_quota` / `clear_device_limit` flags.
       security:
         - BearerAuth: []
         - ApiKeyAuth: []
@@ -617,8 +661,29 @@ paths:
               properties:
                 label: { type: string }
                 data_quota_gb: { type: number, nullable: true }
+                clear_data_quota:
+                  type: boolean
+                  description: >-
+                    `true` sets `data_quota_bytes` to null (unlimited).
+                    Combining it with a non-null `data_quota_gb` is a 400
+                    `invalid_request`; `false`/absent has no effect. A reseller
+                    that has a data credit may not make an account unlimited:
+                    422 `reseller_unlimited_not_allowed` (the same rule as on
+                    create). If the account is suspended with reason
+                    `quota_exceeded` and has not expired, clearing its quota
+                    also reactivates it (it can no longer be over quota); any
+                    other suspension reason is left alone. Usage
+                    (`data_used_bytes`) is not touched.
                 expiry_at: { type: string, format: date-time, nullable: true }
                 device_limit: { type: integer, nullable: true }
+                clear_device_limit:
+                  type: boolean
+                  description: >-
+                    `true` sets `device_limit` to null (unlimited) and clears
+                    the standing `device_limit_exceeded` flag. Combining it with
+                    a non-null `device_limit` is a 400 `invalid_request`;
+                    `false`/absent has no effect. A `device_limit` suspension is
+                    not lifted by this.
                 bandwidth_limit_mbps:
                   type: integer
                   nullable: true
@@ -632,10 +697,30 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Account" }
-        "400": { $ref: "#/components/responses/BadRequest" }
+        "400":
+          description: >-
+            `invalid_request` - malformed body, a negative quota, or
+            `clear_data_quota` / `clear_device_limit` sent together with a
+            value for the same field.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Reseller limit - `reseller_data_credit_exceeded`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "422":
+          description: >-
+            Reseller limit - `reseller_unlimited_not_allowed` (`clear_data_quota`
+            for a reseller with a data credit), `reseller_expiry_too_long` or
+            `reseller_expiry_required`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "500": { $ref: "#/components/responses/InternalError" }
     delete:
       tags: [Accounts]
@@ -757,6 +842,62 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/accounts/{id}/reset-usage:
+    post:
+      tags: [Accounts]
+      summary: Reset an account's data usage to zero
+      description: >-
+        Admin session (role >= `operator`) or API key with `update` permission
+        - the same protection as renew. Takes no body (an empty body or `{}`).
+        Not available to a reseller's own panel session, and refused with 403
+        `reseller_reset_not_allowed` for a reseller-owned API key whose reseller
+        has a traffic credit (the credit counts quota handed out, so a reset
+        would re-sell it; such a reseller renews with `add_quota_gb`).
+
+
+        In one transaction: `data_used_bytes` becomes 0, and if the account is
+        `suspended` with `suspend_reason: quota_exceeded` and has not expired
+        (`expiry_at` null or in the future) it is reactivated
+        (`status: active`, `suspend_reason: null`); node agents pick it back up
+        on their next heartbeat, exactly as after `POST .../enable`. No other
+        suspension reason is ever lifted (`manual`, `abuse_flag`, `expired`,
+        `device_limit`, `reseller_suspended`), and the quota
+        (`data_quota_bytes`) is not changed. Traffic sampling carries on from
+        the nodes' own counters, so the next sample adds only new traffic;
+        recorded usage history (charts, reports) is kept. Audit log action:
+        `account.usage_reset`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Usage reset; the updated account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Account" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: "`forbidden` (role or permission), or `reseller_reset_not_allowed` - a reseller-owned key whose reseller has a traffic credit."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "404":
+          description: "`account_not_found` - no such account, a soft-deleted one, or one outside the caller's namespace."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/accounts/{id}/config:
@@ -2145,6 +2286,14 @@ components:
           enum: [manual, abuse_flag, expired, quota_exceeded, device_limit]
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        last_handshake_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            The most recent WireGuard handshake across all of the account's
+            peers (the newest of its peers' own `last_handshake_at`), or null if
+            none of them has ever connected. Always present.
         node_id:
           type: string
           format: uuid
@@ -2156,7 +2305,7 @@ components:
           nullable: true
           deprecated: true
           description: Deprecated - mirrors peers[0].assigned_ip. Use peers instead.
-      required: [id, label, public_key, peers, data_used_bytes, status, created_at, updated_at]
+      required: [id, label, public_key, peers, data_used_bytes, status, created_at, updated_at, last_handshake_at]
 
     AccountPeer:
       type: object

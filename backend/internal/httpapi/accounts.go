@@ -67,6 +67,10 @@ type accountResponse struct {
 	SuspendReason   *string `json:"suspend_reason"`
 	CreatedAt       string  `json:"created_at"`
 	UpdatedAt       string  `json:"updated_at"`
+	// LastHandshakeAt is the newest last_handshake_at across the account's peers
+	// (RFC3339), null while none has ever connected. Computed in SQL (store.Account.
+	// LastHandshakeAt), so the list endpoint pays no extra query for it.
+	LastHandshakeAt *string `json:"last_handshake_at"`
 	// NodeID/AssignedIP are deprecated - kept for one release as a bot-integration
 	// compatibility bridge from the pre-multi-node single-peer model (see
 	// docs/STORY-09-multi-node-accounts.md). They mirror the account's first peer
@@ -112,6 +116,11 @@ func toAccountResponse(a store.Account, peers []store.AccountPeerWithNode, subBa
 	if a.ExpiryAt != nil {
 		s := a.ExpiryAt.Format(time.RFC3339)
 		expiryAt = &s
+	}
+	var accountLastHandshake *string
+	if a.LastHandshakeAt != nil {
+		s := a.LastHandshakeAt.Format(time.RFC3339)
+		accountLastHandshake = &s
 	}
 
 	peerResponses := make([]accountPeerResponse, 0, len(peers))
@@ -173,6 +182,7 @@ func toAccountResponse(a store.Account, peers []store.AccountPeerWithNode, subBa
 		SuspendReason:          a.SuspendReason,
 		CreatedAt:              a.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:              a.UpdatedAt.Format(time.RFC3339),
+		LastHandshakeAt:        accountLastHandshake,
 		NodeID:                 deprecatedNodeID,
 		AssignedIP:             deprecatedAssignedIP,
 	}
@@ -339,31 +349,52 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	s.respondWithAccount(w, r, http.StatusCreated, account, callerNamespaceArg(identity))
 }
 
+// handleListAccounts serves the account list and, with ?external_ref=, the lookup-by-ref
+// a client needs to find an account it created earlier (including one it has since
+// deleted - see store.FindAccountsByExternalRef).
 func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
-	limit := 50
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
-			limit = n
-		}
-	}
-
 	ctx := r.Context()
 	identity, _ := callerIdentityFromContext(ctx)
 	ns := callerNamespaceArg(identity)
-	// ?owner= / ?reseller_id= narrow the list for staff admins only. A reseller or API
-	// key is already pinned to its own namespace, so the filter is ignored for them
-	// rather than letting a crafted value probe other namespaces.
-	ownerFilter := ""
-	if identity.IsAdmin && identity.ResellerID == "" {
-		q := r.URL.Query()
-		if v := q.Get("owner"); v != "" {
-			ownerFilter = v
+	q := r.URL.Query()
+
+	var accounts []store.Account
+	var err error
+	if ref := q.Get("external_ref"); ref != "" {
+		// Exact-match lookup: limit, offset and the admin owner filters do not apply.
+		accounts, err = s.Store.FindAccountsByExternalRef(ctx, ref, ns)
+	} else {
+		limit := 50
+		if v := q.Get("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+				limit = n
+			}
 		}
-		if v := q.Get("reseller_id"); v != "" {
-			ownerFilter = store.ResellerNamespace(v)
+		// Unlike limit (a bad value falls back to the default), a bad offset is refused:
+		// silently serving page 0 would make a paging loop spin forever on page 0.
+		offset := 0
+		if q.Has("offset") {
+			n, perr := strconv.Atoi(q.Get("offset"))
+			if perr != nil || n < 0 {
+				writeJSONError(w, http.StatusBadRequest, "invalid_request", "offset must be an integer >= 0")
+				return
+			}
+			offset = n
 		}
+		// ?owner= / ?reseller_id= narrow the list for staff admins only. A reseller or API
+		// key is already pinned to its own namespace, so the filter is ignored for them
+		// rather than letting a crafted value probe other namespaces.
+		ownerFilter := ""
+		if identity.IsAdmin && identity.ResellerID == "" {
+			if v := q.Get("owner"); v != "" {
+				ownerFilter = v
+			}
+			if v := q.Get("reseller_id"); v != "" {
+				ownerFilter = store.ResellerNamespace(v)
+			}
+		}
+		accounts, err = s.Store.ListAccounts(ctx, limit, offset, ns, ownerFilter)
 	}
-	accounts, err := s.Store.ListAccounts(ctx, limit, ns, ownerFilter)
 	if err != nil {
 		s.Logger.Error("list_accounts_failed", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not list accounts")
@@ -408,6 +439,11 @@ type updateAccountRequest struct {
 	// BandwidthLimitMbps: omitted = unchanged, 0 = remove the limit (unshaped).
 	BandwidthLimitMbps     *int  `json:"bandwidth_limit_mbps"`
 	DeviceLimitHardEnforce *bool `json:"device_limit_hard_enforce"`
+	// ClearDataQuota / ClearDeviceLimit: true sets the field to null (unlimited), which
+	// omitting data_quota_gb / device_limit cannot do (omitted = unchanged). They are
+	// refused alongside a value for the same field; false/absent = no effect.
+	ClearDataQuota   *bool `json:"clear_data_quota"`
+	ClearDeviceLimit *bool `json:"clear_device_limit"`
 }
 
 func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
@@ -440,6 +476,17 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clearQuota := req.ClearDataQuota != nil && *req.ClearDataQuota
+	clearDevices := req.ClearDeviceLimit != nil && *req.ClearDeviceLimit
+	if clearQuota && req.DataQuotaGB != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "clear_data_quota cannot be combined with data_quota_gb")
+		return
+	}
+	if clearDevices && req.DeviceLimit != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "clear_device_limit cannot be combined with device_limit")
+		return
+	}
+
 	ctx := r.Context()
 	identity, _ := callerIdentityFromContext(ctx)
 	ns := callerNamespaceArg(identity)
@@ -450,6 +497,8 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		DeviceLimit:            req.DeviceLimit,
 		BandwidthLimitMbps:     req.BandwidthLimitMbps,
 		DeviceLimitHardEnforce: req.DeviceLimitHardEnforce,
+		ClearDataQuota:         clearQuota,
+		ClearDeviceLimit:       clearDevices,
 	})
 	if errors.Is(err, store.ErrAccountNotFound) {
 		writeJSONError(w, http.StatusNotFound, "account_not_found", "no account with that id")
@@ -585,6 +634,33 @@ func (s *Server) handleRenewAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.renewed", account.ID, nil, r.RemoteAddr); err != nil {
+		s.Logger.Error("audit_log_failed", "error", err)
+	}
+	s.respondWithAccount(w, r, http.StatusOK, account, ns)
+}
+
+// handleResetAccountUsage zeroes the account's data_used_bytes (see
+// store.ResetAccountUsage for the exact suspension rules). It takes no input: an empty
+// body, {} or anything else is ignored.
+func (s *Server) handleResetAccountUsage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	identity, _ := callerIdentityFromContext(ctx)
+	ns := callerNamespaceArg(identity)
+	account, err := s.Store.ResetAccountUsage(ctx, r.PathValue("id"), ns)
+	if errors.Is(err, store.ErrAccountNotFound) {
+		writeJSONError(w, http.StatusNotFound, "account_not_found", "no account with that id")
+		return
+	}
+	if writeResellerError(w, err) {
+		return
+	}
+	if err != nil {
+		s.Logger.Error("reset_account_usage_failed", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not reset account usage")
+		return
+	}
+
+	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.usage_reset", account.ID, nil, r.RemoteAddr); err != nil {
 		s.Logger.Error("audit_log_failed", "error", err)
 	}
 	s.respondWithAccount(w, r, http.StatusOK, account, ns)
