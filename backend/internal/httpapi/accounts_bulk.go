@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -244,7 +243,7 @@ func (s *Server) handleBulkAccounts(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			e := toAPIError(err, req.Action)
 			if e.Status == http.StatusInternalServerError {
-				s.Logger.Error("bulk_item_failed", "action", req.Action, "error", errors.Unwrap(err))
+				s.Logger.Error("bulk_item_failed", "action", req.Action, "error", err)
 			}
 			record(bulkItemResult{ID: id, Error: e})
 			continue
