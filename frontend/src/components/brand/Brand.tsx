@@ -85,7 +85,9 @@ export function Mascot({ width = 200, className = '' }: { width?: number; classN
       loading="lazy"
       decoding="async"
       draggable={false}
-      className={`pointer-events-none select-none ${className}`}
+      // The asset's soft halo is cut square at the crop; feathering the edges lets it
+      // sit on any surface (tinted banners, dark cards) without a visible box.
+      className={`pointer-events-none select-none [mask-image:radial-gradient(closest-side,#000_68%,transparent)] ${className}`}
     />
   )
 }

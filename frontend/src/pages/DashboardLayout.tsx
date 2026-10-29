@@ -239,8 +239,13 @@ export function DashboardLayout() {
           <span className="text-sm font-semibold text-fg">{currentLabel}</span>
         </header>
 
-        <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-7xl p-5 sm:p-8 lg:p-10">
+        <main className="relative flex-1 overflow-y-auto">
+          {/* A faint brand-green wash at the top of every page - color, not decoration. */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 top-0 h-72 bg-[radial-gradient(70%_100%_at_50%_0%,var(--ui-accent-soft),transparent)] opacity-70"
+          />
+          <div className="relative mx-auto w-full max-w-7xl p-5 sm:p-8 lg:p-10">
             <Outlet />
           </div>
         </main>

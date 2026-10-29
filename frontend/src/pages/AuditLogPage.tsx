@@ -1,6 +1,6 @@
 import { Fragment, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ScrollText, ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
@@ -48,7 +48,7 @@ export function AuditLogPage() {
         {logQuery.isLoading && <TableSkeleton cols={4} />}
         {logQuery.isError && <p className="p-6 text-sm text-danger-fg">Could not load audit log.</p>}
         {!logQuery.isLoading && !logQuery.isError && entries.length === 0 && (
-          <EmptyState icon={ScrollText} title="No audit entries yet" />
+          <EmptyState mascot title="No audit entries yet" description="Every change made in this panel will be recorded here." />
         )}
         {!logQuery.isLoading && !logQuery.isError && entries.length > 0 && (
           <Table>

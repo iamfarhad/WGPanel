@@ -6,7 +6,7 @@ import { ApiError } from '../lib/api'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Field } from '../components/ui/Field'
-import { BrandLockup } from '../components/brand/Brand'
+import { BrandLockup, Mascot } from '../components/brand/Brand'
 import heroLight from '../assets/brand/jirjirak-hero-light.webp'
 import heroDark from '../assets/brand/jirjirak-hero-dark.webp'
 
@@ -39,6 +39,8 @@ export function LoginPage() {
 
         <div className="flex flex-1 items-center justify-center py-12">
           <div className="w-full max-w-sm">
+            {/* Phones get no visual panel, so the mascot greets them here instead. */}
+            <Mascot width={168} className="mx-auto mb-6 lg:hidden" />
             <h1 className="text-2xl font-semibold tracking-tight text-fg">Sign in</h1>
             <p className="mt-1.5 text-sm text-muted">Manage your WireGuard infrastructure.</p>
 

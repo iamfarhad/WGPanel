@@ -1,6 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
-import { Server, Users, ShieldAlert, Activity, HardDrive, Wifi } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Server, Users, ShieldAlert, Activity, HardDrive, Wifi, ArrowRight } from 'lucide-react'
 import { apiFetch } from '../lib/api'
+import { useAuth } from '../lib/auth'
+import { Button } from '../components/ui/Button'
+import { Mascot } from '../components/brand/Brand'
 import { PageHeader } from '../components/ui/PageHeader'
 import { StatCard } from '../components/ui/StatCard'
 import { Card, CardHeader } from '../components/ui/Card'
@@ -37,7 +41,55 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 ** i).toFixed(1)} ${units[i]}`
 }
 
+/** Compact greeting strip - the dashboard's one illustrated moment. A status line,
+ * two shortcuts and the mascot; never a full-height marketing hero. */
+function WelcomeBanner({
+  username,
+  onlineNodes,
+  totalNodes,
+  onlineAccounts,
+}: {
+  username?: string
+  onlineNodes: number
+  totalNodes: number
+  onlineAccounts: number
+}) {
+  const navigate = useNavigate()
+  const status =
+    totalNodes === 0
+      ? 'Add your first node to start provisioning WireGuard accounts.'
+      : `${onlineNodes} of ${totalNodes} nodes online · ${onlineAccounts} ${onlineAccounts === 1 ? 'client' : 'clients'} connected right now.`
+  return (
+    <Card className="relative mb-6 overflow-hidden">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 bg-[linear-gradient(100deg,var(--ui-accent-soft)_0%,transparent_65%)] rtl:bg-[linear-gradient(260deg,var(--ui-accent-soft)_0%,transparent_65%)]"
+      />
+      <div className="relative flex items-center justify-between gap-6 px-6 py-6 sm:px-7">
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-accent-fg">Jirjirak WireGuard</p>
+          <h2 className="mt-1 text-xl font-semibold tracking-tight text-fg">
+            Welcome back{username ? `, ${username}` : ''}
+          </h2>
+          <p className="mt-1.5 max-w-md text-sm leading-relaxed text-muted">{status}</p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => navigate('/accounts')}>
+              View accounts
+              <ArrowRight className="h-3.5 w-3.5 rtl:rotate-180" />
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => navigate('/nodes')}>
+              Manage nodes
+            </Button>
+          </div>
+        </div>
+        <Mascot width={210} className="-my-6 me-2 hidden shrink-0 sm:block" />
+      </div>
+    </Card>
+  )
+}
+
 export function DashboardPage() {
+  const { user } = useAuth()
   const nodesQuery = useQuery({
     queryKey: ['nodes'],
     queryFn: () => apiFetch<{ nodes: Node[] | null }>('/api/v1/nodes'),
@@ -72,6 +124,15 @@ export function DashboardPage() {
   return (
     <div>
       <PageHeader title="Dashboard" description="Overview of your WireGuard infrastructure." />
+
+      {!isLoading && (
+        <WelcomeBanner
+          username={user?.username}
+          onlineNodes={onlineNodes}
+          totalNodes={nodes.length}
+          onlineAccounts={onlineAccounts}
+        />
+      )}
 
       {isLoading ? (
         <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">

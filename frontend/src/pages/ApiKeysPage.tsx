@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, KeyRound, Ban, RotateCw, Copy, AlertTriangle } from 'lucide-react'
+import { Plus, Ban, RotateCw, Copy, AlertTriangle } from 'lucide-react'
 import { apiFetch, ApiError } from '../lib/api'
 import { useToast } from '../lib/toast'
 import { PageHeader } from '../components/ui/PageHeader'
@@ -86,11 +86,11 @@ export function ApiKeysPage() {
         {keysQuery.isError && <p className="p-6 text-sm text-danger-fg">Could not load API keys.</p>}
         {!keysQuery.isLoading && !keysQuery.isError && keys.length === 0 && (
           <EmptyState
-            icon={KeyRound}
+            mascot
             title="No API keys yet"
             description="Create one to let your Telegram bot talk to this panel."
             action={
-              <Button variant="secondary" onClick={() => setCreateOpen(true)}>
+              <Button onClick={() => setCreateOpen(true)}>
                 <Plus className="h-4 w-4" />
                 New API key
               </Button>
