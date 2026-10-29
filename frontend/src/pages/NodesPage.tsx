@@ -17,6 +17,7 @@ import { Badge, statusTone } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
+import { RowActions } from '../components/ui/RowActions'
 
 interface Node {
   id: string
@@ -179,31 +180,25 @@ export function NodesPage() {
                     <Badge dot tone={statusTone(node.status)}>{node.status}</Badge>
                   </Td>
                   <Td className="text-muted tabular-nums">{node.capacity_max_peers}</Td>
-                  <Td>
-                    <div className="flex justify-end gap-1.5">
-                      <Button variant="secondary" size="sm" onClick={(e) => { e.stopPropagation(); setDetailNode(node) }}>
-                        <Activity className="h-3.5 w-3.5" />
-                        Metrics
-                      </Button>
-                      <Button variant="secondary" size="sm" onClick={(e) => { e.stopPropagation(); setEditNode(node) }}>
-                        <Pencil className="h-3.5 w-3.5" />
-                        Edit
-                      </Button>
-                      {user?.role === 'super_admin' && (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setJoinToken(null)
-                            setJoinTokenNode(node)
-                          }}
-                        >
-                          <KeyRound className="h-3.5 w-3.5" />
-                          Join token
-                        </Button>
-                      )}
-                    </div>
+                  <Td className="text-end">
+                    <RowActions
+                      actions={[
+                        { label: 'Metrics', icon: Activity, onSelect: () => setDetailNode(node) },
+                        { label: 'Edit', icon: Pencil, onSelect: () => setEditNode(node) },
+                        ...(user?.role === 'super_admin'
+                          ? [
+                              {
+                                label: 'Join token',
+                                icon: KeyRound,
+                                onSelect: () => {
+                                  setJoinToken(null)
+                                  setJoinTokenNode(node)
+                                },
+                              },
+                            ]
+                          : []),
+                      ]}
+                    />
                   </Td>
                 </Tr>
               ))}

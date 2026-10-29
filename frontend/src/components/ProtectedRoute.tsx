@@ -2,9 +2,11 @@ import type { ReactNode } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { BrandTile } from './brand/Brand'
+import { useI18n } from '../lib/i18n'
 
 export function ProtectedRoute({ children }: { children: ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth()
+  const { t } = useI18n()
 
   if (isLoading) {
     // App splash: the brand tile alone, quietly pulsing - no spinner wall.
@@ -13,7 +15,7 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
         <div className="animate-pulse">
           <BrandTile size="lg" />
         </div>
-        <span className="sr-only">Loading…</span>
+        <span className="sr-only">{t('Loading…')}</span>
       </div>
     )
   }

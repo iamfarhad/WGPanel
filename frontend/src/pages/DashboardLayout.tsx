@@ -21,6 +21,8 @@ import { useAuth } from '../lib/auth'
 import type { AdminRole } from '../lib/auth'
 import { useTheme, type Theme } from '../lib/theme'
 import { BrandLockup, BrandTile } from '../components/brand/Brand'
+import { LanguageToggle } from '../components/ui/LanguageToggle'
+import { useI18n } from '../lib/i18n'
 
 interface NavItem {
   to: string
@@ -67,25 +69,33 @@ const navGroups: NavGroup[] = [
 
 const themeOrder: Theme[] = ['light', 'dark', 'system']
 const themeMeta: Record<Theme, { icon: typeof Sun; label: string }> = {
-  light: { icon: Sun, label: 'Light' },
-  dark: { icon: Moon, label: 'Dark' },
-  system: { icon: Monitor, label: 'System' },
+  light: { icon: Sun, label: 'Light theme' },
+  dark: { icon: Moon, label: 'Dark theme' },
+  system: { icon: Monitor, label: 'System theme' },
+}
+
+const roleLabels: Record<string, string> = {
+  super_admin: 'Super Admin',
+  operator: 'Operator',
+  support: 'Support',
+  reseller: 'Reseller',
 }
 
 function ThemeToggle() {
   const { theme, setTheme } = useTheme()
+  const { t } = useI18n()
   return (
-    <div className="flex items-center gap-1 rounded-lg bg-inset p-1" role="group" aria-label="Theme">
-      {themeOrder.map((t) => {
-        const Icon = themeMeta[t].icon
-        const active = theme === t
+    <div className="flex flex-1 items-center gap-1 rounded-lg bg-inset p-1" role="group" aria-label={t('Theme')}>
+      {themeOrder.map((th) => {
+        const Icon = themeMeta[th].icon
+        const active = theme === th
         return (
           <button
-            key={t}
+            key={th}
             type="button"
-            title={`${themeMeta[t].label} theme`}
+            title={t(themeMeta[th].label)}
             aria-pressed={active}
-            onClick={() => setTheme(t)}
+            onClick={() => setTheme(th)}
             className={`flex h-7 flex-1 cursor-pointer items-center justify-center rounded-md transition-colors duration-150 ${
               active ? 'bg-surface text-fg shadow-xs ring-1 ring-edge' : 'text-faint hover:text-muted'
             }`}
@@ -100,6 +110,7 @@ function ThemeToggle() {
 
 export function DashboardLayout() {
   const { logout, user } = useAuth()
+  const { t } = useI18n()
   const location = useLocation()
   const [mobileOpen, setMobileOpen] = useState(false)
 
@@ -114,12 +125,12 @@ export function DashboardLayout() {
 
   const initials = (user?.username ?? '?').slice(0, 2).toUpperCase()
   const currentLabel =
-    navGroups.flatMap((g) => g.items).find((i) => location.pathname.startsWith(i.to))?.label ?? 'Jirjirak'
+    t(navGroups.flatMap((g) => g.items).find((i) => location.pathname.startsWith(i.to))?.label ?? 'Jirjirak')
 
   const sidebar = (
     <>
       <div className="px-5 pt-5 pb-4">
-        <BrandLockup subtitle="WireGuard · Infrastructure" />
+        <BrandLockup subtitle={t('WireGuard · Infrastructure')} />
       </div>
 
       <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-2">
@@ -127,7 +138,7 @@ export function DashboardLayout() {
           <div key={group.label ?? gi}>
             {group.label && (
               <p className="mb-1.5 px-3 text-[11px] font-medium tracking-wide text-faint uppercase">
-                {group.label}
+                {t(group.label)}
               </p>
             )}
             <div className="space-y-0.5">
@@ -142,7 +153,7 @@ export function DashboardLayout() {
                     className="group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted transition-colors duration-150 hover:bg-inset/70 hover:text-fg"
                   >
                     <item.icon className="h-[18px] w-[18px] shrink-0 text-faint group-hover:text-muted" strokeWidth={1.75} />
-                    {item.label}
+                    {t(item.label)}
                     <ExternalLink className="ms-auto h-3.5 w-3.5 shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
                   </a>
                 ) : (
@@ -165,7 +176,7 @@ export function DashboardLayout() {
                           className={`h-[18px] w-[18px] shrink-0 ${isActive ? 'text-accent' : 'text-faint group-hover:text-muted'}`}
                           strokeWidth={1.75}
                         />
-                        {item.label}
+                        {t(item.label)}
                       </>
                     )}
                   </NavLink>
@@ -183,18 +194,21 @@ export function DashboardLayout() {
           </div>
           <div className="min-w-0 flex-1 leading-tight">
             <p className="truncate text-sm font-medium text-fg">{user?.username}</p>
-            <p className="text-xs text-faint capitalize">{user?.role.replace('_', ' ')}</p>
+            <p className="text-xs text-faint">{t(roleLabels[user?.role ?? ''] ?? user?.role ?? '')}</p>
           </div>
           <button
             onClick={logout}
-            title="Log out"
+            title={t('Log out')}
             className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-faint transition-colors duration-150 hover:bg-inset hover:text-fg"
           >
             <LogOut className="h-4 w-4" />
-            <span className="sr-only">Log out</span>
+            <span className="sr-only">{t('Log out')}</span>
           </button>
         </div>
-        <ThemeToggle />
+        <div className="flex gap-2">
+          <ThemeToggle />
+          <LanguageToggle />
+        </div>
       </div>
     </>
   )
@@ -214,7 +228,7 @@ export function DashboardLayout() {
             <button
               type="button"
               onClick={() => setMobileOpen(false)}
-              aria-label="Close menu"
+              aria-label={t('Close menu')}
               className="absolute end-3 top-4 cursor-pointer rounded-lg p-1.5 text-faint hover:bg-inset hover:text-fg"
             >
               <X className="h-5 w-5" />
@@ -230,7 +244,7 @@ export function DashboardLayout() {
           <button
             type="button"
             onClick={() => setMobileOpen(true)}
-            aria-label="Open menu"
+            aria-label={t('Open menu')}
             className="cursor-pointer rounded-lg p-1.5 text-muted hover:bg-inset hover:text-fg"
           >
             <Menu className="h-5 w-5" />

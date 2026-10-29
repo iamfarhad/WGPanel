@@ -16,6 +16,7 @@ import { Badge } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
+import { RowActions } from '../components/ui/RowActions'
 
 interface AdminUser {
   id: string
@@ -100,22 +101,9 @@ export function AdminUsersPage() {
                       <Badge tone={ROLE_TONE[a.role] ?? 'slate'}>{a.role.replace('_', ' ')}</Badge>
                     </Td>
                     <Td className="text-muted">{new Date(a.created_at).toLocaleDateString()}</Td>
-                    <Td>
+                    <Td className="text-end">
                       {!isSelf && (
-                        <div className="flex justify-end">
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setDeleteTarget(a)
-                            }}
-                            className="text-danger-fg hover:border-danger/40 hover:bg-danger-soft"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            Delete
-                          </Button>
-                        </div>
+                        <RowActions actions={[{ label: 'Delete', icon: Trash2, onSelect: () => setDeleteTarget(a), danger: true }]} />
                       )}
                     </Td>
                   </Tr>

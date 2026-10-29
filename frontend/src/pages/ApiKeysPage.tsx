@@ -14,6 +14,7 @@ import { Badge } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
+import { RowActions } from '../components/ui/RowActions'
 
 interface ApiKey {
   id: string
@@ -127,23 +128,14 @@ export function ApiKeysPage() {
                   <Td>
                     <Badge dot tone={k.revoked ? 'red' : 'green'}>{k.revoked ? 'revoked' : 'active'}</Badge>
                   </Td>
-                  <Td>
+                  <Td className="text-end">
                     {!k.revoked && (
-                      <div className="flex justify-end gap-1.5">
-                        <Button variant="secondary" size="sm" onClick={() => rotateMutation.mutate(k.id)} disabled={rotateMutation.isPending}>
-                          <RotateCw className="h-3.5 w-3.5" />
-                          Rotate
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => setRevokeTarget(k)}
-                          className="text-danger-fg hover:border-danger/40 hover:bg-danger-soft"
-                        >
-                          <Ban className="h-3.5 w-3.5" />
-                          Revoke
-                        </Button>
-                      </div>
+                      <RowActions
+                        actions={[
+                          { label: 'Rotate secret', icon: RotateCw, onSelect: () => rotateMutation.mutate(k.id), disabled: rotateMutation.isPending },
+                          { label: 'Revoke', icon: Ban, onSelect: () => setRevokeTarget(k), danger: true },
+                        ]}
+                      />
                     )}
                   </Td>
                 </Tr>

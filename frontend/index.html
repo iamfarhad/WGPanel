@@ -23,6 +23,12 @@
             ((stored === null || stored === 'system') &&
               window.matchMedia('(prefers-color-scheme: dark)').matches)
           document.documentElement.classList.toggle('dark', dark)
+          // Same for language/direction (src/lib/i18n.tsx) - no LTR flash for Persian.
+          const lang =
+            localStorage.getItem('wgpanel-lang') ||
+            (navigator.language.toLowerCase().startsWith('fa') ? 'fa' : 'en')
+          document.documentElement.lang = lang === 'fa' ? 'fa' : 'en'
+          document.documentElement.dir = lang === 'fa' ? 'rtl' : 'ltr'
         } catch {}
       })()
     </script>

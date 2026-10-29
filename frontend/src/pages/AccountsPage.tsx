@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Download, Ban, CheckCircle2, RotateCcw, Trash2, Server, Copy, FileDown, Link2, RefreshCw, MonitorSmartphone, Search, Pencil } from 'lucide-react'
+import { Plus, Download, Ban, CheckCircle2, RotateCcw, Trash2, Server, Copy, FileDown, Link2, RefreshCw, MonitorSmartphone, Search, Pencil, Eye, Activity } from 'lucide-react'
 import QRCode from 'qrcode'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { chartAxis, chartColors, chartGrid, chartTooltip } from '../lib/chartTheme'
@@ -19,6 +19,7 @@ import { Badge, statusTone } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
+import { RowActions } from '../components/ui/RowActions'
 import { Progress } from '../components/ui/Progress'
 
 interface Node {
@@ -322,21 +323,15 @@ export function AccountsPage() {
                         {a.device_limit_exceeded && <Badge tone="amber">over device limit</Badge>}
                       </span>
                     </Td>
-                    <Td>
-                      <div className="flex justify-end">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          title="Edit account"
-                          aria-label={`Edit ${a.label}`}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            openDetail(a, 'edit')
-                          }}
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
+                    <Td className="text-end">
+                      <RowActions
+                        actions={[
+                          { label: 'Details', icon: Eye, onSelect: () => openDetail(a) },
+                          { label: 'Devices', icon: MonitorSmartphone, onSelect: () => openDetail(a, 'devices') },
+                          { label: 'Usage', icon: Activity, onSelect: () => openDetail(a, 'usage') },
+                          { label: 'Edit', icon: Pencil, onSelect: () => openDetail(a, 'edit') },
+                        ]}
+                      />
                     </Td>
                   </Tr>
                 )

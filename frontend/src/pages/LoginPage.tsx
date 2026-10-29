@@ -7,11 +7,14 @@ import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Field } from '../components/ui/Field'
 import { BrandLockup, Mascot } from '../components/brand/Brand'
+import { LanguageToggle } from '../components/ui/LanguageToggle'
+import { useI18n } from '../lib/i18n'
 import heroLight from '../assets/brand/jirjirak-hero-light.webp'
 import heroDark from '../assets/brand/jirjirak-hero-dark.webp'
 
 export function LoginPage() {
   const { login } = useAuth()
+  const { t } = useI18n()
   const navigate = useNavigate()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -26,7 +29,7 @@ export function LoginPage() {
       await login(username, password)
       navigate('/dashboard', { replace: true })
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Login failed')
+      setError(err instanceof ApiError ? err.message : t('Login failed'))
     } finally {
       setSubmitting(false)
     }
@@ -35,17 +38,20 @@ export function LoginPage() {
   return (
     <div className="grid min-h-screen bg-bg lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
       <div className="flex flex-col px-6 py-8 sm:px-12">
-        <BrandLockup />
+        <div className="flex items-center justify-between gap-4">
+          <BrandLockup />
+          <LanguageToggle className="w-24" />
+        </div>
 
         <div className="flex flex-1 items-center justify-center py-12">
           <div className="w-full max-w-sm">
             {/* Phones get no visual panel, so the mascot greets them here instead. */}
             <Mascot width={168} className="mx-auto mb-6 lg:hidden" />
-            <h1 className="text-2xl font-semibold tracking-tight text-fg">Sign in</h1>
-            <p className="mt-1.5 text-sm text-muted">Manage your WireGuard infrastructure.</p>
+            <h1 className="text-2xl font-semibold tracking-tight text-fg">{t('Sign in')}</h1>
+            <p className="mt-1.5 text-sm text-muted">{t('Manage your WireGuard infrastructure.')}</p>
 
             <form onSubmit={handleSubmit} className="mt-8 space-y-4">
-              <Field label="Username" htmlFor="username">
+              <Field label={t('Username')} htmlFor="username">
                 <Input
                   id="username"
                   autoComplete="username"
@@ -55,7 +61,7 @@ export function LoginPage() {
                   required
                 />
               </Field>
-              <Field label="Password" htmlFor="password">
+              <Field label={t('Password')} htmlFor="password">
                 <Input
                   id="password"
                   type="password"
@@ -72,13 +78,13 @@ export function LoginPage() {
                 </div>
               )}
               <Button type="submit" className="w-full" disabled={submitting}>
-                {submitting ? 'Signing in…' : 'Sign in'}
+                {submitting ? t('Signing in…') : t('Sign in')}
               </Button>
             </form>
           </div>
         </div>
 
-        <p className="text-xs text-faint">Jirjirak WireGuard · Secure. Simple. Fast.</p>
+        <p className="text-xs text-faint">{t('Jirjirak WireGuard · Secure. Simple. Fast.')}</p>
       </div>
 
       {/* Brand visual. The hero's own wordmark sits on its far left, so it is cropped
