@@ -32,15 +32,17 @@ func (s *Server) registerNotificationRoutes(mux *http.ServeMux) {
 	mux.Handle("DELETE /api/v1/notification-channels/{id}", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleDeleteChannel))))
 	mux.Handle("POST /api/v1/notification-channels/{id}/test", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleTestChannel))))
 
-	// Webhooks: staff (operator+) manage global endpoints, resellers their own.
-	mux.Handle("GET /api/v1/webhooks", s.requireAdmin(s.requireRoleOrReseller("support", http.HandlerFunc(s.handleListWebhooks))))
-	mux.Handle("POST /api/v1/webhooks", s.requireAdmin(s.requireRoleOrReseller("operator", http.HandlerFunc(s.handleCreateWebhook))))
-	mux.Handle("PATCH /api/v1/webhooks/{id}", s.requireAdmin(s.requireRoleOrReseller("operator", http.HandlerFunc(s.handleUpdateWebhook))))
-	mux.Handle("DELETE /api/v1/webhooks/{id}", s.requireAdmin(s.requireRoleOrReseller("operator", http.HandlerFunc(s.handleDeleteWebhook))))
-	mux.Handle("POST /api/v1/webhooks/{id}/rotate-secret", s.requireAdmin(s.requireRoleOrReseller("operator", http.HandlerFunc(s.handleRotateWebhookSecret))))
-	mux.Handle("POST /api/v1/webhooks/{id}/test", s.requireAdmin(s.requireRoleOrReseller("operator", http.HandlerFunc(s.handleTestWebhook))))
-	mux.Handle("GET /api/v1/webhooks/{id}/deliveries", s.requireAdmin(s.requireRoleOrReseller("support", http.HandlerFunc(s.handleListDeliveries))))
-	mux.Handle("POST /api/v1/webhooks/{id}/deliveries/{delivery_id}/redeliver", s.requireAdmin(s.requireRoleOrReseller("operator", http.HandlerFunc(s.handleRedeliver))))
+	// Webhooks: staff (operator+) manage global endpoints, resellers their own, and an
+	// API key with the 'webhooks' permission its own namespace's (so a sales bot can
+	// register where the panel should push its accounts' events).
+	mux.Handle("GET /api/v1/webhooks", s.requireAdminOrAPIKey(s.webhookAccess("support", http.HandlerFunc(s.handleListWebhooks))))
+	mux.Handle("POST /api/v1/webhooks", s.requireAdminOrAPIKey(s.webhookAccess("operator", http.HandlerFunc(s.handleCreateWebhook))))
+	mux.Handle("PATCH /api/v1/webhooks/{id}", s.requireAdminOrAPIKey(s.webhookAccess("operator", http.HandlerFunc(s.handleUpdateWebhook))))
+	mux.Handle("DELETE /api/v1/webhooks/{id}", s.requireAdminOrAPIKey(s.webhookAccess("operator", http.HandlerFunc(s.handleDeleteWebhook))))
+	mux.Handle("POST /api/v1/webhooks/{id}/rotate-secret", s.requireAdminOrAPIKey(s.webhookAccess("operator", http.HandlerFunc(s.handleRotateWebhookSecret))))
+	mux.Handle("POST /api/v1/webhooks/{id}/test", s.requireAdminOrAPIKey(s.webhookAccess("operator", http.HandlerFunc(s.handleTestWebhook))))
+	mux.Handle("GET /api/v1/webhooks/{id}/deliveries", s.requireAdminOrAPIKey(s.webhookAccess("support", http.HandlerFunc(s.handleListDeliveries))))
+	mux.Handle("POST /api/v1/webhooks/{id}/deliveries/{delivery_id}/redeliver", s.requireAdminOrAPIKey(s.webhookAccess("operator", http.HandlerFunc(s.handleRedeliver))))
 	mux.Handle("GET /api/v1/webhook-settings", s.requireAdmin(s.requireRole("operator", http.HandlerFunc(s.handleGetWebhookSettings))))
 	mux.Handle("PATCH /api/v1/webhook-settings", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleUpdateWebhookSettings))))
 
@@ -413,6 +415,21 @@ func derefStr(p *string) string {
 }
 
 // auditAdmin records an admin action in the audit log (best effort).
+// webhookAccess gates a webhook route: an API key needs the 'webhooks' permission
+// (webhookCaller then scopes it to the key's namespace); a session needs minRole, or
+// to be a reseller.
+func (s *Server) webhookAccess(minRole string, next http.Handler) http.Handler {
+	session := s.requireRoleOrReseller(minRole, next)
+	key := s.requirePermission("webhooks", next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if identity, ok := callerIdentityFromContext(r.Context()); ok && !identity.IsAdmin {
+			key.ServeHTTP(w, r)
+			return
+		}
+		session.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) auditAdmin(r *http.Request, action, target string, detail any) {
 	identity, ok := callerIdentityFromContext(r.Context())
 	if !ok {

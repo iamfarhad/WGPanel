@@ -36,7 +36,7 @@ interface ApiKeyCreated extends ApiKey {
   secret: string
 }
 
-const ALL_PERMISSIONS = ['read', 'create', 'update', 'suspend', 'delete']
+const ALL_PERMISSIONS = ['read', 'create', 'update', 'suspend', 'delete', 'webhooks']
 
 export function ApiKeysPage() {
   const { t } = useI18n()

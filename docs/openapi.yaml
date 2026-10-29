@@ -2180,7 +2180,7 @@ paths:
                   type: array
                   items:
                     type: string
-                    enum: [read, create, update, suspend, delete]
+                    enum: [read, create, update, suspend, delete, webhooks]
       responses:
         "201":
           description: Key created.
@@ -3040,7 +3040,7 @@ paths:
       description: >-
         Staff see every endpoint (global ones have `namespace: null`); a reseller
         sees only its own. The signing secret is never listed.
-      security: [{ BearerAuth: [] }]
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
       responses:
         "200":
           description: Webhooks.
@@ -3055,9 +3055,12 @@ paths:
       tags: [Webhooks]
       summary: Register a webhook endpoint
       description: >-
-        Requires role >= `operator`, or a reseller session. Staff-created endpoints
-        are global (all namespaces); reseller-created ones receive only that
-        reseller's events (`account.*`, `reseller.*`). The response is the only
+        Requires role >= `operator`, a reseller session, or an API key with the
+        `webhooks` permission. Staff-created endpoints are global (all namespaces);
+        reseller- and API-key-created ones receive only their own namespace's
+        events (`account.*`, `reseller.*`) - for a key, the events of the accounts
+        it created, so a sales bot can register its own endpoint. Account events
+        carry `account_id`, `label` and, when the account has one, `external_ref`. The response is the only
         time the signing `secret` is shown. Each delivery is a JSON POST signed with
         `X-Jirjirak-Signature: t=<unix>,v1=<hex>` where `v1` is the hex
         HMAC-SHA256 of `<t>.<raw body>` keyed with the secret; also sent are
@@ -3066,7 +3069,7 @@ paths:
         `failed`. Targets resolving to private, loopback, link-local or metadata
         addresses are refused (`webhook_url_blocked`) unless a super_admin enabled
         the override, which never applies to reseller endpoints.
-      security: [{ BearerAuth: [] }]
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
       requestBody:
         required: true
         content:
@@ -3087,7 +3090,7 @@ paths:
     patch:
       tags: [Webhooks]
       summary: Update a webhook endpoint (url, description, events, enabled)
-      security: [{ BearerAuth: [] }]
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
       requestBody:
         required: true
         content:
@@ -3104,7 +3107,7 @@ paths:
     delete:
       tags: [Webhooks]
       summary: Delete a webhook endpoint and its delivery log
-      security: [{ BearerAuth: [] }]
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
       responses:
         "204": { description: Deleted. }
         "404": { description: "`webhook_not_found`." }
@@ -3114,7 +3117,7 @@ paths:
       tags: [Webhooks]
       summary: Rotate the signing secret
       description: The previous secret stops working immediately. The new one is returned once.
-      security: [{ BearerAuth: [] }]
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -3129,7 +3132,7 @@ paths:
     post:
       tags: [Webhooks]
       summary: Send a signed `ping` event now (no retries)
-      security: [{ BearerAuth: [] }]
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -3144,7 +3147,7 @@ paths:
     get:
       tags: [Webhooks]
       summary: Delivery log of a webhook (newest first)
-      security: [{ BearerAuth: [] }]
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
@@ -3163,7 +3166,7 @@ paths:
     post:
       tags: [Webhooks]
       summary: Queue a fresh delivery with the same payload
-      security: [{ BearerAuth: [] }]
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
         - { name: delivery_id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -4028,7 +4031,7 @@ components:
           type: array
           items:
             type: string
-            enum: [read, create, update, suspend, delete]
+            enum: [read, create, update, suspend, delete, webhooks]
         revoked: { type: boolean }
         reseller_id:
           type: string
