@@ -69,7 +69,9 @@ func TestIsBlockedIP(t *testing.T) {
 
 func TestValidateURL(t *testing.T) {
 	public := func(string) ([]net.IP, error) { return []net.IP{net.ParseIP("93.184.216.34")}, nil }
-	private := func(string) ([]net.IP, error) { return []net.IP{net.ParseIP("93.184.216.34"), net.ParseIP("10.0.0.5")}, nil }
+	private := func(string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("93.184.216.34"), net.ParseIP("10.0.0.5")}, nil
+	}
 	fail := func(string) ([]net.IP, error) { return nil, errors.New("nxdomain") }
 
 	cases := []struct {
