@@ -65,8 +65,13 @@ func (s *Server) Routes() http.Handler {
 	// token in the path IS the credential (a capability URL), so client apps can
 	// poll for their current config with no panel account. loggingMiddleware redacts
 	// the token from access logs (see redactPath).
-	mux.HandleFunc("GET /api/v1/sub/{token}", s.handleSubscriptionConfig)
-	mux.HandleFunc("GET /api/v1/sub/{token}/nodes", s.handleSubscriptionNodes)
+	// All three share a per-IP token bucket plus a stricter unknown-token allowance
+	// (see ratelimit.go). GET /sub/{token} content-negotiates: browsers (Accept:
+	// text/html) are redirected to the public page /s/{token}; everything else gets the
+	// config. /info feeds that page.
+	mux.HandleFunc("GET /api/v1/sub/{token}", s.subRateGate(s.handleSubscriptionConfig))
+	mux.HandleFunc("GET /api/v1/sub/{token}/nodes", s.subRateGate(s.handleSubscriptionNodes))
+	mux.HandleFunc("GET /api/v1/sub/{token}/info", s.subRateGate(s.handleSubscriptionInfo))
 
 	mux.Handle("GET /internal/healthz", s.internalOnly(http.HandlerFunc(s.handleInternalHealthz)))
 	mux.Handle("POST /internal/admins", s.internalOnly(http.HandlerFunc(s.handleCreateAdmin)))
@@ -85,6 +90,13 @@ func (s *Server) Routes() http.Handler {
 	// node_groups) - docs/PRD-telegram-bot-api.md §7. Mutating node routes stay admin-only.
 	mux.Handle("GET /api/v1/nodes", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleListNodes))))
 	mux.Handle("GET /api/v1/nodes/{id}", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleGetNode))))
+	// Per-node client entry endpoints / relays (migration 0027): staff only, never on the
+	// reseller allowlist. Reads for any staff role, writes operator and above.
+	mux.Handle("GET /api/v1/nodes/{id}/endpoints", s.requireAdmin(http.HandlerFunc(s.handleListNodeEndpoints)))
+	mux.Handle("POST /api/v1/nodes/{id}/endpoints", s.requireAdmin(s.requireRole("operator", http.HandlerFunc(s.handleCreateNodeEndpoint))))
+	mux.Handle("PATCH /api/v1/nodes/{id}/endpoints/{endpointId}", s.requireAdmin(s.requireRole("operator", http.HandlerFunc(s.handleUpdateNodeEndpoint))))
+	mux.Handle("DELETE /api/v1/nodes/{id}/endpoints/{endpointId}", s.requireAdmin(s.requireRole("operator", http.HandlerFunc(s.handleDeleteNodeEndpoint))))
+	mux.Handle("POST /api/v1/nodes/{id}/endpoints/{endpointId}/check", s.requireAdmin(s.requireRole("operator", http.HandlerFunc(s.handleCheckNodeEndpoint))))
 	// docs/STORY-10-monitoring-and-domain-management.md - node CPU/RAM history chart.
 	mux.Handle("GET /api/v1/nodes/{id}/metrics", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleGetNodeMetrics))))
 

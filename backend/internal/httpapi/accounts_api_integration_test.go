@@ -40,6 +40,7 @@ func TestAccountAPIAdditionsEndToEnd(t *testing.T) {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	relaxAPIRate(t, st)
 	conn, err := pgx.Connect(ctx, dsn) // direct SQL for states the API cannot reach
 	if err != nil {
 		t.Fatal(err)

@@ -88,8 +88,10 @@ func TestApplyWithSubDomain(t *testing.T) {
 			if !strings.Contains(*body, "handle /api/v1/sub/*") || !strings.Contains(*body, "respond 404") {
 				t.Errorf("subscription block should proxy only /api/v1/sub/* and 404 the rest, got:\n%s", *body)
 			}
-			if strings.Count(*body, "reverse_proxy frontend:80") != 1 {
-				t.Errorf("frontend should only be proxied from the panel block, got:\n%s", *body)
+			// The frontend is proxied from the panel block (everything) and from the
+			// subscription block only for the public page's paths (@subpage).
+			if strings.Count(*body, "reverse_proxy frontend:80") != 2 || !strings.Contains(*body, "@subpage path /s/* /assets/*") {
+				t.Errorf("sub block should expose only the /s/* page and its assets from the frontend, got:\n%s", *body)
 			}
 		})
 	}

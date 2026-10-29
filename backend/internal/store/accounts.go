@@ -981,3 +981,38 @@ func intersectGroups(reseller, key []string) (out []string, ok bool) {
 	}
 	return out, len(out) > 0
 }
+
+// ListAccountsAfter is ListAccounts' keyset (cursor) variant: rows strictly after
+// (afterCreatedAt, afterID) in the same (created_at, id) order. A nil afterCreatedAt
+// starts from the beginning. Unlike offset paging it stays correct and cheap while
+// accounts are created or deleted between page fetches.
+func (s *Store) ListAccountsAfter(ctx context.Context, limit int, afterCreatedAt *time.Time, afterID string, callerNamespace *string, ownerFilter string) ([]Account, error) {
+	if err := s.reconcileLimits(ctx); err != nil {
+		return nil, err
+	}
+	var afterIDArg any
+	if afterCreatedAt != nil {
+		afterIDArg = afterID
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+accountColumns+` FROM accounts WHERE status != 'deleted' AND `+namespaceFilter+`
+		 AND ($3 = '' OR ($3 = 'admin' AND owner_key_namespace IS NULL) OR owner_key_namespace = $3)
+		 AND ($4::timestamptz IS NULL OR (created_at, id) > ($4::timestamptz, $5::uuid))
+		 ORDER BY created_at, id LIMIT $2`,
+		callerNamespace, limit, ownerFilter, afterCreatedAt, afterIDArg,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accounts []Account
+	for rows.Next() {
+		var a Account
+		if err := scanAccount(rows, &a); err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, a)
+	}
+	return accounts, rows.Err()
+}

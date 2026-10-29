@@ -69,7 +69,7 @@ func TestResellerAllowlist(t *testing.T) {
 	}
 	public := map[string]bool{
 		"GET /healthz": true, "POST /api/v1/auth/login": true, "POST /api/v1/auth/refresh": true,
-		"POST /api/v1/nodes/join": true, "GET /api/v1/sub/{token}": true, "GET /api/v1/sub/{token}/nodes": true,
+		"POST /api/v1/nodes/join": true, "GET /api/v1/sub/{token}": true, "GET /api/v1/sub/{token}/nodes": true, "GET /api/v1/sub/{token}/info": true,
 	}
 	for _, pattern := range routePatterns(t) {
 		if public[pattern] || strings.Contains(pattern, "/internal/") {

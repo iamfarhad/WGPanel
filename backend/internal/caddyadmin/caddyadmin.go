@@ -36,10 +36,11 @@ import (
 // pushed live on settings changes and re-applied from the DB on API startup (see
 // httpapi.ReapplyDomainConfig).
 //
-// The subscription block deliberately serves ONLY /api/v1/sub/* and 404s everything
-// else: the whole point of a separate subscription origin is that the links handed
-// to end users neither reveal nor expose the admin panel, so nothing but the
-// capability endpoints may answer on it.
+// The subscription block deliberately serves ONLY the capability endpoints
+// (/api/v1/sub/*) and the public subscription page (/s/* plus its static assets) and
+// 404s everything else: the whole point of a separate subscription origin is that the
+// links handed to end users neither reveal nor expose the admin panel. A browser
+// opening /api/v1/sub/{token} is redirected (same origin) to /s/{token}.
 var caddyfileTemplate = template.Must(template.New("caddyfile").Parse(`{
 	admin unix/{{.AdminSocket}}|0666
 }
@@ -61,6 +62,13 @@ var caddyfileTemplate = template.Must(template.New("caddyfile").Parse(`{
 
 	handle /api/v1/sub/* {
 		reverse_proxy api:8080
+	}
+
+	# The customer-facing subscription page (SPA route /s/{token}) and the static
+	# files it needs - nothing else of the frontend is reachable here.
+	@subpage path /s/* /assets/* /favicon.svg /favicon-16.png /favicon-32.png /icon-192.png /icon-512.png /apple-touch-icon.png /manifest.webmanifest
+	handle @subpage {
+		reverse_proxy frontend:80
 	}
 
 	handle {

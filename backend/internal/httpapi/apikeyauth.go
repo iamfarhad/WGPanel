@@ -155,6 +155,12 @@ func (s *Server) authenticateAPIKey(w http.ResponseWriter, r *http.Request, next
 		return
 	}
 
+	// Rate limit only after the signature verified, so unauthenticated requests that
+	// merely name a key id cannot drain that key's bucket.
+	if !s.allowAPIKey(w, r, key.KeyID) {
+		return
+	}
+
 	identity := &CallerIdentity{
 		KeyID:        key.KeyID,
 		KeyNamespace: key.KeyID,
