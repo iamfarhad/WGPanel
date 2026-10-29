@@ -193,6 +193,55 @@ func TestStoreIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("node dns forwarder flag reaches config rendering", func(t *testing.T) {
+		settings, err := s.GetSettings(ctx)
+		if err != nil || settings.ClientDNS != "node" {
+			t.Fatalf("client_dns default = %q, %v; want node (migration 0020)", settings.ClientDNS, err)
+		}
+
+		if err := s.RecordNodeCertFingerprint(ctx, node.ID, "it-fingerprint"); err != nil {
+			t.Fatal(err)
+		}
+		for _, forwarder := range []bool{true, false} {
+			if err := s.RecordHeartbeat(ctx, node.ID, "it-fingerprint", forwarder); err != nil {
+				t.Fatal(err)
+			}
+			peers, err := s.ListAccountPeersWithNode(ctx, acct.ID, nil)
+			if err != nil || len(peers) != 1 {
+				t.Fatalf("peers = %+v, %v", peers, err)
+			}
+			if peers[0].NodeDNSForwarder != forwarder || peers[0].NodeWGSubnet != "10.99.0.0/24" {
+				t.Fatalf("after heartbeat(forwarder=%v): peer node = %+v", forwarder, peers[0])
+			}
+		}
+	})
+
+	t.Run("join token peek does not redeem", func(t *testing.T) {
+		pending, err := s.CreateNode(ctx, "it-pending-node", "default", "", "vpn2.test:51821", "10.98.0.0/24", 10, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetJoinToken(ctx, pending.ID, "it-join-token", time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+
+		peeked, err := s.PeekJoinToken(ctx, "it-join-token")
+		if err != nil || peeked.ID != pending.ID || peeked.WGSubnet != "10.98.0.0/24" {
+			t.Fatalf("peek = %+v, %v", peeked, err)
+		}
+		if _, err := s.PeekJoinToken(ctx, "wrong-token"); !errors.Is(err, ErrInvalidOrUsedToken) {
+			t.Fatalf("peek with a wrong token: want ErrInvalidOrUsedToken, got %v", err)
+		}
+
+		// Still redeemable after the peek - and the peek follows it into "used".
+		if _, err := s.RedeemJoinToken(ctx, "it-join-token"); err != nil {
+			t.Fatalf("redeem after peek: %v", err)
+		}
+		if _, err := s.PeekJoinToken(ctx, "it-join-token"); !errors.Is(err, ErrInvalidOrUsedToken) {
+			t.Fatalf("peek after redeem: want ErrInvalidOrUsedToken, got %v", err)
+		}
+	})
+
 	t.Run("stale device prune", func(t *testing.T) {
 		if _, err := s.pool.Exec(ctx,
 			`UPDATE account_devices SET last_seen_at = now() - interval '31 days' WHERE account_id = $1`, acct.ID,

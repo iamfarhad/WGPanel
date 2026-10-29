@@ -16,8 +16,12 @@ WG_IFACE_ADDR="${WG_IFACE_ADDR:-10.66.0.1/24}"
 mkdir -p /etc/wireguard
 chmod 700 /etc/wireguard
 
-sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || \
-  echo "node-entrypoint: could not set ip_forward in-container - make sure the 'sysctls: [net.ipv4.ip_forward=1]' compose setting is applied" >&2
+# Via /proc, not sysctl(8): the image has no procps, so the old `sysctl -w` always
+# failed and printed this warning even with forwarding correctly enabled by compose.
+if [[ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null)" != 1 ]] &&
+   ! { echo 1 > /proc/sys/net/ipv4/ip_forward; } 2>/dev/null; then
+  echo "node-entrypoint: ip_forward is off and can't be set in-container - make sure the 'sysctls: [net.ipv4.ip_forward=1]' compose setting is applied" >&2
+fi
 
 if [[ ! -f "$WG_CONF" ]]; then
   umask 077
@@ -54,6 +58,7 @@ fi
 wg-quick down "$WG_IFACE" 2>/dev/null || true
 wg-quick up "$WG_IFACE"
 
-export WGPANEL_WG_PUBLIC_KEY="$(cat "/etc/wireguard/${WG_IFACE}-public.key")"
+WGPANEL_WG_PUBLIC_KEY="$(cat "/etc/wireguard/${WG_IFACE}-public.key")"
+export WGPANEL_WG_PUBLIC_KEY
 
 exec /usr/local/bin/wgpanel-agent

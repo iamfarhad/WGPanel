@@ -421,7 +421,10 @@ function EditNodeDialog({
             <Input value={region} onChange={(e) => setRegion(e.target.value)} placeholder="e.g. eu, us-east" />
           </Field>
         </div>
-        <Field label="Public endpoint">
+        <Field
+          label="Public endpoint"
+          hint="Changing the port here does not change the port WireGuard listens on at the node — clients only connect while the two match."
+        >
           <Input value={publicEndpoint} onChange={(e) => setPublicEndpoint(e.target.value)} required placeholder="vpn1.example.com:51820" />
         </Field>
         <Field label="WireGuard subnet" hint="Not editable once peers may already be allocated from it.">
@@ -601,7 +604,10 @@ function CreateNodeDialog({
             <Input value={region} onChange={(e) => setRegion(e.target.value)} placeholder="e.g. eu, us-east" />
           </Field>
         </div>
-        <Field label="Public endpoint">
+        <Field
+          label="Public endpoint"
+          hint="host:port clients connect to. It must reach the node directly — not through a CDN/proxy, which can't carry WireGuard's UDP. The port becomes the node's WireGuard listen port."
+        >
           <Input
             value={publicEndpoint}
             onChange={(e) => setPublicEndpoint(e.target.value)}

@@ -47,6 +47,9 @@ type heartbeatRequest struct {
 	CPUPercent    *float32               `json:"cpu_percent,omitempty"`
 	MemUsedBytes  *int64                 `json:"mem_used_bytes,omitempty"`
 	MemTotalBytes *int64                 `json:"mem_total_bytes,omitempty"`
+	// DNSForwarder tells the panel it may point this node's clients at the node's
+	// tunnel address for DNS (see dnsForwarder).
+	DNSForwarder bool `json:"dns_forwarder"`
 }
 
 type heartbeatPeer struct {
@@ -60,9 +63,15 @@ type heartbeatPeer struct {
 type heartbeatResponse struct {
 	Status string          `json:"status"`
 	Peers  []heartbeatPeer `json:"peers"`
+	// Network is absent from older control planes - see checkNodeNetwork.
+	Network *nodeNetwork `json:"network"`
+	// ClientDNS is the DNS = value client configs carry - see checkClientDNS.
+	ClientDNS string `json:"client_dns"`
 }
 
-func runHeartbeatLoop(ctx context.Context, cfg config, id *identity, logger *slog.Logger) {
+// runHeartbeatLoop returns only on shutdown (nil) or on a fatal node-network
+// mismatch reported by the control plane (see heartbeatState.checkNetwork).
+func runHeartbeatLoop(ctx context.Context, cfg config, id *identity, dnsForwarder bool, logger *slog.Logger) error {
 	client := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
@@ -74,17 +83,22 @@ func runHeartbeatLoop(ctx context.Context, cfg config, id *identity, logger *slo
 		Timeout: 15 * time.Second,
 	}
 
-	state := &heartbeatState{}
-	state.tick(ctx, cfg, client, logger) // don't wait a full interval before the first one
+	state := &heartbeatState{checkedNetwork: id.Network, dnsForwarder: dnsForwarder}
+	// don't wait a full interval before the first one
+	if err := state.tick(ctx, cfg, client, logger); err != nil {
+		return err
+	}
 
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-ticker.C:
-			state.tick(ctx, cfg, client, logger)
+			if err := state.tick(ctx, cfg, client, logger); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -98,14 +112,24 @@ func runHeartbeatLoop(ctx context.Context, cfg config, id *identity, logger *slo
 // peerSignature's doc comment for why this exists - a real, previously-undetected
 // bug (found only once a real client kept a session open across multiple heartbeat
 // ticks to actually verify it, which nothing before this ever did).
+//
+// checkedNetwork is the node network last verified against the real interface (at
+// startup from the saved registration, or from a heartbeat), so the check only
+// reruns when the control plane reports something different; checkedDNS is the same
+// for the client resolvers probed by checkClientDNS.
 type heartbeatState struct {
 	tickCount                int
 	prevCPU                  cpuSample
 	havePrevCPU              bool
 	lastAppliedPeerSignature string
+	checkedNetwork           nodeNetwork
+	checkedDNS               string
+	dnsForwarder             bool
 }
 
-func (s *heartbeatState) tick(ctx context.Context, cfg config, client *http.Client, logger *slog.Logger) {
+// tick returns an error only for a fatal node-network mismatch; every transient
+// failure is logged and retried on the next tick.
+func (s *heartbeatState) tick(ctx context.Context, cfg config, client *http.Client, logger *slog.Logger) error {
 	s.tickCount++
 
 	snapshot, snapshotOK := readDeviceSnapshot(cfg.WGInterface)
@@ -130,7 +154,7 @@ func (s *heartbeatState) tick(ctx context.Context, cfg config, client *http.Clie
 		}
 	}
 
-	req := heartbeatRequest{PeerCount: peerCount, LoadAvg: 0, Traffic: traffic}
+	req := heartbeatRequest{PeerCount: peerCount, LoadAvg: 0, Traffic: traffic, DNSForwarder: s.dnsForwarder}
 	if s.tickCount%metricsEveryNTicks == 1 {
 		req.CPUPercent = s.readCPUPercent()
 		if used, total, ok := readMemInfo(); ok {
@@ -139,10 +163,20 @@ func (s *heartbeatState) tick(ctx context.Context, cfg config, client *http.Clie
 		}
 	}
 
-	resp, ok := sendHeartbeat(ctx, cfg, client, logger, req, peerCount)
+	resp, ok := sendHeartbeat(ctx, cfg, client, logger, req)
 	if !ok {
-		return
+		return nil
 	}
+	// Checked before heartbeat_ok is logged: the installers read that line as success,
+	// and report any client_dns_unreachable warning logged before it.
+	if err := s.checkNetwork(cfg, resp.Network, logger); err != nil {
+		return err
+	}
+	if resp.ClientDNS != "" && resp.ClientDNS != s.checkedDNS {
+		checkClientDNS(resp.ClientDNS, logger)
+		s.checkedDNS = resp.ClientDNS
+	}
+	logger.Info("heartbeat_ok", "peer_count", peerCount, "desired_peers", len(resp.Peers))
 
 	// Only actually touch the interface when the desired peer set changed since the
 	// last tick we successfully applied - see peerSignature's doc comment for why
@@ -150,11 +184,11 @@ func (s *heartbeatState) tick(ctx context.Context, cfg config, client *http.Clie
 	// looks like.
 	sig := peerSignature(resp.Peers)
 	if sig == s.lastAppliedPeerSignature {
-		return
+		return nil
 	}
 	if err := reconcilePeers(cfg.WGInterface, resp.Peers); err != nil {
 		logger.Warn("reconcile_peers_failed", "error", err)
-		return
+		return nil
 	}
 	// Shaping failure (e.g. no tc binary on an old bare-metal install) must not hold
 	// the signature back: that would force reconcilePeers to reapply ReplacePeers
@@ -164,6 +198,26 @@ func (s *heartbeatState) tick(ctx context.Context, cfg config, client *http.Clie
 		logger.Warn("apply_shaping_failed", "error", err)
 	}
 	s.lastAppliedPeerSignature = sig
+	return nil
+}
+
+// checkNetwork verifies the interface against the node network the control plane
+// reported, whenever that differs from what was last verified - which is what covers
+// nodes registered before /agent/register returned it: they have no saved network,
+// so this first heartbeat is their first check. The result is saved so the next
+// start checks before the agent reports itself registered.
+func (s *heartbeatState) checkNetwork(cfg config, network *nodeNetwork, logger *slog.Logger) error {
+	if network == nil || *network == s.checkedNetwork {
+		return nil
+	}
+	if err := checkNodeNetwork(cfg, *network, logger); err != nil {
+		return err
+	}
+	s.checkedNetwork = *network
+	if err := saveNodeNetwork(statePaths(cfg.StateDir), *network); err != nil {
+		logger.Warn("save_node_network_failed", "error", err)
+	}
+	return nil
 }
 
 // peerSignature builds a stable (sorted, so response-ordering differences don't
@@ -217,7 +271,7 @@ func (s *heartbeatState) readCPUPercent() *float32 {
 	return cpuPercentBetween(s.prevCPU, cur)
 }
 
-func sendHeartbeat(ctx context.Context, cfg config, client *http.Client, logger *slog.Logger, req heartbeatRequest, peerCount int) (heartbeatResponse, bool) {
+func sendHeartbeat(ctx context.Context, cfg config, client *http.Client, logger *slog.Logger, req heartbeatRequest) (heartbeatResponse, bool) {
 	body, _ := json.Marshal(req)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+cfg.PanelAddr+"/agent/heartbeat", bytes.NewReader(body))
 	if err != nil {
@@ -243,7 +297,6 @@ func sendHeartbeat(ctx context.Context, cfg config, client *http.Client, logger 
 		logger.Warn("heartbeat_response_decode_failed", "error", err)
 		return heartbeatResponse{}, false
 	}
-	logger.Info("heartbeat_ok", "peer_count", peerCount, "desired_peers", len(respBody.Peers))
 	return respBody, true
 }
 

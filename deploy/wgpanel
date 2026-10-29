@@ -124,8 +124,14 @@ cmd_doctor() {
   fi
 
   # Backup hygiene
-  local latest
-  latest=$(ls -t "$BACKUP_DIR"/wgpanel-backup-*.tar.gz 2>/dev/null | head -n1 || true)
+  # Newest backup by mtime, via -nt rather than parsing ls output.
+  local latest="" f
+  for f in "$BACKUP_DIR"/wgpanel-backup-*.tar.gz; do
+    [[ -f "$f" ]] || continue
+    if [[ -z "$latest" || "$f" -nt "$latest" ]]; then
+      latest="$f"
+    fi
+  done
   if [[ -z "$latest" ]]; then
     warn "No backups found yet - run: wgpanel backup"
   else
@@ -250,7 +256,11 @@ cmd_rollback() {
   warn "from before the last 'wgpanel update'. If those images were pruned, this will not work -"
   warn "restore from a database backup instead: wgpanel restore <backup-file>"
   docker compose up -d
-  wait_for_health "$HEALTH_TIMEOUT_SECONDS" && log "Rollback health check passed." || err "Rollback health check also failed - manual intervention needed."
+  if wait_for_health "$HEALTH_TIMEOUT_SECONDS"; then
+    log "Rollback health check passed."
+  else
+    err "Rollback health check also failed - manual intervention needed."
+  fi
 }
 
 cmd_version() {
@@ -277,10 +287,12 @@ cmd_create_admin() {
   fi
 
   local port; port="$(api_port)"
-  local resp
-  resp=$(internal_curl -X POST "http://127.0.0.1:${port}/internal/admins" \
+  if ! internal_curl -X POST "http://127.0.0.1:${port}/internal/admins" \
     -H 'Content-Type: application/json' \
-    -d "{\"username\":\"${username}\",\"password\":\"${password}\",\"role\":\"super_admin\"}")
+    -d "{\"username\":\"${username}\",\"password\":\"${password}\",\"role\":\"super_admin\"}" >/dev/null; then
+    err "Could not create admin '${username}' - the name may be taken, or the API is down (wgpanel status)."
+    exit 1
+  fi
 
   echo
   echo "=============================================="

@@ -1220,6 +1220,52 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /agent/preflight:
+    servers:
+      - url: https://node-agent.internal:48443
+    post:
+      tags: [Node Agent]
+      summary: Look up a join token's node and expected WireGuard settings without redeeming it
+      description: >-
+        Called by install-node.sh before the agent starts, so the installer can
+        take the node's WireGuard listen port and interface address from the
+        panel instead of asking for values that must match it exactly. Same
+        credential and validity rules as `/agent/register` (the join token), but
+        the token is NOT redeemed. No client certificate required.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [join_token]
+              properties:
+                join_token: { type: string }
+      responses:
+        "200":
+          description: The token is valid; the node it would register.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    properties:
+                      node_id: { type: string, format: uuid }
+                      name: { type: string }
+                  - $ref: "#/components/schemas/NodeNetwork"
+        "400":
+          description: "`invalid_request` - join_token missing."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401":
+          description: "`invalid_token` - join token invalid, expired, or already used."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /agent/register:
     servers:
       - url: https://node-agent.internal:48443
@@ -1255,11 +1301,13 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  node_id: { type: string, format: uuid }
-                  certificate_pem: { type: string }
-                  ca_certificate_pem: { type: string }
+                allOf:
+                  - type: object
+                    properties:
+                      node_id: { type: string, format: uuid }
+                      certificate_pem: { type: string }
+                      ca_certificate_pem: { type: string }
+                  - $ref: "#/components/schemas/NodeNetwork"
         "400":
           description: "`invalid_request` (missing fields) or `invalid_csr` (CSR could not be parsed/signed)."
           content:
@@ -1297,6 +1345,9 @@ paths:
               properties:
                 peer_count: { type: integer }
                 load_avg: { type: number }
+                dns_forwarder:
+                  type: boolean
+                  description: The agent serves DNS for its clients on the node's tunnel address (see client_dns = node).
               description: Informational only - malformed/absent bodies are tolerated, not rejected.
       responses:
         "200":
@@ -1307,6 +1358,14 @@ paths:
                 type: object
                 properties:
                   status: { type: string, example: ok }
+                  client_dns:
+                    type: string
+                    description: The resolved DNS = value this node's clients get; the agent probes it from the node.
+                  network:
+                    $ref: "#/components/schemas/NodeNetwork"
+                    description: >-
+                      The node's expected WireGuard settings, so agents registered before
+                      `/agent/register` returned them can check their interface too.
         "401":
           description: "`client_certificate_required` (no client cert presented) or `certificate_superseded` (cert's fingerprint no longer matches this node's pinned identity)."
           content:
@@ -1561,6 +1620,23 @@ components:
         created_at: { type: string, format: date-time }
       required: [id, name, node_group, public_endpoint, wg_subnet, capacity_max_peers, status, created_at]
 
+    NodeNetwork:
+      type: object
+      description: >-
+        What the node's own WireGuard interface must look like for the panel's
+        client configs to work.
+      properties:
+        wg_subnet: { type: string, example: "10.66.0.0/24" }
+        wg_interface_address:
+          type: string
+          example: "10.66.0.1/24"
+          description: The subnet's .1 - the address reserved for the node itself.
+        public_endpoint: { type: string, example: "vpn1.example.com:51820" }
+        wg_listen_port:
+          type: integer
+          example: 51820
+          description: public_endpoint's port; 0 if a legacy endpoint has none.
+
     CreateNodeRequest:
       type: object
       required: [name, public_endpoint, wg_subnet]
@@ -1568,8 +1644,16 @@ components:
         name: { type: string }
         node_group: { type: string, default: default }
         region: { type: string, default: "", description: Optional steering label, e.g. "eu" or "us-east". }
-        public_endpoint: { type: string, example: "vpn1.example.com:51820" }
-        wg_subnet: { type: string, example: "10.66.0.0/24" }
+        public_endpoint:
+          type: string
+          example: "vpn1.example.com:51820"
+          description: >-
+            host:port clients dial (IPv6 hosts in brackets). Required to include the
+            port, which must be the node's WireGuard listen port; stored in canonical form.
+        wg_subnet:
+          type: string
+          example: "10.66.0.0/24"
+          description: IPv4 CIDR, /16 to /30. Stored in network form (10.66.0.5/24 becomes 10.66.0.0/24).
         capacity_max_peers: { type: integer, default: 250 }
         public_key:
           type: string
@@ -1777,10 +1861,14 @@ components:
             never set from the panel; Caddy runs the .env PANEL_DOMAIN it booted with.
         client_dns:
           type: string
-          example: "1.1.1.1, 1.0.0.1"
+          example: node
           description: >-
-            The DNS = line written into every generated wg-quick config
-            (comma-separated). Takes effect on the next config download.
+            The DNS = line of every generated wg-quick config. `node` (the default)
+            points each node's clients at that node's own DNS forwarder on its tunnel
+            address, which resolves through the node server's resolver; nodes whose
+            agent predates the forwarder get `1.1.1.1, 1.0.0.1` instead. Otherwise a
+            comma-separated list of resolver IPs (optionally with search domains).
+            Takes effect on the next config download.
         sub_domain:
           type: string
           nullable: true

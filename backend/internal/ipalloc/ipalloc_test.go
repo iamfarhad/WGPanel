@@ -47,3 +47,24 @@ func TestNextFreeInvalidCIDR(t *testing.T) {
 		t.Fatal("expected an error for an invalid CIDR")
 	}
 }
+
+func TestGatewayIsNetworkPlusOneWithSubnetPrefix(t *testing.T) {
+	cases := map[string]string{
+		"10.66.0.0/24":  "10.66.0.1/24",
+		"10.90.0.0/22":  "10.90.0.1/22",
+		"10.90.1.7/22":  "10.90.0.1/22", // host bits set - still the real network's .1
+		"100.64.0.0/24": "100.64.0.1/24",
+	}
+	for cidr, want := range cases {
+		got, err := Gateway(cidr)
+		if err != nil {
+			t.Fatalf("Gateway(%q): %v", cidr, err)
+		}
+		if got != want {
+			t.Errorf("Gateway(%q) = %q, want %q", cidr, got, want)
+		}
+	}
+	if _, err := Gateway("not-a-cidr"); err == nil {
+		t.Fatal("expected an error for an invalid CIDR")
+	}
+}

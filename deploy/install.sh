@@ -124,9 +124,9 @@ ensure_deploy_files() {
   for f in "${DEPLOY_COMPANION_FILES[@]}"; do
     if [[ ! -f "$SCRIPT_SOURCE_DIR/$f" ]]; then
       log "Running as a standalone script - downloading companion files (docker-compose.yml, Caddyfile, .env.example, wgpanel) from GitHub..."
-      local tmpdir; tmpdir="$(mktemp -d)"
-      for f in "${DEPLOY_COMPANION_FILES[@]}"; do
-        curl -fsSL "$REPO_RAW_BASE/$f" -o "$tmpdir/$f"
+      local tmpdir name; tmpdir="$(mktemp -d)"
+      for name in "${DEPLOY_COMPANION_FILES[@]}"; do
+        curl -fsSL "$REPO_RAW_BASE/$name" -o "$tmpdir/$name"
       done
       SCRIPT_SOURCE_DIR="$tmpdir"
       return
@@ -172,8 +172,10 @@ install_docker() {
 random_secret() { openssl rand -hex 24; }
 
 setup_files() {
+  # Filled by read_default (printf -v), which shellcheck can't see as an assignment.
+  PANEL_HTTP_PORT="" PANEL_HTTPS_PORT=""
   mkdir -p "$INSTALL_DIR"
-  cp "$SCRIPT_SOURCE_DIR/docker-compose.yml" "$INSTALL_DIR/docker-compose.yml"
+  cp "$SCRIPT_SOURCE_DIR/docker-compose.yml" "$COMPOSE_FILE"
   cp "$SCRIPT_SOURCE_DIR/Caddyfile" "$INSTALL_DIR/Caddyfile"
 
   if [[ -f "$ENV_FILE" ]]; then
@@ -547,28 +549,44 @@ setup_self_node() {
   done
   while true; do
     read_default "WireGuard subnet for peer IPs [10.66.0.0/24]: " WG_SUBNET 10.66.0.0/24
-    valid_cidr4 "$WG_SUBNET" && break
-    warn "Expected a valid IPv4 subnet in CIDR form, e.g. 10.66.0.0/24."
+    valid_cidr4 "$WG_SUBNET" && (( 10#${WG_SUBNET##*/} >= 16 && 10#${WG_SUBNET##*/} <= 30 )) && break
+    warn "Expected an IPv4 subnet in CIDR form, /16 to /30, e.g. 10.66.0.0/24."
   done
-  # Auto-derived as the subnet's .1 (the convention used everywhere else here), still
-  # overridable. The sed only rewrites a well-formed A.B.C.D/nn - guaranteed by the
-  # valid_cidr4 gate above; on a non-match it would pass the input through unchanged.
-  default_iface_addr="$(echo "$WG_SUBNET" | sed -E 's#^([0-9]+\.[0-9]+\.[0-9]+)\.[0-9]+/([0-9]+)$#\1.1/\2#')"
-  while true; do
-    read_default "This node's own interface address, with prefix [${default_iface_addr}]: " WG_IFACE_ADDR "$default_iface_addr"
-    valid_cidr4 "$WG_IFACE_ADDR" && break
-    warn "Expected a valid IPv4 address with a prefix length, e.g. 10.66.0.1/24."
-  done
+  # No interface-address prompt: it must be exactly the subnet's .1 (what ipalloc
+  # reserves for the node), so it's taken from the bootstrap response instead.
 
   local panel_domain node_agent_port node_image
   panel_domain="$(env_get PANEL_DOMAIN)"
+
+  # Clients dial this host over UDP. The panel domain is the natural default, but when
+  # it sits behind a CDN/proxy (e.g. Cloudflare's orange cloud) it resolves to the
+  # proxy, which only carries HTTP(S) - WireGuard handshakes would never arrive.
+  # Buffered rather than piped into grep -q (pipefail + SIGPIPE, see install-node.sh).
+  local resolved local_ips
+  resolved="$(getent ahostsv4 "$panel_domain" 2>/dev/null | awk 'NR==1 {print $1}' || true)"
+  local_ips="$(ip -4 -o addr show 2>/dev/null || true)"
+  if [[ -n "$resolved" ]] && ! grep -qwF "$resolved" <<<"$local_ips"; then
+    warn "${panel_domain} resolves to ${resolved}, which is not an address on this server."
+    warn "If the domain is behind a CDN/proxy (e.g. Cloudflare's orange cloud), WireGuard (UDP)"
+    warn "can't pass through it - enter this server's own public IP below instead. (Behind a"
+    warn "cloud provider's 1:1 NAT this warning is expected; keep the default then.)"
+  fi
+  while true; do
+    read_default "Public address clients use to reach WireGuard on this server [${panel_domain}]: " WG_ENDPOINT_HOST "$panel_domain"
+    WG_ENDPOINT_HOST="${WG_ENDPOINT_HOST#http://}"
+    WG_ENDPOINT_HOST="${WG_ENDPOINT_HOST#https://}"
+    WG_ENDPOINT_HOST="${WG_ENDPOINT_HOST%%/*}"
+    [[ "$WG_ENDPOINT_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] && break
+    warn "Enter just a hostname or IPv4 address, e.g. 203.0.113.10 (no port - ${WG_PORT} is added)."
+  done
+
   node_agent_port="$(env_get NODE_AGENT_PORT)"
   node_agent_port="${node_agent_port:-48443}"
   node_image="$(env_get NODE_IMAGE)"
   node_image="${node_image:-ghcr.io/iamfarhad/wgpanel-node:latest}"
 
   setup_self_node_host || return 1
-  bootstrap_self_node "$panel_domain" || return 1
+  bootstrap_self_node || return 1
   write_self_node_files "$node_image" "$node_agent_port" || return 1
   ensure_self_node_image "$node_image" || return 1
   (cd "$NODE_DIR" && docker compose up -d) || return 1
@@ -576,22 +594,36 @@ setup_self_node() {
 
   # "Container running" says nothing about registration (a crash-looping agent stays
   # "running" under restart: unless-stopped) - watch the agent's own JSON log markers
-  # instead, same as install-node.sh's verify().
+  # instead, same as install-node.sh's verify(): the first accepted heartbeat is success.
   local logs deadline=$((SECONDS + 45))
   log "Waiting for the node to register with the control plane..."
   while (( SECONDS < deadline )); do
     sleep 3
     logs="$(cd "$NODE_DIR" && docker compose logs --no-color 2>/dev/null || true)"
-    if grep -q '"msg":"registered"' <<<"$logs"; then
+    if grep -q '"msg":"heartbeat_ok"' <<<"$logs"; then
       log "This server is now registered as node '${NODE_NAME}' and should show 'online' in the panel shortly."
+      warn_client_dns "$logs"
       return 0
     fi
-    grep -q '"msg":"fatal"' <<<"$logs" && break
+    grep -qE '"msg":"fatal"|"msg":"heartbeat_rejected","status":40[14]' <<<"$logs" && break
   done
   err "Node did not confirm registration - last log lines:"
   (cd "$NODE_DIR" && docker compose logs --no-color --tail 5) >&2 || true
   err "Check with: cd ${NODE_DIR} && docker compose logs -f"
   return 1
+}
+
+# warn_client_dns surfaces the agent's client_dns_unreachable check (cmd/agent's
+# checkClientDNS): clients resolve names through this node, so resolvers it can't
+# reach mean "connected but no internet". Shared verbatim with install-node.sh.
+warn_client_dns() {
+  local line
+  line="$(grep -m1 '"msg":"client_dns_unreachable"' <<<"$1" || true)"
+  [[ -n "$line" ]] || return 0
+  warn "The DNS servers clients are given (panel: Settings -> Client DNS) don't answer from this"
+  warn "server: $(grep -o '"unreachable":\[[^]]*\]' <<<"$line" | cut -d: -f2 || true)"
+  warn "Clients will connect but can't resolve names. In the panel, set Client DNS to \"Each node"
+  warn "resolves for its clients\" (the default), or to resolvers this server can reach."
 }
 
 # Host prep for running WireGuard in a container: the kernel module (the container's
@@ -609,7 +641,6 @@ setup_self_node_host() {
 # key when its agent registers (agentserver.go's SetNodePublicKey), same as a remote
 # node installed with install-node.sh.
 bootstrap_self_node() {
-  local panel_domain="$1"
   local api_port token resp
   api_port="$(env_get API_PORT)"
   token="$(env_get INTERNAL_API_TOKEN)"
@@ -623,11 +654,16 @@ bootstrap_self_node() {
   resp=$(curl -sS -X POST "http://127.0.0.1:${api_port}/internal/nodes/bootstrap-self" \
     -H "X-Internal-Token: ${token}" \
     -H 'Content-Type: application/json' \
-    -d "{\"name\":\"${NODE_NAME}\",\"node_group\":\"${NODE_GROUP}\",\"public_endpoint\":\"${panel_domain}:${WG_PORT}\",\"wg_subnet\":\"${WG_SUBNET}\",\"capacity_max_peers\":${NODE_CAPACITY}}")
+    -d "{\"name\":\"${NODE_NAME}\",\"node_group\":\"${NODE_GROUP}\",\"public_endpoint\":\"${WG_ENDPOINT_HOST}:${WG_PORT}\",\"wg_subnet\":\"${WG_SUBNET}\",\"capacity_max_peers\":${NODE_CAPACITY}}")
 
-  JOIN_TOKEN="$(echo "$resp" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)"
+  JOIN_TOKEN="$(echo "$resp" | grep -o '"token":"[^"]*"' | cut -d'"' -f4 || true)"
+  WG_IFACE_ADDR="$(echo "$resp" | grep -o '"wg_interface_address":"[^"]*"' | cut -d'"' -f4 || true)"
   if [[ -z "$JOIN_TOKEN" ]]; then
     err "Could not bootstrap this node - response: ${resp}"
+    return 1
+  fi
+  if ! valid_cidr4 "$WG_IFACE_ADDR"; then
+    err "The panel did not return this node's interface address - response: ${resp}"
     return 1
   fi
 }
