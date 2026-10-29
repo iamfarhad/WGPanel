@@ -26,6 +26,7 @@ import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 import { RowActions } from '../components/ui/RowActions'
 import { Progress } from '../components/ui/Progress'
+import { ExpiryBadge } from '../components/ui/ExpiryBadge'
 
 interface Node {
   id: string
@@ -328,6 +329,7 @@ export function AccountsPage() {
                 <Th>Nodes</Th>
                 <Th>Connection</Th>
                 <Th>Usage</Th>
+                <Th>Expiry</Th>
                 {showOwner && <Th>Owner</Th>}
                 <Th>Status</Th>
                 <Th className="text-end">Actions</Th>
@@ -370,6 +372,9 @@ export function AccountsPage() {
                       {a.data_quota_bytes != null && a.data_quota_bytes > 0 && (
                         <Progress value={a.data_used_bytes} max={a.data_quota_bytes} className="mt-1.5 max-w-32" />
                       )}
+                    </Td>
+                    <Td className="whitespace-nowrap">
+                      <ExpiryBadge expiresAt={a.expiry_at} />
                     </Td>
                     {showOwner && (
                       <Td className="whitespace-nowrap text-muted">
@@ -760,7 +765,16 @@ function AccountDetailDialog({
                 {account.data_quota_bytes ? ` / ${formatBytes(account.data_quota_bytes)}` : ` / ${t('unlimited')}`}
               </span>
             </Row>
-            <Row label="Expires">{account.expiry_at ? formatDate(account.expiry_at) : t('Never')}</Row>
+            <Row label="Expires">
+              {account.expiry_at ? (
+                <span className="inline-flex flex-wrap items-center gap-2">
+                  {formatDate(account.expiry_at)}
+                  <ExpiryBadge expiresAt={account.expiry_at} />
+                </span>
+              ) : (
+                t('Never')
+              )}
+            </Row>
             <Row label="Device limit">{account.device_limit ?? t('Unlimited')}</Row>
             <Row label="Bandwidth limit">
               {account.bandwidth_limit_mbps != null ? `${account.bandwidth_limit_mbps} Mbps` : t('Unlimited')}

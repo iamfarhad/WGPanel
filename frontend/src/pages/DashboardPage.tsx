@@ -1,10 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Server, Users, ShieldAlert, Activity, HardDrive, Wifi, ArrowRight } from 'lucide-react'
+import { Server, Users, ShieldAlert, HardDrive, Wifi, ArrowRight, CalendarClock } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { useI18n } from '../lib/i18n'
 import { ltr } from '../lib/bidi'
+import { expiryInfo } from '../lib/expiry'
+import { ExpiryBadge } from '../components/ui/ExpiryBadge'
 import { Button } from '../components/ui/Button'
 import { Illustration } from '../components/brand/Brand'
 import { PageHeader } from '../components/ui/PageHeader'
@@ -33,6 +35,7 @@ interface Account {
   status: string
   data_used_bytes: number
   data_quota_bytes: number | null
+  expiry_at: string | null
   peers: AccountPeer[]
 }
 
@@ -119,6 +122,11 @@ export function DashboardPage() {
   const onlineNodes = nodes.filter((n) => n.status === 'online' || n.status === 'registered').length
   const activeAccounts = accounts.filter((a) => a.status === 'active').length
   const suspendedAccounts = accounts.filter((a) => a.status === 'suspended').length
+  // Active accounts that run out within 3 days (expiry passed = already suspended).
+  const expiringSoon = accounts.filter((a) => {
+    const state = expiryInfo(a.expiry_at, 3).state
+    return a.status === 'active' && (state === 'soon' || state === 'today')
+  }).length
   const totalDataUsed = accounts.reduce((sum, a) => sum + (a.data_used_bytes ?? 0), 0)
   // "Online" here means at least one of the account's peers has handshaked recently
   // (server-computed, see accountPeerResponse.online) - an account with peers on
@@ -184,7 +192,12 @@ export function DashboardPage() {
             value={suspendedAccounts}
             hint={suspendedAccounts > 0 ? 'Need attention' : 'None suspended'}
           />
-          <StatCard icon={Activity} label="Total accounts" value={accounts.length} hint="Across every node" />
+          <StatCard
+            icon={CalendarClock}
+            label="Expiring soon"
+            value={expiringSoon}
+            hint={expiringSoon > 0 ? 'Within the next 3 days' : 'Nothing expires in the next 3 days'}
+          />
         </div>
       )}
 
@@ -259,7 +272,7 @@ export function DashboardPage() {
 interface ResellerPlan {
   max_accounts: number | null
   data_limit_bytes: number | null
-  max_expiry_days: number | null
+  expires_at: string | null
   node_groups: string[] | null
   usage: { accounts_used: number; data_allocated_bytes: number; data_used_bytes: number }
 }
@@ -276,11 +289,20 @@ function PlanCard() {
     queryFn: () => apiFetch<ResellerPlan>('/api/v1/reseller/me'),
   })
   const plan = planQuery.data
+  const expiry = expiryInfo(plan?.expires_at, 7)
 
   return (
     <Card>
       <CardHeader title="Your plan" description="Your limits as a reseller" />
       <div className="space-y-5 p-5">
+        {(expiry.state === 'soon' || expiry.state === 'today') && (
+          <div className="flex items-start gap-2.5 rounded-control border border-warning/30 bg-warning-soft px-3 py-2.5 text-sm text-warning-fg">
+            <CalendarClock className="mt-px h-4 w-4 shrink-0" />
+            {expiry.state === 'today'
+              ? t('Your plan expires today. Contact the panel admin to renew it.')
+              : t('Your plan expires in {n} days. Contact the panel admin to renew it.', { n: expiry.days })}
+          </div>
+        )}
         {!plan ? (
           <Skeleton className="h-24" />
         ) : (
@@ -301,11 +323,8 @@ function PlanCard() {
               <span className="text-muted">
                 {t('Traffic used')}: <span className="font-medium text-fg">{ltr(gb(plan.usage.data_used_bytes))}</span>
               </span>
-              <span className="text-muted">
-                {t('Longest account validity')}:{' '}
-                <span className="font-medium text-fg">
-                  {plan.max_expiry_days ? t('{n} days', { n: plan.max_expiry_days }) : t('Unlimited')}
-                </span>
+              <span className="inline-flex items-center gap-1.5 text-muted">
+                {t('Plan expiry')}: <ExpiryBadge expiresAt={plan.expires_at} soonDays={7} />
               </span>
               <span className="text-muted">
                 {t('Node groups')}:{' '}

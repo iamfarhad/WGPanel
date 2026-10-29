@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AlertCircle } from 'lucide-react'
 import { useAuth } from '../lib/auth'
-import { ApiError } from '../lib/api'
+import { apiErrorMessage } from '../lib/apiErrors'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Field } from '../components/ui/Field'
@@ -29,7 +29,7 @@ export function LoginPage() {
       await login(username, password)
       navigate('/dashboard', { replace: true })
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : t('Login failed'))
+      setError(apiErrorMessage(err, t, 'Login failed'))
     } finally {
       setSubmitting(false)
     }

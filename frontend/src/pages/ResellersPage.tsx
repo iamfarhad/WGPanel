@@ -20,6 +20,7 @@ import { StatCard } from '../components/ui/StatCard'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 import { RowActions } from '../components/ui/RowActions'
+import { ExpiryBadge } from '../components/ui/ExpiryBadge'
 
 interface Reseller {
   id: string
@@ -30,7 +31,9 @@ interface Reseller {
   max_accounts: number | null
   data_limit_bytes: number | null
   node_groups: string[] | null
-  max_expiry_days: number | null
+  // Plan end: after it the reseller and its API keys are blocked (accounts keep
+  // working), and no account it creates may expire later than this. null = never.
+  expires_at: string | null
   usage: { accounts_used: number; data_allocated_bytes: number; data_used_bytes: number }
   created_at: string
 }
@@ -197,6 +200,7 @@ export function ResellersPage() {
                 <Th>{t('Accounts')}</Th>
                 <Th>{t('Traffic credit')}</Th>
                 <Th>{t('Traffic used')}</Th>
+                <Th>{t('Plan expiry')}</Th>
                 <Th>{t('Node groups')}</Th>
                 <Th className="text-end">{t('Actions')}</Th>
               </tr>
@@ -223,6 +227,9 @@ export function ResellersPage() {
                     />
                   </Td>
                   <Td className="text-muted tabular-nums">{formatGB(r.usage.data_used_bytes)}</Td>
+                  <Td className="whitespace-nowrap">
+                    <ExpiryBadge expiresAt={r.expires_at} soonDays={7} />
+                  </Td>
                   <Td className="text-muted">
                     {r.node_groups && r.node_groups.length > 0 ? (
                       <span className="flex flex-wrap gap-1">
@@ -334,7 +341,7 @@ function ResellerFormDialog({
   const [password, setPassword] = useState('')
   const [maxAccounts, setMaxAccounts] = useState('')
   const [dataLimitGB, setDataLimitGB] = useState('')
-  const [maxExpiryDays, setMaxExpiryDays] = useState('')
+  const [expiresOn, setExpiresOn] = useState('') // yyyy-mm-dd, '' = never
   const [groups, setGroups] = useState<string[]>([])
   const [notes, setNotes] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -356,7 +363,7 @@ function ResellerFormDialog({
     setPassword('')
     setMaxAccounts(reseller?.max_accounts?.toString() ?? '')
     setDataLimitGB(reseller?.data_limit_bytes != null ? String(reseller.data_limit_bytes / BYTES_PER_GB) : '')
-    setMaxExpiryDays(reseller?.max_expiry_days?.toString() ?? '')
+    setExpiresOn(reseller?.expires_at ? reseller.expires_at.slice(0, 10) : '')
     setGroups(reseller?.node_groups ?? [])
     setNotes(reseller?.notes ?? '')
     setError(null)
@@ -367,7 +374,8 @@ function ResellerFormDialog({
       const limits = {
         max_accounts: toLimit(maxAccounts),
         data_limit_gb: toLimit(dataLimitGB),
-        max_expiry_days: toLimit(maxExpiryDays),
+        // End of the chosen day, like account expiry dates.
+        expires_at: expiresOn ? new Date(`${expiresOn}T23:59:59`).toISOString() : null,
         node_groups: groups,
         notes,
       }
@@ -428,12 +436,18 @@ function ResellerFormDialog({
             <Field label={t('Traffic credit (GB)')}>
               <Input type="number" min="0" step="any" value={dataLimitGB} onChange={(e) => setDataLimitGB(e.target.value)} placeholder={t('Unlimited')} />
             </Field>
-            <Field label={t('Max expiry (days)')}>
-              <Input type="number" min="1" value={maxExpiryDays} onChange={(e) => setMaxExpiryDays(e.target.value)} placeholder={t('Unlimited')} />
+            <Field label={t('Plan expires on')}>
+              <Input
+                type="date"
+                value={expiresOn}
+                min={new Date().toISOString().slice(0, 10)}
+                onChange={(e) => setExpiresOn(e.target.value)}
+              />
             </Field>
           </div>
           <p className="mt-3 text-xs leading-relaxed text-muted">
-            {t('Traffic credit is the total data quota the reseller can hand out across its accounts. With a credit set, it cannot create unlimited accounts.')}
+            {t('Traffic credit is the total data quota the reseller can hand out across its accounts. With a credit set, it cannot create unlimited accounts.')}{' '}
+            {t('After the plan expires the reseller and its API keys stop working; its accounts keep running, and none can be set to expire after the plan.')}
           </p>
         </div>
 

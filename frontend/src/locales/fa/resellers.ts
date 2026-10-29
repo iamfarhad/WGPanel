@@ -51,7 +51,6 @@ export const resellers: Record<string, string> = {
   'Leave a field empty for no limit.': 'هر فیلدی را که خالی بگذارید یعنی بدون سقف.',
   'Max accounts': 'حداکثر اکانت',
   'Traffic credit (GB)': 'اعتبار ترافیک (GB)',
-  'Max expiry (days)': 'حداکثر اعتبار اکانت (روز)',
   'Traffic credit is the total data quota the reseller can hand out across its accounts. With a credit set, it cannot create unlimited accounts.':
     'اعتبار ترافیک مجموع حجمی است که نماینده می‌تواند بین اکانت‌هایش پخش کند. وقتی اعتبار تعیین شده، نماینده نمی‌تواند اکانت نامحدود بسازد.',
   'None selected means all node groups.': 'اگر هیچ‌کدام را انتخاب نکنید یعنی همه‌ی گروه‌های نود.',
@@ -64,8 +63,6 @@ export const resellers: Record<string, string> = {
   // Reseller dashboard and account ownership
   'Your plan': 'طرح من',
   'Your limits as a reseller': 'سقف‌های شما به‌عنوان نماینده',
-  'Longest account validity': 'بیشترین اعتبار اکانت',
-  '{n} days': '{n} روز',
   'Filter by owner': 'فیلتر بر اساس مالک',
   'All owners': 'همه‌ی مالک‌ها',
   'Panel admins': 'ادمین‌های پنل',
@@ -74,6 +71,25 @@ export const resellers: Record<string, string> = {
   'API key': 'کلید API',
   'Panel admin': 'ادمین پنل',
   Owner: 'مالک',
+
+  // Expiry
+  'No expiry': 'بدون انقضا',
+  'Expired today': 'امروز منقضی شد',
+  'Expired {n} days ago': '{n} روز پیش منقضی شد',
+  'Expires today': 'امروز منقضی می‌شود',
+  '{n} days left': '{n} روز مانده',
+  Expiry: 'انقضا',
+  'Expiring soon': 'نزدیک انقضا',
+  'Within the next 3 days': 'در ۳ روز آینده',
+  'Nothing expires in the next 3 days': 'در ۳ روز آینده چیزی منقضی نمی‌شود',
+  'Plan expiry': 'انقضای طرح',
+  'Plan expires on': 'تاریخ انقضای طرح',
+  'After the plan expires the reseller and its API keys stop working; its accounts keep running, and none can be set to expire after the plan.':
+    'بعد از انقضای طرح، نماینده و کلیدهای API او کار نمی‌کنند؛ اکانت‌هایش فعال می‌مانند و هیچ اکانتی نمی‌تواند دیرتر از طرح منقضی شود.',
+  'Your plan expires today. Contact the panel admin to renew it.': 'طرح شما امروز منقضی می‌شود. برای تمدید با مدیر پنل تماس بگیرید.',
+  'Your plan expires in {n} days. Contact the panel admin to renew it.': 'طرح شما {n} روز دیگر منقضی می‌شود. برای تمدید با مدیر پنل تماس بگیرید.',
+  'Your reseller plan has expired.': 'طرح نمایندگی شما منقضی شده است.',
+  'This account is disabled.': 'این حساب غیرفعال است.',
 
   // Shared error state
   'Check your connection to the panel and try again.': 'اتصال خود به پنل را بررسی کنید و دوباره امتحان کنید.',
@@ -85,7 +101,7 @@ export const resellers: Record<string, string> = {
   'This would exceed your traffic credit.': 'این کار از اعتبار ترافیک شما بیشتر می‌شود.',
   'Set a data quota - unlimited accounts are not available on your plan.':
     'برای اکانت سقف حجم تعیین کنید؛ اکانت نامحدود در طرح شما مجاز نیست.',
-  'This expiry is longer than your plan allows.': 'این تاریخ انقضا از سقف مجاز طرح شما طولانی‌تر است.',
+  'This expiry is later than your plan allows.': 'این تاریخ انقضا دیرتر از پایان طرح شماست.',
   'Set an expiry date - your plan requires one.': 'تاریخ انقضا را تعیین کنید؛ طرح شما آن را لازم دارد.',
   'That node is not available on your plan.': 'این نود در طرح شما در دسترس نیست.',
   'Your reseller account is disabled.': 'حساب نمایندگی شما غیرفعال است.',
