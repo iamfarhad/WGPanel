@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, Ban, RotateCw, Copy, AlertTriangle } from 'lucide-react'
 import { apiFetch, ApiError } from '../lib/api'
 import { useToast } from '../lib/toast'
+import { useI18n } from '../lib/i18n'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
@@ -33,6 +34,7 @@ interface ApiKeyCreated extends ApiKey {
 const ALL_PERMISSIONS = ['read', 'create', 'update', 'suspend', 'delete']
 
 export function ApiKeysPage() {
+  const { t } = useI18n()
   const queryClient = useQueryClient()
   const { push } = useToast()
   const [createOpen, setCreateOpen] = useState(false)
@@ -62,7 +64,7 @@ export function ApiKeysPage() {
   const rotateMutation = useMutation({
     mutationFn: (id: string) => apiFetch<ApiKeyCreated>(`/api/v1/api-keys/${id}/rotate`, { method: 'POST' }),
     onSuccess: (key) => {
-      push('success', `Secret rotated for ${key.label}`)
+      push('success', t('Secret rotated for {name}', { name: key.label }))
       invalidate()
       setRevealedSecret({ keyId: key.key_id, secret: key.secret })
     },
@@ -124,7 +126,7 @@ export function ApiKeysPage() {
                       ))}
                     </div>
                   </Td>
-                  <Td className="text-muted">{k.node_groups.length > 0 ? k.node_groups.join(', ') : 'all'}</Td>
+                  <Td className="text-muted">{k.node_groups.length > 0 ? k.node_groups.join(', ') : t('all')}</Td>
                   <Td>
                     <Badge dot tone={k.revoked ? 'red' : 'green'}>{k.revoked ? 'revoked' : 'active'}</Badge>
                   </Td>
@@ -161,7 +163,9 @@ export function ApiKeysPage() {
           onClose={() => setRevokeTarget(null)}
           onConfirm={() => revokeMutation.mutate(revokeTarget.id)}
           title="Revoke API key"
-          description={`"${revokeTarget.label}" will immediately stop being able to authenticate. This cannot be undone.`}
+          description={t('"{name}" will immediately stop being able to authenticate. This cannot be undone.', {
+            name: revokeTarget.label,
+          })}
           confirmLabel="Revoke"
           danger
           submitting={revokeMutation.isPending}
@@ -172,17 +176,17 @@ export function ApiKeysPage() {
         <Dialog open onClose={() => setRevealedSecret(null)} title="Secret key">
           <div className="mb-4 flex items-start gap-2.5 rounded-control border border-warning/25 bg-warning-soft px-3 py-2.5 text-sm text-warning-fg">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>This secret is shown once. Store it securely — it cannot be retrieved again.</span>
+            <span>{t('This secret is shown once. Store it securely — it cannot be retrieved again.')}</span>
           </div>
           <div className="space-y-3">
             <div>
-              <p className="mb-1.5 text-xs font-medium text-muted">Key ID</p>
+              <p className="mb-1.5 text-xs font-medium text-muted">{t('Key ID')}</p>
               <p className="rounded-lg border border-edge bg-inset p-2.5 font-mono text-xs text-fg">
                 {revealedSecret.keyId}
               </p>
             </div>
             <div>
-              <p className="mb-1.5 text-xs font-medium text-muted">Secret</p>
+              <p className="mb-1.5 text-xs font-medium text-muted">{t('Secret')}</p>
               <p className="break-all rounded-lg border border-edge bg-inset p-2.5 font-mono text-xs leading-relaxed text-fg">
                 {revealedSecret.secret}
               </p>
@@ -215,6 +219,7 @@ function CreateApiKeyDialog({
   onClose: () => void
   onCreated: (created: ApiKeyCreated) => void
 }) {
+  const { t } = useI18n()
   const [label, setLabel] = useState('')
   const [nodeGroups, setNodeGroups] = useState('')
   const [permissions, setPermissions] = useState<string[]>(['read'])
@@ -239,7 +244,7 @@ function CreateApiKeyDialog({
       setPermissions(['read'])
       onCreated(created)
     },
-    onError: (err) => setError(err instanceof ApiError ? err.message : 'Failed to create API key'),
+    onError: (err) => setError(err instanceof ApiError ? err.message : t('Failed to create API key')),
   })
 
   function togglePermission(perm: string) {
@@ -256,13 +261,13 @@ function CreateApiKeyDialog({
     <Dialog open={open} onClose={onClose} title="New API key">
       <form onSubmit={handleSubmit} className="space-y-4">
         <Field label="Label">
-          <Input value={label} onChange={(e) => setLabel(e.target.value)} required placeholder="e.g. telegram-sales-bot" />
+          <Input value={label} onChange={(e) => setLabel(e.target.value)} required placeholder={t('e.g. telegram-sales-bot')} />
         </Field>
         <Field label="Node groups" labelSuffix="(comma-separated, blank = all)">
-          <Input value={nodeGroups} onChange={(e) => setNodeGroups(e.target.value)} placeholder="eu-west, us-east" />
+          <Input value={nodeGroups} onChange={(e) => setNodeGroups(e.target.value)} placeholder={t('eu-west, us-east')} />
         </Field>
         <div>
-          <p className="mb-2 block text-sm font-medium text-fg">Permissions</p>
+          <p className="mb-2 block text-sm font-medium text-fg">{t('Permissions')}</p>
           <div className="flex flex-wrap gap-2">
             {ALL_PERMISSIONS.map((perm) => (
               <button

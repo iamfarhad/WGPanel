@@ -1,1 +1,35 @@
-export const apikeys: Record<string, string> = {}
+export const apikeys: Record<string, string> = {
+  'API key revoked': 'کلید API باطل شد',
+  'Failed to revoke key': 'باطل کردن کلید ناموفق بود',
+  'Secret rotated for {name}': 'سکرت {name} تعویض شد',
+  'Failed to rotate key': 'تعویض سکرت ناموفق بود',
+  "Credentials for the Telegram sales bot and other integrations to call this panel's API.":
+    'اعتبارنامه‌ی ربات فروش تلگرام و سرویس‌های دیگر برای فراخوانی API این پنل.',
+  'New API key': 'کلید API جدید',
+  'Could not load API keys.': 'بارگذاری کلیدهای API ممکن نشد.',
+  'No API keys yet': 'هنوز کلید API نداریم',
+  'Create one to let your Telegram bot talk to this panel.': 'یکی بسازید تا ربات تلگرام بتواند با این پنل کار کند.',
+  Label: 'برچسب',
+  'Key ID': 'شناسه‌ی کلید',
+  Permissions: 'دسترسی‌ها',
+  'Node groups': 'گروه‌های نود',
+  Status: 'وضعیت',
+  all: 'همه',
+  'Rotate secret': 'تعویض سکرت',
+  Revoke: 'باطل کردن',
+  'Revoke API key': 'باطل کردن کلید API',
+  '"{name}" will immediately stop being able to authenticate. This cannot be undone.':
+    'کلید «{name}» همان لحظه از کار می‌افتد و برگشتی ندارد.',
+  'Secret key': 'سکرت کلید',
+  'This secret is shown once. Store it securely — it cannot be retrieved again.':
+    'این سکرت فقط یک بار نشان داده می‌شود. آن را جای امنی نگه دارید؛ بعداً قابل بازیابی نیست.',
+  Secret: 'سکرت',
+  'Secret copied to clipboard': 'سکرت کپی شد',
+  'Copy secret': 'کپی سکرت',
+  'Failed to create API key': 'ساخت کلید API ناموفق بود',
+  'e.g. telegram-sales-bot': 'مثلاً telegram-sales-bot',
+  'eu-west, us-east': 'eu-west, us-east',
+  '(comma-separated, blank = all)': '(با کاما جدا کنید؛ خالی یعنی همه)',
+  'Creating…': 'در حال ساخت…',
+  'Create key': 'ساخت کلید',
+}
