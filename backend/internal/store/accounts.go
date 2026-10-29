@@ -472,7 +472,7 @@ func (s *Store) ListDesiredPeersForNode(ctx context.Context, nodeID string) ([]D
 // fetch can't hand out a config for an account that should already be suspended.
 // Never namespace-scoped: possession of the token IS the authorization.
 func (s *Store) GetAccountBySubscriptionToken(ctx context.Context, token string) (Account, error) {
-	if err := s.reconcileExpiry(ctx); err != nil {
+	if err := s.reconcileLimits(ctx); err != nil {
 		return Account{}, err
 	}
 	var a Account
@@ -513,23 +513,11 @@ func contains(list []string, want string) bool {
 	return false
 }
 
-// reconcileExpiry flips any active account past its expiry_at to suspended. Run
-// before every read (see GetAccount/ListAccounts) since there's no background
-// scheduler yet - documented as a known limitation in STORY-03: an account nobody
-// ever reads won't flip until someone does.
-func (s *Store) reconcileExpiry(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, `
-		UPDATE accounts SET status = 'suspended', suspend_reason = 'expired', updated_at = now()
-		WHERE status = 'active' AND expiry_at IS NOT NULL AND expiry_at <= now()
-	`)
-	return err
-}
-
 // GetAccount looks up an account, scoped to callerNamespace (nil = admin, sees
 // everything). A mismatched namespace and a genuinely missing id are indistinguishable
 // on purpose - both return ErrAccountNotFound.
 func (s *Store) GetAccount(ctx context.Context, id string, callerNamespace *string) (Account, error) {
-	if err := s.reconcileExpiry(ctx); err != nil {
+	if err := s.reconcileLimits(ctx); err != nil {
 		return Account{}, err
 	}
 	var a Account
@@ -549,7 +537,7 @@ func (s *Store) GetAccount(ctx context.Context, id string, callerNamespace *stri
 // accounts are excluded. The order is (created_at, id) - id is the tiebreak that keeps
 // limit/offset paging stable when several accounts share a created_at.
 func (s *Store) ListAccounts(ctx context.Context, limit, offset int, callerNamespace *string, ownerFilter string) ([]Account, error) {
-	if err := s.reconcileExpiry(ctx); err != nil {
+	if err := s.reconcileLimits(ctx); err != nil {
 		return nil, err
 	}
 	rows, err := s.pool.Query(ctx,
@@ -582,7 +570,7 @@ func (s *Store) ListAccounts(ctx context.Context, limit, offset int, callerNames
 // keep the list-shaped API response. Empty (nil) when nothing matches or the match is
 // in another namespace.
 func (s *Store) FindAccountsByExternalRef(ctx context.Context, ref string, callerNamespace *string) ([]Account, error) {
-	if err := s.reconcileExpiry(ctx); err != nil {
+	if err := s.reconcileLimits(ctx); err != nil {
 		return nil, err
 	}
 	rows, err := s.pool.Query(ctx,
@@ -630,12 +618,18 @@ type UpdateAccountParams struct {
 //
 // ClearDataQuota makes the account unlimited, so a reseller with a data credit is
 // refused with ErrResellerUnlimitedNotAllowed - the same rule CreateAccount applies.
-// Because an unlimited account can no longer be over quota, clearing the quota also
-// lifts a quota_exceeded suspension (never any other reason, and not when the account
-// is expired). Raising a quota to a finite value does NOT lift it - that is RenewAccount's
-// job and UpdateAccount has never done it. ClearDeviceLimit also resets the standing
-// device_limit_exceeded_at flag: reconcileDeviceLimitsTx skips accounts whose limit is
-// NULL, so a stale flag would otherwise never clear.
+//
+// Data-cap enforcement (limits.go) is applied to the result:
+//   - a PATCH that changes the quota (a new value, or ClearDataQuota) on an account
+//     suspended for quota_exceeded reactivates it when the new cap is above its usage
+//     (a cleared quota always is) and it has not expired; a PATCH that does not touch
+//     the quota never lifts anything, and neither does any other suspension reason;
+//   - a PATCH that leaves an active account at or over its (new) cap suspends it as
+//     quota_exceeded - or as expired, which wins - and the returned account says so.
+//
+// ClearDeviceLimit also resets the standing device_limit_exceeded_at flag:
+// reconcileDeviceLimitsTx skips accounts whose limit is NULL, so a stale flag would
+// otherwise never clear.
 func (s *Store) UpdateAccount(ctx context.Context, id string, callerNamespace *string, p UpdateAccountParams) (Account, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -670,17 +664,23 @@ func (s *Store) UpdateAccount(ctx context.Context, id string, callerNamespace *s
 		}
 	}
 
-	// $9 = clear quota, $10 = clear device limit. liftQuota is evaluated against the OLD
-	// status/suspend_reason (every RHS in an UPDATE sees the pre-update row) but the
-	// NEW expiry (COALESCE($5, expiry_at)), so a PATCH that also moves expiry_at is
-	// judged on the date the account will actually carry.
-	const liftQuota = `($9::bool AND status = 'suspended' AND suspend_reason = 'quota_exceeded'
-			AND (COALESCE($5::timestamptz, expiry_at) IS NULL OR COALESCE($5::timestamptz, expiry_at) > now()))`
+	// $9 = clear quota, $10 = clear device limit. Every RHS in an UPDATE sees the
+	// pre-update row, so newQuota/newExpiry spell out the values the row is about to get;
+	// liftQuota is judged on those (a PATCH that also moves expiry_at is judged on the
+	// date the account will actually carry) but on the OLD status/suspend_reason/usage.
+	const (
+		newQuota  = `(CASE WHEN $9::bool THEN NULL ELSE COALESCE($4::bigint, data_quota_bytes) END)`
+		newExpiry = `COALESCE($5::timestamptz, expiry_at)`
+		liftQuota = `(($9::bool OR $4::bigint IS NOT NULL)
+			AND status = 'suspended' AND suspend_reason = 'quota_exceeded'
+			AND (` + newExpiry + ` IS NULL OR ` + newExpiry + ` > now())
+			AND (` + newQuota + ` IS NULL OR data_used_bytes < ` + newQuota + `))`
+	)
 	var a Account
 	err = scanAccount(tx.QueryRow(ctx, `
 		UPDATE accounts SET
 			label = COALESCE($3, label),
-			data_quota_bytes = CASE WHEN $9::bool THEN NULL ELSE COALESCE($4, data_quota_bytes) END,
+			data_quota_bytes = `+newQuota+`,
 			expiry_at = COALESCE($5, expiry_at),
 			device_limit = CASE WHEN $10::bool THEN NULL ELSE COALESCE($6, device_limit) END,
 			device_limit_exceeded_at = CASE WHEN $10::bool THEN NULL ELSE device_limit_exceeded_at END,
@@ -700,6 +700,9 @@ func (s *Store) UpdateAccount(ctx context.Context, id string, callerNamespace *s
 		return Account{}, ErrAccountNotFound
 	}
 	if err != nil {
+		return Account{}, err
+	}
+	if err := settleAccountTx(ctx, tx, &a); err != nil {
 		return Account{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -725,21 +728,43 @@ func (s *Store) SuspendAccount(ctx context.Context, id string, callerNamespace *
 // EnableAccount reactivates an account. A reseller caller may not undo the
 // super-admin bulk suspension (suspend_reason 'reseller_suspended') - that is
 // ErrAccountLockedByAdmin (403), distinct from the 404 for a foreign namespace.
+//
+// An account at or over its data cap cannot be enabled, whatever the suspension reason:
+// the next sample (or read) would suspend it again as quota_exceeded, and the caller
+// would be left believing the enable worked. That is ErrAccountQuotaExhausted (409);
+// raise the quota, renew with add_quota_gb or reset the usage first.
+//
+// The reseller guard is NULL-safe: it used to evaluate to NULL for an account with no
+// suspend_reason, so a reseller enabling an already-active account got
+// ErrAccountLockedByAdmin.
 func (s *Store) EnableAccount(ctx context.Context, id string, callerNamespace *string) (Account, error) {
 	_, isReseller := resellerIDFromNamespace(callerNamespace)
 	var a Account
 	err := scanAccount(s.pool.QueryRow(ctx, `
 		UPDATE accounts SET status = 'active', suspend_reason = NULL, updated_at = now()
 		WHERE id = $2 AND status != 'deleted' AND `+namespaceFilter+`
-		  AND NOT ($3::bool AND suspend_reason = 'reseller_suspended')
+		  AND NOT COALESCE($3::bool AND suspend_reason = 'reseller_suspended', false)
+		  AND NOT `+accountQuotaReachedSQL+`
 		RETURNING `+accountColumns,
 		callerNamespace, id, isReseller,
 	), &a)
 	if errors.Is(err, pgx.ErrNoRows) {
-		if isReseller {
-			if _, gerr := s.GetAccount(ctx, id, callerNamespace); gerr == nil {
-				return Account{}, ErrAccountLockedByAdmin
-			}
+		// Nothing matched: say which guard it was (404 and 403 keep precedence).
+		var locked, exhausted bool
+		qerr := s.pool.QueryRow(ctx, `
+			SELECT COALESCE($3::bool AND suspend_reason = 'reseller_suspended', false), `+accountQuotaReachedSQL+`
+			FROM accounts WHERE id = $2 AND status != 'deleted' AND `+namespaceFilter,
+			callerNamespace, id, isReseller,
+		).Scan(&locked, &exhausted)
+		switch {
+		case errors.Is(qerr, pgx.ErrNoRows):
+			return Account{}, ErrAccountNotFound
+		case qerr != nil:
+			return Account{}, qerr
+		case locked:
+			return Account{}, ErrAccountLockedByAdmin
+		case exhausted:
+			return Account{}, ErrAccountQuotaExhausted
 		}
 		return Account{}, ErrAccountNotFound
 	}
@@ -811,10 +836,12 @@ func (s *Store) RenewAccount(ctx context.Context, id string, callerNamespace *st
 		return Account{}, err
 	}
 
-	quotaResolved := a.SuspendReason != nil && *a.SuspendReason == "quota_exceeded" &&
+	// An expired account is not revived by data alone: a quota_exceeded suspension is
+	// lifted only while the account is also inside its validity (expired wins, limits.go).
+	notExpired := a.ExpiryAt == nil || a.ExpiryAt.After(time.Now())
+	quotaResolved := a.SuspendReason != nil && *a.SuspendReason == "quota_exceeded" && notExpired &&
 		(a.DataQuotaBytes == nil || a.DataUsedBytes < *a.DataQuotaBytes)
-	expiryResolved := a.SuspendReason != nil && *a.SuspendReason == "expired" &&
-		(a.ExpiryAt == nil || a.ExpiryAt.After(time.Now()))
+	expiryResolved := a.SuspendReason != nil && *a.SuspendReason == "expired" && notExpired
 
 	if a.Status == "suspended" && (quotaResolved || expiryResolved) {
 		err = scanAccount(tx.QueryRow(ctx, `
@@ -826,6 +853,11 @@ func (s *Store) RenewAccount(ctx context.Context, id string, callerNamespace *st
 		if err != nil {
 			return Account{}, err
 		}
+	}
+	// A renewal that extends validity but leaves the account at its data cap (or one that
+	// shrinks the quota) must not report an active account the next sample would suspend.
+	if err := settleAccountTx(ctx, tx, &a); err != nil {
+		return Account{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -885,6 +917,11 @@ func (s *Store) ResetAccountUsage(ctx context.Context, id string, callerNamespac
 		return Account{}, ErrAccountNotFound
 	}
 	if err != nil {
+		return Account{}, err
+	}
+	// Zero usage is under every cap except a quota of exactly 0 bytes, which is always
+	// "reached": settle so that corner is not reported active.
+	if err := settleAccountTx(ctx, tx, &a); err != nil {
 		return Account{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -318,18 +318,19 @@ func (s *Store) SuspendResellerAccounts(ctx context.Context, adminID string) (in
 // ReactivateResellerAccounts undoes SuspendResellerAccounts - only accounts whose
 // reason is 'reseller_suspended'. One that has meanwhile expired or run out of quota
 // is not reactivated; it stays suspended under the real reason instead (otherwise it
-// would flip back on for a heartbeat or two before enforcement caught it again).
+// would flip back on for a heartbeat or two before enforcement caught it again). It
+// applies the same rule as the enforcement in limits.go - same fragments, expired
+// before quota_exceeded - to the accounts it touches.
 func (s *Store) ReactivateResellerAccounts(ctx context.Context, adminID string) (reactivated, stillSuspended int, err error) {
 	if _, err := s.GetResellerLimits(ctx, adminID); err != nil {
 		return 0, 0, err
 	}
 	rows, err := s.pool.Query(ctx, `
 		UPDATE accounts SET
-			status = CASE WHEN (expiry_at IS NOT NULL AND expiry_at <= now())
-			                OR (data_quota_bytes IS NOT NULL AND data_used_bytes >= data_quota_bytes)
+			status = CASE WHEN `+accountExpiredSQL+` OR `+accountQuotaReachedSQL+`
 			              THEN 'suspended' ELSE 'active' END,
-			suspend_reason = CASE WHEN expiry_at IS NOT NULL AND expiry_at <= now() THEN 'expired'
-			                      WHEN data_quota_bytes IS NOT NULL AND data_used_bytes >= data_quota_bytes THEN 'quota_exceeded'
+			suspend_reason = CASE WHEN `+accountExpiredSQL+` THEN 'expired'
+			                      WHEN `+accountQuotaReachedSQL+` THEN 'quota_exceeded'
 			                      ELSE NULL END,
 			updated_at = now()
 		WHERE owner_key_namespace = $1 AND status = 'suspended' AND suspend_reason = $2

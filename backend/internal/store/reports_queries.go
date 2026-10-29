@@ -165,7 +165,7 @@ func (q reportQuery) bucketCounts(sql string, order []string, args ...any) ([]Bu
 func (q reportQuery) quotaBuckets(r *Report) (err error) {
 	r.QuotaBuckets, err = q.bucketCounts(`
 		SELECT CASE WHEN a.data_quota_bytes IS NULL THEN 'unlimited'
-		            WHEN a.data_used_bytes >= a.data_quota_bytes THEN 'exceeded'
+		            WHEN `+accountQuotaReachedSQL+` THEN 'exceeded'
 		            WHEN a.data_used_bytes * 100 >= a.data_quota_bytes * 80 THEN '80to100'
 		            WHEN a.data_used_bytes * 100 >= a.data_quota_bytes * 50 THEN '50to80'
 		            ELSE 'lt50' END AS b, count(*)::int

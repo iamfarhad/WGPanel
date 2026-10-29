@@ -176,7 +176,7 @@ func (s *Store) BuildReport(ctx context.Context, p ReportParams) (Report, error)
 		now = time.Now()
 	}
 	now = now.UTC().Truncate(time.Second)
-	if err := s.reconcileExpiry(ctx); err != nil {
+	if err := s.reconcileLimits(ctx); err != nil {
 		return Report{}, err
 	}
 
