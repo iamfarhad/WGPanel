@@ -61,6 +61,20 @@ export const resellers: Record<string, string> = {
   'Save changes': 'ذخیره‌ی تغییرات',
   'Create reseller': 'ساخت نماینده',
 
+  // Reseller dashboard and account ownership
+  'Your plan': 'طرح من',
+  'Your limits as a reseller': 'سقف‌های شما به‌عنوان نماینده',
+  'Longest account validity': 'بیشترین اعتبار اکانت',
+  '{n} days': '{n} روز',
+  'Filter by owner': 'فیلتر بر اساس مالک',
+  'All owners': 'همه‌ی مالک‌ها',
+  'Panel admins': 'ادمین‌های پنل',
+  'API keys': 'کلیدهای API',
+  'Reseller: {name}': 'نماینده: {name}',
+  'API key': 'کلید API',
+  'Panel admin': 'ادمین پنل',
+  Owner: 'مالک',
+
   // Shared error state
   'Check your connection to the panel and try again.': 'اتصال خود به پنل را بررسی کنید و دوباره امتحان کنید.',
   'Try again': 'تلاش دوباره',

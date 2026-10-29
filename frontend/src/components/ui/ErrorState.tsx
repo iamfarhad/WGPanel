@@ -10,7 +10,7 @@ export function ErrorState({ title, onRetry }: { title: string; onRetry?: () => 
   return (
     <div className="flex flex-col items-center justify-center px-6 py-12 text-center" role="alert">
       <Illustration name="error" size={140} className="mb-3" />
-      <p className="text-[15px] font-semibold text-fg">{title}</p>
+      <p className="text-[15px] font-semibold text-fg">{t(title)}</p>
       <p className="mt-1 max-w-sm text-sm leading-relaxed text-muted">
         {t('Check your connection to the panel and try again.')}
       </p>

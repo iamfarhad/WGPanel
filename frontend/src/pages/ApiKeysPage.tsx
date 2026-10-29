@@ -13,6 +13,7 @@ import { Dialog } from '../components/ui/Dialog'
 import { ConfirmDialog } from '../components/ui/ConfirmDialog'
 import { Badge } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
+import { ErrorState } from '../components/ui/ErrorState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 import { RowActions } from '../components/ui/RowActions'
@@ -86,10 +87,10 @@ export function ApiKeysPage() {
 
       <Card className="overflow-hidden">
         {keysQuery.isLoading && <TableSkeleton cols={5} />}
-        {keysQuery.isError && <p className="p-6 text-sm text-danger-fg">Could not load API keys.</p>}
+        {keysQuery.isError && <ErrorState title="Could not load API keys." onRetry={() => keysQuery.refetch()} />}
         {!keysQuery.isLoading && !keysQuery.isError && keys.length === 0 && (
           <EmptyState
-            mascot
+            illustration="security"
             title="No API keys yet"
             description="Create one to let your Telegram bot talk to this panel."
             action={

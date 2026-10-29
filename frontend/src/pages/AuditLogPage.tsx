@@ -7,6 +7,7 @@ import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Select } from '../components/ui/Select'
 import { EmptyState } from '../components/ui/EmptyState'
+import { ErrorState } from '../components/ui/ErrorState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 
@@ -48,9 +49,9 @@ export function AuditLogPage() {
 
       <Card className="overflow-hidden">
         {logQuery.isLoading && <TableSkeleton cols={4} />}
-        {logQuery.isError && <p className="p-6 text-sm text-danger-fg">Could not load audit log.</p>}
+        {logQuery.isError && <ErrorState title="Could not load audit log." onRetry={() => logQuery.refetch()} />}
         {!logQuery.isLoading && !logQuery.isError && entries.length === 0 && (
-          <EmptyState mascot title="No audit entries yet" description="Every change made in this panel will be recorded here." />
+          <EmptyState illustration="search" title="No audit entries yet" description="Every change made in this panel will be recorded here." />
         )}
         {!logQuery.isLoading && !logQuery.isError && entries.length > 0 && (
           <Table>

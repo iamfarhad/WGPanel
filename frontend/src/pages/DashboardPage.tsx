@@ -6,7 +6,7 @@ import { useAuth } from '../lib/auth'
 import { useI18n } from '../lib/i18n'
 import { ltr } from '../lib/bidi'
 import { Button } from '../components/ui/Button'
-import { Mascot } from '../components/brand/Brand'
+import { Illustration } from '../components/brand/Brand'
 import { PageHeader } from '../components/ui/PageHeader'
 import { StatCard } from '../components/ui/StatCard'
 import { Card, CardHeader } from '../components/ui/Card'
@@ -50,11 +50,13 @@ function WelcomeBanner({
   onlineNodes,
   totalNodes,
   onlineAccounts,
+  canManageNodes,
 }: {
   username?: string
   onlineNodes: number
   totalNodes: number
   onlineAccounts: number
+  canManageNodes: boolean
 }) {
   const navigate = useNavigate()
   const { t } = useI18n()
@@ -84,12 +86,14 @@ function WelcomeBanner({
               View accounts
               <ArrowRight className="h-3.5 w-3.5 rtl:rotate-180" />
             </Button>
-            <Button size="sm" variant="secondary" onClick={() => navigate('/nodes')}>
-              Manage nodes
-            </Button>
+            {canManageNodes && (
+              <Button size="sm" variant="secondary" onClick={() => navigate('/nodes')}>
+                Manage nodes
+              </Button>
+            )}
           </div>
         </div>
-        <Mascot width={210} className="-my-6 me-2 hidden shrink-0 sm:block" />
+        <Illustration name="wave" size={150} className="-my-5 me-4 hidden shrink-0 sm:block" />
       </div>
     </Card>
   )
@@ -98,6 +102,7 @@ function WelcomeBanner({
 export function DashboardPage() {
   const { t } = useI18n()
   const { user } = useAuth()
+  const isReseller = user?.role === 'reseller'
   const nodesQuery = useQuery({
     queryKey: ['nodes'],
     queryFn: () => apiFetch<{ nodes: Node[] | null }>('/api/v1/nodes'),
@@ -139,6 +144,7 @@ export function DashboardPage() {
           onlineNodes={onlineNodes}
           totalNodes={nodes.length}
           onlineAccounts={onlineAccounts}
+          canManageNodes={!isReseller}
         />
       )}
 
@@ -183,6 +189,9 @@ export function DashboardPage() {
       )}
 
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+        {isReseller ? (
+          <PlanCard />
+        ) : (
         <Card>
           <CardHeader title="Node capacity" description="Peers provisioned per node" />
           <div className="p-5">
@@ -211,6 +220,7 @@ export function DashboardPage() {
             )}
           </div>
         </Card>
+        )}
 
         <Card>
           <CardHeader title="Recent accounts" />
@@ -242,6 +252,86 @@ export function DashboardPage() {
           </div>
         </Card>
       </div>
+    </div>
+  )
+}
+
+interface ResellerPlan {
+  max_accounts: number | null
+  data_limit_bytes: number | null
+  max_expiry_days: number | null
+  node_groups: string[] | null
+  usage: { accounts_used: number; data_allocated_bytes: number; data_used_bytes: number }
+}
+
+const BYTES_PER_GB = 1_000_000_000
+const gb = (bytes: number) => `${Number((bytes / BYTES_PER_GB).toFixed(bytes >= 100 * BYTES_PER_GB ? 0 : 1))} GB`
+
+/** A reseller's own limits and how much of them is used - the one thing on its
+ * dashboard staff don't need. */
+function PlanCard() {
+  const { t } = useI18n()
+  const planQuery = useQuery({
+    queryKey: ['reseller-me'],
+    queryFn: () => apiFetch<ResellerPlan>('/api/v1/reseller/me'),
+  })
+  const plan = planQuery.data
+
+  return (
+    <Card>
+      <CardHeader title="Your plan" description="Your limits as a reseller" />
+      <div className="space-y-5 p-5">
+        {!plan ? (
+          <Skeleton className="h-24" />
+        ) : (
+          <>
+            <PlanRow
+              label={t('Accounts')}
+              used={plan.usage.accounts_used}
+              max={plan.max_accounts}
+              format={String}
+            />
+            <PlanRow
+              label={t('Traffic credit')}
+              used={plan.usage.data_allocated_bytes}
+              max={plan.data_limit_bytes}
+              format={gb}
+            />
+            <div className="flex flex-wrap gap-x-6 gap-y-2 border-t border-edge pt-4 text-sm">
+              <span className="text-muted">
+                {t('Traffic used')}: <span className="font-medium text-fg">{ltr(gb(plan.usage.data_used_bytes))}</span>
+              </span>
+              <span className="text-muted">
+                {t('Longest account validity')}:{' '}
+                <span className="font-medium text-fg">
+                  {plan.max_expiry_days ? t('{n} days', { n: plan.max_expiry_days }) : t('Unlimited')}
+                </span>
+              </span>
+              <span className="text-muted">
+                {t('Node groups')}:{' '}
+                <span className="font-medium text-fg">
+                  {plan.node_groups && plan.node_groups.length > 0 ? plan.node_groups.join('، ') : t('All')}
+                </span>
+              </span>
+            </div>
+          </>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+function PlanRow({ label, used, max, format }: { label: string; used: number; max: number | null; format: (n: number) => string }) {
+  const { t } = useI18n()
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between gap-4 text-sm">
+        <span className="font-medium text-fg">{label}</span>
+        <span className="text-xs text-muted tabular-nums">
+          {ltr(format(used))} / {max === null ? t('Unlimited') : ltr(format(max))}
+        </span>
+      </div>
+      {max !== null && <Progress value={used} max={max} />}
     </div>
   )
 }

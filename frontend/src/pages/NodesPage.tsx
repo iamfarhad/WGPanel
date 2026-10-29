@@ -17,6 +17,7 @@ import { Field } from '../components/ui/Field'
 import { Dialog } from '../components/ui/Dialog'
 import { Badge, statusTone } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
+import { ErrorState } from '../components/ui/ErrorState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 import { RowActions } from '../components/ui/RowActions'
@@ -145,10 +146,10 @@ export function NodesPage() {
 
       <Card className="overflow-hidden">
         {nodesQuery.isLoading && <TableSkeleton cols={5} />}
-        {nodesQuery.isError && <p className="p-6 text-sm text-danger-fg">Could not load nodes.</p>}
+        {nodesQuery.isError && <ErrorState title="Could not load nodes." onRetry={() => nodesQuery.refetch()} />}
         {!nodesQuery.isLoading && !nodesQuery.isError && nodes.length === 0 && (
           <EmptyState
-            mascot
+            illustration="setup"
             title="No nodes yet"
             description="Add your first WireGuard server, then run install-node.sh on it with its join token."
             action={

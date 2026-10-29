@@ -13,6 +13,8 @@ import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Select } from '../components/ui/Select'
 import { Field } from '../components/ui/Field'
+import { ErrorState } from '../components/ui/ErrorState'
+import { Illustration, type IllustrationName } from '../components/brand/Brand'
 import { Skeleton } from '../components/ui/Skeleton'
 import { Dialog } from '../components/ui/Dialog'
 
@@ -119,7 +121,7 @@ function BackupCard() {
       // Everything cached client-side describes the pre-restore panel.
       queryClient.clear()
       closeRestore()
-      push('success', 'Backup restored')
+      push('success', t('Backup restored'))
     } catch (err) {
       if (err instanceof SyntaxError) {
         push('error', 'That file is not a Jirjirak WireGuard backup')
@@ -135,6 +137,7 @@ function BackupCard() {
     <Card className="overflow-hidden">
       <SectionHeader
         icon={DatabaseBackup}
+        illustration="backup"
         title={t('Backup & restore')}
         description={t(
           'One password-encrypted file with everything: admins, nodes, accounts and their keys, API keys, settings, audit log, the node CA, and the encryption keys from deploy/.env. Restoring needs only this file and its password - even on a brand-new server.',
@@ -283,10 +286,20 @@ function BackupCard() {
   )
 }
 
-function SectionHeader({ icon: Icon, title, description }: { icon: LucideIcon; title: string; description: string }) {
+function SectionHeader({
+  icon: Icon,
+  title,
+  description,
+  illustration,
+}: {
+  icon: LucideIcon
+  title: string
+  description: string
+  illustration?: IllustrationName
+}) {
   const { t } = useI18n()
   return (
-    <div className="flex items-start gap-3 border-b border-edge px-6 py-4">
+    <div className="flex items-center gap-3 border-b border-edge px-6 py-4">
       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent-fg">
         <Icon className="h-4 w-4" />
       </div>
@@ -294,6 +307,7 @@ function SectionHeader({ icon: Icon, title, description }: { icon: LucideIcon; t
         <h2 className="text-sm font-semibold tracking-tight text-fg">{t(title)}</h2>
         <p className="mt-0.5 text-xs leading-relaxed text-muted">{t(description)}</p>
       </div>
+      {illustration && <Illustration name={illustration} size={84} className="-my-3 ms-auto hidden shrink-0 sm:block" />}
     </div>
   )
 }
@@ -469,7 +483,7 @@ export function SettingsPage() {
               ))}
             </div>
           ) : settingsQuery.isError ? (
-            <p className="p-6 text-sm text-danger-fg">{t('Could not load settings.')}</p>
+            <ErrorState title="Could not load settings." onRetry={() => settingsQuery.refetch()} />
           ) : (
             <form onSubmit={handleSubmit} className="space-y-6 p-6">
               <Field

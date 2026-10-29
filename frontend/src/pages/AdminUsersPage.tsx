@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
 import { apiFetch, ApiError } from '../lib/api'
 import { useToast } from '../lib/toast'
 import { useAuth } from '../lib/auth'
@@ -15,6 +15,7 @@ import { Dialog } from '../components/ui/Dialog'
 import { ConfirmDialog } from '../components/ui/ConfirmDialog'
 import { Badge } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
+import { ErrorState } from '../components/ui/ErrorState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 import { RowActions } from '../components/ui/RowActions'
@@ -76,9 +77,9 @@ export function AdminUsersPage() {
 
       <Card className="overflow-hidden">
         {adminsQuery.isLoading && <TableSkeleton cols={3} />}
-        {adminsQuery.isError && <p className="p-6 text-sm text-danger-fg">Could not load admin users.</p>}
+        {adminsQuery.isError && <ErrorState title="Could not load admin users." onRetry={() => adminsQuery.refetch()} />}
         {!adminsQuery.isLoading && !adminsQuery.isError && admins.length === 0 && (
-          <EmptyState icon={ShieldCheck} title="No admin users found" />
+          <EmptyState illustration="security" title="No admin users found" />
         )}
         {!adminsQuery.isLoading && !adminsQuery.isError && admins.length > 0 && (
           <Table>

@@ -4,10 +4,12 @@ import { Plus, Download, Ban, CheckCircle2, RotateCcw, Trash2, Server, Copy, Fil
 import QRCode from 'qrcode'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { chartAxis, chartColors, chartGrid, chartTooltip } from '../lib/chartTheme'
-import { apiFetch, ApiError } from '../lib/api'
+import { apiFetch } from '../lib/api'
 import { getAccessToken } from '../lib/tokenStore'
 import { useToast } from '../lib/toast'
 import { useI18n } from '../lib/i18n'
+import { useAuth } from '../lib/auth'
+import { apiErrorMessage } from '../lib/apiErrors'
 import { ltr } from '../lib/bidi'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
@@ -19,6 +21,7 @@ import { Dialog } from '../components/ui/Dialog'
 import { ConfirmDialog } from '../components/ui/ConfirmDialog'
 import { Badge, statusTone } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
+import { ErrorState } from '../components/ui/ErrorState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 import { RowActions } from '../components/ui/RowActions'
@@ -61,8 +64,19 @@ interface Account {
   subscription_url: string | null
   status: string
   suspend_reason: string | null
+  // Owning namespace: null = created by a panel admin, "reseller:<id>" = a reseller's,
+  // anything else = an API key's (see the reseller API).
+  owner: string | null
+  reseller_id: string | null
   created_at: string
   updated_at: string
+}
+
+type OwnerFilter = 'all' | 'admin' | 'api' | `reseller:${string}`
+
+function ownerKind(a: Account): 'admin' | 'api' | 'reseller' {
+  if (a.reseller_id) return 'reseller'
+  return a.owner ? 'api' : 'admin'
 }
 
 interface AccountDevice {
@@ -118,6 +132,10 @@ function formatLastSeen(lastHandshakeAt: string | null, t: (text: string, vars?:
 
 export function AccountsPage() {
   const { t } = useI18n()
+  const { user } = useAuth()
+  const isReseller = user?.role === 'reseller'
+  const isSuperAdmin = user?.role === 'super_admin'
+  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>('all')
   const queryClient = useQueryClient()
   const { push } = useToast()
 
@@ -138,15 +156,30 @@ export function AccountsPage() {
   const settingsQuery = useQuery({
     queryKey: ['settings'],
     queryFn: () => apiFetch<{ default_data_quota_gb: number | null; default_device_limit: number | null }>('/api/v1/settings'),
+    enabled: !isReseller, // settings are staff-only; resellers get no panel defaults
   })
+  // Names for the Owner column/filter. Only super admins may list resellers.
+  const resellersQuery = useQuery({
+    queryKey: ['resellers'],
+    queryFn: () => apiFetch<{ resellers: { id: string; username: string }[] | null }>('/api/v1/resellers'),
+    enabled: isSuperAdmin,
+  })
+  const resellerNames = useMemo(
+    () => new Map((resellersQuery.data?.resellers ?? []).map((r) => [r.id, r.username])),
+    [resellersQuery.data],
+  )
 
   const accounts = accountsQuery.data?.accounts ?? []
   const nodes = nodesQuery.data?.nodes ?? []
 
   const query = search.trim().toLowerCase()
-  const filteredAccounts = query
-    ? accounts.filter((a) => a.label.toLowerCase().includes(query) || a.external_ref?.toLowerCase().includes(query))
-    : accounts
+  const filteredAccounts = accounts.filter((a) => {
+    if (query && !(a.label.toLowerCase().includes(query) || a.external_ref?.toLowerCase().includes(query))) return false
+    if (ownerFilter === 'all') return true
+    if (ownerFilter === 'admin' || ownerFilter === 'api') return ownerKind(a) === ownerFilter
+    return a.owner === ownerFilter
+  })
+  const showOwner = !isReseller
 
   function openDetail(account: Account, tab: DetailTab = 'overview') {
     setDetailInitialTab(tab)
@@ -164,7 +197,7 @@ export function AccountsPage() {
       invalidate()
       setDetailAccount(account)
     },
-    onError: (err) => push('error', err instanceof ApiError ? err.message : t('Failed to suspend account')),
+    onError: (err) => push('error', apiErrorMessage(err, t, 'Failed to suspend account')),
   })
 
   const enableMutation = useMutation({
@@ -174,7 +207,7 @@ export function AccountsPage() {
       invalidate()
       setDetailAccount(account)
     },
-    onError: (err) => push('error', err instanceof ApiError ? err.message : t('Failed to enable account')),
+    onError: (err) => push('error', apiErrorMessage(err, t, 'Failed to enable account')),
   })
 
   const renewMutation = useMutation({
@@ -188,7 +221,7 @@ export function AccountsPage() {
       invalidate()
       setDetailAccount(account)
     },
-    onError: (err) => push('error', err instanceof ApiError ? err.message : t('Failed to renew account')),
+    onError: (err) => push('error', apiErrorMessage(err, t, 'Failed to renew account')),
   })
 
   const deleteMutation = useMutation({
@@ -199,7 +232,7 @@ export function AccountsPage() {
       setDeleteTarget(null)
       setDetailAccount(null)
     },
-    onError: (err) => push('error', err instanceof ApiError ? err.message : t('Failed to delete account')),
+    onError: (err) => push('error', apiErrorMessage(err, t, 'Failed to delete account')),
   })
 
   const patchMutation = useMutation({
@@ -210,7 +243,7 @@ export function AccountsPage() {
       invalidate()
       setDetailAccount(account)
     },
-    onError: (err) => push('error', err instanceof ApiError ? err.message : t('Failed to update account')),
+    onError: (err) => push('error', apiErrorMessage(err, t, 'Failed to update account')),
   })
 
   const rotateSubscriptionMutation = useMutation({
@@ -220,7 +253,7 @@ export function AccountsPage() {
       invalidate()
       setDetailAccount(account)
     },
-    onError: (err) => push('error', err instanceof ApiError ? err.message : t('Failed to rotate subscription URL')),
+    onError: (err) => push('error', apiErrorMessage(err, t, 'Failed to rotate subscription URL')),
   })
 
   return (
@@ -237,26 +270,43 @@ export function AccountsPage() {
       />
 
       {accounts.length > 0 && (
-        <div className="relative mb-4 max-w-xs">
-          <Search className="pointer-events-none absolute top-1/2 start-3 h-4 w-4 -translate-y-1/2 text-faint" />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={t('Search accounts…')}
-            className="ps-9"
-            aria-label={t('Search accounts')}
-          />
+        <div className="mb-4 flex flex-wrap gap-3">
+          <div className="relative w-full max-w-xs">
+            <Search className="pointer-events-none absolute top-1/2 start-3 h-4 w-4 -translate-y-1/2 text-faint" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={t('Search accounts…')}
+              className="ps-9"
+              aria-label={t('Search accounts')}
+            />
+          </div>
+          {showOwner && (
+            <Select
+              value={ownerFilter}
+              onChange={(e) => setOwnerFilter(e.target.value as OwnerFilter)}
+              aria-label={t('Filter by owner')}
+              className="w-full max-w-56"
+            >
+              <option value="all">{t('All owners')}</option>
+              <option value="admin">{t('Panel admins')}</option>
+              <option value="api">{t('API keys')}</option>
+              {[...resellerNames].map(([id, name]) => (
+                <option key={id} value={`reseller:${id}`}>
+                  {t('Reseller: {name}', { name })}
+                </option>
+              ))}
+            </Select>
+          )}
         </div>
       )}
 
       <Card className="overflow-hidden">
         {accountsQuery.isLoading && <TableSkeleton cols={5} />}
-        {accountsQuery.isError && (
-          <p className="p-6 text-sm text-danger-fg">Could not load accounts.</p>
-        )}
+        {accountsQuery.isError && <ErrorState title="Could not load accounts." onRetry={() => accountsQuery.refetch()} />}
         {!accountsQuery.isLoading && !accountsQuery.isError && accounts.length === 0 && (
           <EmptyState
-            mascot
+            illustration="wave"
             title="No accounts yet"
             description="Create the first WireGuard account to get started."
             action={
@@ -268,7 +318,7 @@ export function AccountsPage() {
           />
         )}
         {!accountsQuery.isLoading && !accountsQuery.isError && accounts.length > 0 && filteredAccounts.length === 0 && (
-          <EmptyState icon={Search} title="No matching accounts" description={t('Nothing matches "{query}".', { query: search.trim() })} />
+          <EmptyState illustration="search" title="No matching accounts" description={t('Nothing matches "{query}".', { query: search.trim() })} />
         )}
         {!accountsQuery.isLoading && !accountsQuery.isError && filteredAccounts.length > 0 && (
           <Table>
@@ -278,6 +328,7 @@ export function AccountsPage() {
                 <Th>Nodes</Th>
                 <Th>Connection</Th>
                 <Th>Usage</Th>
+                {showOwner && <Th>Owner</Th>}
                 <Th>Status</Th>
                 <Th className="text-end">Actions</Th>
               </tr>
@@ -320,6 +371,17 @@ export function AccountsPage() {
                         <Progress value={a.data_used_bytes} max={a.data_quota_bytes} className="mt-1.5 max-w-32" />
                       )}
                     </Td>
+                    {showOwner && (
+                      <Td className="whitespace-nowrap text-muted">
+                        {ownerKind(a) === 'reseller' ? (
+                          <Badge tone="blue">{resellerNames.get(a.reseller_id ?? '') ?? t('Reseller')}</Badge>
+                        ) : ownerKind(a) === 'api' ? (
+                          <Badge>{t('API key')}</Badge>
+                        ) : (
+                          <span className="text-xs text-faint">{t('Panel admin')}</span>
+                        )}
+                      </Td>
+                    )}
                     <Td>
                       <span className="inline-flex flex-wrap items-center gap-1">
                         <Badge dot tone={statusTone(a.status)}>{a.status}</Badge>
@@ -469,7 +531,7 @@ function CreateAccountDialog({
       setCustomExpiry('')
       onCreated()
     },
-    onError: (err) => setError(err instanceof ApiError ? err.message : t('Failed to create account')),
+    onError: (err) => setError(apiErrorMessage(err, t, 'Failed to create account')),
   })
 
   function handleSubmit(e: FormEvent) {
