@@ -677,8 +677,10 @@ function AccountDetailDialog({
   const usageSamples = usageQuery.data?.samples ?? []
   const chartData = usageSamples.map((s) => ({
     time: formatDate(s.bucket, { month: 'short', day: 'numeric', hour: '2-digit' }),
-    'Downloaded (RX)': s.rx_bytes,
-    'Uploaded (TX)': s.tx_bytes,
+    // Server-side counters: rx is what the node received from the client (the
+    // client's upload), tx what it sent (the client's download).
+    Download: s.tx_bytes,
+    Upload: s.rx_bytes,
   }))
 
   const tabs: { id: DetailTab; label: string }[] = [
@@ -983,8 +985,8 @@ function AccountDetailDialog({
                   <XAxis dataKey="time" {...chartAxis} minTickGap={30} />
                   <YAxis {...chartAxis} tickFormatter={(v) => formatBytes(v)} width={60} />
                   <Tooltip {...chartTooltip} formatter={(v) => formatBytes(Number(v ?? 0))} />
-                  <Area type="monotone" dataKey="Downloaded (RX)" name={t('Downloaded (RX)')} stroke={chartColors.primary} fill="url(#rxGradient)" strokeWidth={1.75} />
-                  <Area type="monotone" dataKey="Uploaded (TX)" name={t('Uploaded (TX)')} stroke={chartColors.secondary} fill="url(#txGradient)" strokeWidth={1.75} />
+                  <Area type="monotone" dataKey="Download" name={t('Download')} stroke={chartColors.primary} fill="url(#rxGradient)" strokeWidth={1.75} />
+                  <Area type="monotone" dataKey="Upload" name={t('Upload')} stroke={chartColors.secondary} fill="url(#txGradient)" strokeWidth={1.75} />
                 </AreaChart>
               </ResponsiveContainer>
             </div>

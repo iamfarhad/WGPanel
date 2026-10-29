@@ -10,6 +10,7 @@ import {
   LogOut,
   Settings,
   Store,
+  BarChart3,
   Menu,
   X,
   Sun,
@@ -57,6 +58,7 @@ const navGroups: NavGroup[] = [
     items: [
       { to: '/nodes', label: 'Nodes', icon: Server },
       { to: '/accounts', label: 'Accounts', icon: Users, reseller: true },
+      { to: '/reports', label: 'Reports', icon: BarChart3, reseller: true },
     ],
   },
   {

@@ -7,7 +7,11 @@ export const chartColors = {
   secondary: 'var(--ui-chart-2)',
 }
 
-export const chartGrid = { strokeDasharray: '3 3', stroke: 'var(--ui-edge)', strokeOpacity: 0.6, vertical: false }
+// Solid hairlines, horizontal only: dashed grids read as projections/thresholds.
+export const chartGrid = { stroke: 'var(--ui-edge)', strokeOpacity: 0.7, vertical: false }
+
+/** Area fills are a wash of the series hue, never a saturated block. */
+export const AREA_FILL_OPACITY = 0.1
 
 export const chartAxis = {
   tick: { fontSize: 11, fill: 'var(--ui-faint)' },
