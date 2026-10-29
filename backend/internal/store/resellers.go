@@ -26,6 +26,7 @@ const SuspendReasonReseller = "reseller_suspended"
 var (
 	ErrResellerNotFound            = errors.New("reseller not found")
 	ErrResellerDisabled            = errors.New("reseller is disabled")
+	ErrResellerExpired             = errors.New("reseller plan has expired")
 	ErrResellerAccountLimit        = errors.New("reseller account limit reached")
 	ErrResellerDataCredit          = errors.New("reseller data credit exceeded")
 	ErrResellerUnlimitedNotAllowed = errors.New("reseller may not create unlimited-quota accounts")
@@ -54,8 +55,8 @@ type ResellerLimits struct {
 	AdminID        string
 	MaxAccounts    *int
 	DataLimitBytes *int64
-	NodeGroups     []string // empty = every node group
-	MaxExpiryDays  *int
+	NodeGroups     []string   // empty = every node group
+	ExpiresAt      *time.Time // plan end date; nil = never expires
 	Disabled       bool
 	Notes          string
 	CreatedAt      time.Time
@@ -74,10 +75,10 @@ type Reseller struct {
 	Usage    ResellerUsage
 }
 
-const resellerLimitColumns = `l.admin_id, l.max_accounts, l.data_limit_bytes, l.node_groups, l.max_expiry_days, l.disabled, l.notes, l.created_at, l.updated_at`
+const resellerLimitColumns = `l.admin_id, l.max_accounts, l.data_limit_bytes, l.node_groups, l.expires_at, l.disabled, l.notes, l.created_at, l.updated_at`
 
 func scanResellerLimits(row pgx.Row, l *ResellerLimits, extra ...any) error {
-	dest := []any{&l.AdminID, &l.MaxAccounts, &l.DataLimitBytes, &l.NodeGroups, &l.MaxExpiryDays, &l.Disabled, &l.Notes, &l.CreatedAt, &l.UpdatedAt}
+	dest := []any{&l.AdminID, &l.MaxAccounts, &l.DataLimitBytes, &l.NodeGroups, &l.ExpiresAt, &l.Disabled, &l.Notes, &l.CreatedAt, &l.UpdatedAt}
 	return row.Scan(append(dest, extra...)...)
 }
 
@@ -146,7 +147,7 @@ type NewResellerParams struct {
 	MaxAccounts    *int
 	DataLimitBytes *int64
 	NodeGroups     []string
-	MaxExpiryDays  *int
+	ExpiresAt      *time.Time
 	Disabled       bool
 	Notes          string
 }
@@ -176,9 +177,9 @@ func (s *Store) CreateReseller(ctx context.Context, p NewResellerParams) (Resell
 		groups = []string{}
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO reseller_limits (admin_id, max_accounts, data_limit_bytes, node_groups, max_expiry_days, disabled, notes)
+		INSERT INTO reseller_limits (admin_id, max_accounts, data_limit_bytes, node_groups, expires_at, disabled, notes)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		adminID, p.MaxAccounts, p.DataLimitBytes, groups, p.MaxExpiryDays, p.Disabled, p.Notes); err != nil {
+		adminID, p.MaxAccounts, p.DataLimitBytes, groups, p.ExpiresAt, p.Disabled, p.Notes); err != nil {
 		return Reseller{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -211,7 +212,7 @@ func (o *Opt[T]) UnmarshalJSON(b []byte) error {
 type ResellerLimitsPatch struct {
 	MaxAccounts    Opt[int]
 	DataLimitBytes Opt[int64]
-	MaxExpiryDays  Opt[int]
+	ExpiresAt      Opt[time.Time]
 	NodeGroups     *[]string
 	Disabled       *bool
 	Notes          *string
@@ -242,8 +243,8 @@ func (s *Store) UpdateResellerLimits(ctx context.Context, adminID string, p Rese
 	if p.DataLimitBytes.Set {
 		cur.DataLimitBytes = p.DataLimitBytes.Value
 	}
-	if p.MaxExpiryDays.Set {
-		cur.MaxExpiryDays = p.MaxExpiryDays.Value
+	if p.ExpiresAt.Set {
+		cur.ExpiresAt = p.ExpiresAt.Value
 	}
 	if p.NodeGroups != nil {
 		cur.NodeGroups = *p.NodeGroups
@@ -259,9 +260,9 @@ func (s *Store) UpdateResellerLimits(ctx context.Context, adminID string, p Rese
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE reseller_limits SET max_accounts = $2, data_limit_bytes = $3, node_groups = $4,
-			max_expiry_days = $5, disabled = $6, notes = $7, updated_at = now()
+			expires_at = $5, disabled = $6, notes = $7, updated_at = now()
 		WHERE admin_id = $1`,
-		adminID, cur.MaxAccounts, cur.DataLimitBytes, cur.NodeGroups, cur.MaxExpiryDays, cur.Disabled, cur.Notes); err != nil {
+		adminID, cur.MaxAccounts, cur.DataLimitBytes, cur.NodeGroups, cur.ExpiresAt, cur.Disabled, cur.Notes); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -376,20 +377,34 @@ func lockResellerForNamespace(ctx context.Context, tx pgx.Tx, ns *string) (*Rese
 	if err != nil {
 		return nil, err
 	}
-	if l.Disabled {
-		return nil, ErrResellerDisabled
+	if err := l.blockedErr(); err != nil {
+		return nil, err
 	}
 	return &l, nil
 }
 
+// blockedErr is non-nil when the reseller may not act: disabled by an admin, or past
+// its plan end date. Its existing accounts are untouched either way.
+func (l *ResellerLimits) blockedErr() error {
+	if l.Disabled {
+		return ErrResellerDisabled
+	}
+	if l.ExpiresAt != nil && !l.ExpiresAt.After(time.Now()) {
+		return ErrResellerExpired
+	}
+	return nil
+}
+
+// checkExpiry: no account may outlive the reseller's plan, and when the plan has an
+// end date an account must carry an expiry (otherwise it would be unbounded).
 func (l *ResellerLimits) checkExpiry(expiry *time.Time) error {
-	if l.MaxExpiryDays == nil {
+	if l.ExpiresAt == nil {
 		return nil
 	}
 	if expiry == nil {
 		return ErrResellerExpiryRequired
 	}
-	if expiry.After(time.Now().Add(time.Duration(*l.MaxExpiryDays) * 24 * time.Hour)) {
+	if expiry.After(*l.ExpiresAt) {
 		return ErrResellerExpiryTooLong
 	}
 	return nil

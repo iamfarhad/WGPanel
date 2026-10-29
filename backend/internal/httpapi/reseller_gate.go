@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"wgpanel-api/internal/authcrypto"
 	"wgpanel-api/internal/store"
@@ -73,6 +74,10 @@ func (s *Server) admitAdminClaims(w http.ResponseWriter, r *http.Request, claims
 	}
 	if limits.Disabled {
 		writeJSONError(w, http.StatusUnauthorized, "account_disabled", "this reseller account is disabled")
+		return nil, false
+	}
+	if limits.ExpiresAt != nil && !limits.ExpiresAt.After(time.Now()) {
+		writeJSONError(w, http.StatusUnauthorized, "reseller_expired", "this reseller plan has expired")
 		return nil, false
 	}
 	identity.ResellerID = claims.AdminID

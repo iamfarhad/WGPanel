@@ -126,8 +126,9 @@ func TestResellerQuotaIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("max expiry", func(t *testing.T) {
-		r := mk("expiry", NewResellerParams{MaxExpiryDays: ip(30)})
+	t.Run("plan expiry date caps accounts and blocks an expired reseller", func(t *testing.T) {
+		planEnd := time.Now().Add(30 * 24 * time.Hour)
+		r := mk("expiry", NewResellerParams{ExpiresAt: &planEnd})
 		ok := time.Now().Add(29 * 24 * time.Hour)
 		far := time.Now().Add(31 * 24 * time.Hour)
 		if _, err := create(r, nil, nil, ""); !errors.Is(err, ErrResellerExpiryRequired) {
@@ -136,8 +137,34 @@ func TestResellerQuotaIntegration(t *testing.T) {
 		if _, err := create(r, nil, &far, ""); !errors.Is(err, ErrResellerExpiryTooLong) {
 			t.Fatalf("far expiry: %v", err)
 		}
-		if _, err := create(r, nil, &ok, ""); err != nil {
+		a, err := create(r, nil, &ok, "")
+		if err != nil {
 			t.Fatal(err)
+		}
+		ns := ResellerNamespace(r.AdminID)
+		if _, err := s.RenewAccount(ctx, a.ID, &ns, nil, &far); !errors.Is(err, ErrResellerExpiryTooLong) {
+			t.Fatalf("renew past plan: %v", err)
+		}
+		if _, err := s.UpdateAccount(ctx, a.ID, &ns, UpdateAccountParams{ExpiryAt: &far}); !errors.Is(err, ErrResellerExpiryTooLong) {
+			t.Fatalf("update past plan: %v", err)
+		}
+		// Plan ends: creates are refused as expired, existing accounts keep working.
+		past := time.Now().Add(-time.Minute)
+		if err := s.UpdateResellerLimits(ctx, r.AdminID, ResellerLimitsPatch{ExpiresAt: Opt[time.Time]{Set: true, Value: &past}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := create(r, nil, &ok, ""); !errors.Is(err, ErrResellerExpired) {
+			t.Fatalf("expired create: %v", err)
+		}
+		if got, _ := s.GetAccount(ctx, a.ID, &ns); got.Status != "active" {
+			t.Fatalf("expired reseller's account status = %s", got.Status)
+		}
+		// null = never expires again.
+		if err := s.UpdateResellerLimits(ctx, r.AdminID, ResellerLimitsPatch{ExpiresAt: Opt[time.Time]{Set: true}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := create(r, nil, nil, ""); err != nil {
+			t.Fatalf("after clearing expiry: %v", err)
 		}
 	})
 

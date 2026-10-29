@@ -31,6 +31,8 @@ func writeResellerError(w http.ResponseWriter, err error) bool {
 		writeJSONError(w, http.StatusUnprocessableEntity, "reseller_expiry_required", "an expiry date is required (within your maximum allowed validity)")
 	case errors.Is(err, store.ErrResellerNodeGroupNotAllowed):
 		writeJSONError(w, http.StatusUnprocessableEntity, "reseller_node_group_not_allowed", "you may not place accounts on that node's group")
+	case errors.Is(err, store.ErrResellerExpired):
+		writeJSONError(w, http.StatusUnauthorized, "reseller_expired", "this reseller plan has expired")
 	case errors.Is(err, store.ErrResellerDisabled):
 		writeJSONError(w, http.StatusForbidden, "reseller_disabled", "this reseller account is disabled")
 	case errors.Is(err, store.ErrAccountLockedByAdmin):
@@ -43,11 +45,27 @@ func writeResellerError(w http.ResponseWriter, err error) bool {
 	return true
 }
 
-// resellerCanSignIn is the login/refresh gate: true only for an existing, enabled
-// reseller. A lookup failure fails closed.
-func (s *Server) resellerCanSignIn(ctx context.Context, adminID string) bool {
+// resellerBlockCode is the login/refresh gate: "" for an existing, enabled,
+// unexpired reseller, otherwise the 401 code to return. A lookup failure fails closed.
+func (s *Server) resellerBlockCode(ctx context.Context, adminID string) string {
 	l, err := s.resellerLimits(ctx, adminID)
-	return err == nil && !l.Disabled
+	switch {
+	case err != nil:
+		return "account_disabled"
+	case l.Disabled:
+		return "account_disabled"
+	case l.ExpiresAt != nil && !l.ExpiresAt.After(time.Now()):
+		return "reseller_expired"
+	}
+	return ""
+}
+
+func expiresAtString(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	v := t.Format(time.RFC3339)
+	return &v
 }
 
 type resellerUsageResponse struct {
@@ -67,7 +85,7 @@ type resellerResponse struct {
 	MaxAccounts    *int                  `json:"max_accounts"`
 	DataLimitBytes *int64                `json:"data_limit_bytes"`
 	NodeGroups     []string              `json:"node_groups"`
-	MaxExpiryDays  *int                  `json:"max_expiry_days"`
+	ExpiresAt      *string               `json:"expires_at"` // RFC3339; null = never expires
 	Usage          resellerUsageResponse `json:"usage"`
 	CreatedAt      string                `json:"created_at"`
 	UpdatedAt      string                `json:"updated_at"`
@@ -81,7 +99,7 @@ func toResellerResponse(r store.Reseller) resellerResponse {
 	return resellerResponse{
 		ID: r.AdminID, Username: r.Username, Namespace: store.ResellerNamespace(r.AdminID),
 		Disabled: r.Disabled, Notes: r.Notes,
-		MaxAccounts: r.MaxAccounts, DataLimitBytes: r.DataLimitBytes, NodeGroups: groups, MaxExpiryDays: r.MaxExpiryDays,
+		MaxAccounts: r.MaxAccounts, DataLimitBytes: r.DataLimitBytes, NodeGroups: groups, ExpiresAt: expiresAtString(r.ExpiresAt),
 		Usage: resellerUsageResponse{
 			AccountsUsed: r.Usage.AccountsUsed, DataAllocatedBytes: r.Usage.DataAllocatedBytes, DataUsedBytes: r.Usage.DataUsedBytes,
 		},
@@ -142,25 +160,23 @@ func (s *Server) handleListResellers(w http.ResponseWriter, r *http.Request) {
 }
 
 type createResellerRequest struct {
-	Username      string   `json:"username"`
-	Password      string   `json:"password"`
-	Notes         string   `json:"notes"`
-	Disabled      bool     `json:"disabled"`
-	MaxAccounts   *int     `json:"max_accounts"`
-	DataLimitGB   *float64 `json:"data_limit_gb"`
-	NodeGroups    []string `json:"node_groups"`
-	MaxExpiryDays *int     `json:"max_expiry_days"`
+	Username    string   `json:"username"`
+	Password    string   `json:"password"`
+	Notes       string   `json:"notes"`
+	Disabled    bool     `json:"disabled"`
+	MaxAccounts *int     `json:"max_accounts"`
+	DataLimitGB *float64 `json:"data_limit_gb"`
+	NodeGroups  []string `json:"node_groups"`
+	ExpiresAt   *string  `json:"expires_at"`
 }
 
 // validateResellerLimits is shared by create and patch; the DB CHECKs are the backstop.
-func validateResellerLimits(maxAccounts *int, dataLimitGB *float64, maxExpiryDays *int, groups []string) string {
+func validateResellerLimits(maxAccounts *int, dataLimitGB *float64, groups []string) string {
 	switch {
 	case maxAccounts != nil && *maxAccounts < 0:
 		return "max_accounts must be >= 0 (null = unlimited)"
 	case dataLimitGB != nil && *dataLimitGB < 0:
 		return "data_limit_gb must be >= 0 (null = unlimited)"
-	case maxExpiryDays != nil && *maxExpiryDays < 1:
-		return "max_expiry_days must be >= 1 (null = unlimited)"
 	}
 	for _, g := range groups {
 		if strings.TrimSpace(g) == "" {
@@ -180,9 +196,18 @@ func (s *Server) handleCreateReseller(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "username is required and password must be at least 8 characters")
 		return
 	}
-	if msg := validateResellerLimits(req.MaxAccounts, req.DataLimitGB, req.MaxExpiryDays, req.NodeGroups); msg != "" {
+	if msg := validateResellerLimits(req.MaxAccounts, req.DataLimitGB, req.NodeGroups); msg != "" {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", msg)
 		return
+	}
+	var expiresAt *time.Time
+	if req.ExpiresAt != nil {
+		t, err := time.Parse(time.RFC3339, *req.ExpiresAt)
+		if err != nil || !t.After(time.Now()) {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", "expires_at must be a future RFC3339 timestamp (or null for never)")
+			return
+		}
+		expiresAt = &t
 	}
 	hash, err := authcrypto.HashPassword(req.Password)
 	if err != nil {
@@ -199,7 +224,7 @@ func (s *Server) handleCreateReseller(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	res, err := s.Store.CreateReseller(ctx, store.NewResellerParams{
 		Username: req.Username, PasswordHash: hash, MaxAccounts: req.MaxAccounts, DataLimitBytes: dataLimit,
-		NodeGroups: req.NodeGroups, MaxExpiryDays: req.MaxExpiryDays, Disabled: req.Disabled, Notes: req.Notes,
+		NodeGroups: req.NodeGroups, ExpiresAt: expiresAt, Disabled: req.Disabled, Notes: req.Notes,
 	})
 	if errors.Is(err, store.ErrUsernameTaken) {
 		writeJSONError(w, http.StatusConflict, "username_taken", "an admin with this username already exists")
@@ -242,13 +267,13 @@ func (s *Server) handleGetReseller(w http.ResponseWriter, r *http.Request) {
 // updateResellerRequest: an omitted field is left alone; an explicit null on a limit
 // means "unlimited".
 type updateResellerRequest struct {
-	Password      *string            `json:"password"`
-	Notes         *string            `json:"notes"`
-	Disabled      *bool              `json:"disabled"`
-	MaxAccounts   store.Opt[int]     `json:"max_accounts"`
-	DataLimitGB   store.Opt[float64] `json:"data_limit_gb"`
-	NodeGroups    *[]string          `json:"node_groups"`
-	MaxExpiryDays store.Opt[int]     `json:"max_expiry_days"`
+	Password    *string              `json:"password"`
+	Notes       *string              `json:"notes"`
+	Disabled    *bool                `json:"disabled"`
+	MaxAccounts store.Opt[int]       `json:"max_accounts"`
+	DataLimitGB store.Opt[float64]   `json:"data_limit_gb"`
+	NodeGroups  *[]string            `json:"node_groups"`
+	ExpiresAt   store.Opt[time.Time] `json:"expires_at"`
 }
 
 func (s *Server) handleUpdateReseller(w http.ResponseWriter, r *http.Request) {
@@ -262,7 +287,7 @@ func (s *Server) handleUpdateReseller(w http.ResponseWriter, r *http.Request) {
 	if req.NodeGroups != nil {
 		groups = *req.NodeGroups
 	}
-	if msg := validateResellerLimits(req.MaxAccounts.Value, req.DataLimitGB.Value, req.MaxExpiryDays.Value, groups); msg != "" {
+	if msg := validateResellerLimits(req.MaxAccounts.Value, req.DataLimitGB.Value, groups); msg != "" {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", msg)
 		return
 	}
@@ -273,7 +298,7 @@ func (s *Server) handleUpdateReseller(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	patch := store.ResellerLimitsPatch{
-		MaxAccounts: req.MaxAccounts, MaxExpiryDays: req.MaxExpiryDays,
+		MaxAccounts: req.MaxAccounts, ExpiresAt: req.ExpiresAt,
 		NodeGroups: req.NodeGroups, Disabled: req.Disabled, Notes: req.Notes,
 	}
 	if req.DataLimitGB.Set {
