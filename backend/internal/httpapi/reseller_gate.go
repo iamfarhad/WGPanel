@@ -20,6 +20,7 @@ import (
 var resellerRoutes = map[string]bool{
 	"GET /api/v1/me":          true,
 	"GET /api/v1/reseller/me": true,
+	"GET /api/v1/reports":     true, // always scoped to its own namespace
 	// A reseller manages only the API keys it owns (store-scoped, 404 otherwise).
 	"GET /api/v1/api-keys":              true,
 	"POST /api/v1/api-keys":             true,

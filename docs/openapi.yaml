@@ -88,6 +88,8 @@ servers:
       override).
 
 tags:
+  - name: Reports
+    description: Traffic, account-status, quota and expiry reporting for staff and resellers.
   - name: Resellers
     description: Reseller logins with account/traffic/expiry/node-group limits (super_admin manages; reseller self-service is limited to its own accounts).
   - name: Auth
@@ -1422,6 +1424,44 @@ paths:
                   still_suspended: { type: integer }
         "404": { description: "`reseller_not_found`." }
 
+  /api/v1/reports:
+    get:
+      tags: [Reports]
+      summary: Reporting dashboard data
+      description: >-
+        One payload for the reports page. Hourly buckets (24h, 7d) come from raw samples;
+        daily buckets (30d, 90d, 365d) from the `traffic_daily` continuous aggregate.
+        Series are gap-free and evenly spaced (missing buckets are zero); the last bucket
+        is the current, partial one. Resellers (session or reseller-owned key) and plain
+        API keys are always scoped to their own namespace and `reseller_id`/`owner` are
+        ignored for them. Staff may narrow with `reseller_id` or `owner`. `nodes[].cpu_avg`
+        and `mem_avg_percent` are null unless the caller is staff; `resellers` is present
+        only for a super_admin with no scope filter, otherwise null.
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: range
+          in: query
+          schema: { type: string, enum: ["24h", "7d", "30d", "90d", "365d"], default: "7d" }
+        - name: reseller_id
+          in: query
+          description: Staff only. Scope to one reseller.
+          schema: { type: string, format: uuid }
+        - name: owner
+          in: query
+          description: Staff only. `admin` = staff-created accounts, or an exact owner namespace.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Report" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /api/v1/audit-log:
     get:
       tags: [Audit Log]
@@ -1797,6 +1837,128 @@ components:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
   schemas:
+    Report:
+      type: object
+      properties:
+        range:
+          type: object
+          properties:
+            key: { type: string }
+            from: { type: string, format: date-time }
+            to: { type: string, format: date-time }
+            bucket: { type: string, enum: [hour, day] }
+        scope:
+          type: object
+          properties:
+            reseller_id: { type: string, nullable: true }
+            owner: { type: string, nullable: true }
+        totals:
+          type: object
+          properties:
+            rx_bytes: { type: integer, format: int64 }
+            tx_bytes: { type: integer, format: int64 }
+            active_accounts: { type: integer, description: Accounts with any traffic in range. }
+            new_accounts: { type: integer, description: Accounts created in range. }
+            accounts_total: { type: integer }
+            accounts_active: { type: integer }
+            accounts_suspended: { type: integer }
+            online_now: { type: integer, description: Accounts with a peer handshake in the last 3 minutes. }
+        traffic_series:
+          type: array
+          items:
+            type: object
+            properties:
+              ts: { type: string, format: date-time }
+              rx_bytes: { type: integer, format: int64 }
+              tx_bytes: { type: integer, format: int64 }
+              active_accounts: { type: integer }
+        new_accounts_series:
+          type: array
+          items:
+            type: object
+            properties:
+              ts: { type: string, format: date-time }
+              count: { type: integer }
+        status_breakdown:
+          type: array
+          items:
+            type: object
+            properties:
+              status: { type: string }
+              reason: { type: string, nullable: true }
+              count: { type: integer }
+        quota_buckets:
+          type: array
+          description: "Always five entries: unlimited, lt50, 50to80, 80to100, exceeded."
+          items:
+            type: object
+            properties:
+              bucket: { type: string }
+              count: { type: integer }
+        expiry_buckets:
+          type: array
+          description: "Always seven mutually exclusive entries: expired, today, 3d, 7d, 30d, later, never."
+          items:
+            type: object
+            properties:
+              bucket: { type: string }
+              count: { type: integer }
+        expiring:
+          type: array
+          description: Active accounts expiring within 7 days, soonest first, max 20.
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              label: { type: string }
+              owner: { type: string, nullable: true }
+              reseller_id: { type: string, nullable: true }
+              expiry_at: { type: string, format: date-time }
+              status: { type: string }
+              data_used_bytes: { type: integer, format: int64 }
+              data_quota_bytes: { type: integer, format: int64, nullable: true }
+        top_accounts:
+          type: array
+          description: By rx+tx in range, max 10.
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              label: { type: string }
+              owner: { type: string, nullable: true }
+              reseller_id: { type: string, nullable: true }
+              rx_bytes: { type: integer, format: int64 }
+              tx_bytes: { type: integer, format: int64 }
+        nodes:
+          type: array
+          description: Traffic from the scoped accounts only. Staff with no filter see every node; otherwise only nodes the scoped accounts use.
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
+              status: { type: string }
+              rx_bytes: { type: integer, format: int64 }
+              tx_bytes: { type: integer, format: int64 }
+              accounts: { type: integer }
+              cpu_avg: { type: number, nullable: true }
+              mem_avg_percent: { type: number, nullable: true }
+        resellers:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              username: { type: string }
+              disabled: { type: boolean }
+              expires_at: { type: string, format: date-time, nullable: true }
+              accounts: { type: integer }
+              data_allocated_bytes: { type: integer, format: int64 }
+              data_limit_bytes: { type: integer, format: int64, nullable: true }
+              rx_bytes: { type: integer, format: int64 }
+              tx_bytes: { type: integer, format: int64 }
+
     Reseller:
       type: object
       description: >-

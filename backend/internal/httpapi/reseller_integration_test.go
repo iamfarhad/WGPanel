@@ -94,7 +94,7 @@ func TestResellerEndToEnd(t *testing.T) {
 		req := httptest.NewRequest(method, path, bytes.NewReader([]byte(body)))
 		req.Header.Set("X-API-Key", keyID)
 		req.Header.Set("X-Timestamp", ts)
-		req.Header.Set("X-Signature", hexHMAC(secret, method+"\n"+path+"\n"+ts+"\n"+body))
+		req.Header.Set("X-Signature", hexHMAC(secret, method+"\n"+strings.SplitN(path, "?", 2)[0]+"\n"+ts+"\n"+body))
 		return do(req)
 	}
 	resTok := session("reseller", res.AdminID)
@@ -162,6 +162,32 @@ func TestResellerEndToEnd(t *testing.T) {
 	}
 	if code, _ := signed(keyID, secret, "GET", "/api/v1/accounts/"+foreign.ID, ""); code != 404 {
 		t.Fatalf("key reading foreign account: %d, want 404", code)
+	}
+
+	// Reports: a reseller (session or key) is pinned to its own namespace whatever
+	// reseller_id it asks for, and never receives the reseller leaderboard.
+	for name, call := range map[string]func() (int, map[string]any){
+		"session": func() (int, map[string]any) {
+			return bearer(resTok, "GET", "/api/v1/reports?range=24h&reseller_id="+other.AdminID, "")
+		},
+		"key": func() (int, map[string]any) {
+			return signed(keyID, secret, "GET", "/api/v1/reports?range=24h&reseller_id="+other.AdminID, "")
+		},
+	} {
+		code, rep := call()
+		scope, _ := rep["scope"].(map[string]any)
+		if code != 200 || scope["reseller_id"] != res.AdminID || rep["resellers"] != nil {
+			t.Fatalf("%s report: %d scope=%v resellers=%v", name, code, scope, rep["resellers"])
+		}
+		if tot := rep["totals"].(map[string]any); tot["accounts_total"].(float64) != 1 {
+			t.Fatalf("%s report counted foreign accounts: %v", name, tot)
+		}
+	}
+	if code, _ := bearer(resTok, "GET", "/api/v1/reports?range=3y", ""); code != 400 {
+		t.Fatalf("bad range: %d", code)
+	}
+	if code, rep := bearer(session("super_admin", "x"), "GET", "/api/v1/reports", ""); code != 200 || rep["resellers"] == nil {
+		t.Fatalf("super_admin report: %d resellers=%v", code, rep["resellers"])
 	}
 
 	// Disabled, then expired, reseller: both its key and its session are cut off at once.

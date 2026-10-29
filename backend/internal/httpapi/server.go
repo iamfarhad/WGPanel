@@ -111,6 +111,10 @@ func (s *Server) Routes() http.Handler {
 	// Rotating the subscription URL is an account mutation, same tier as PATCH.
 	mux.Handle("POST /api/v1/accounts/{id}/subscription/rotate", s.requireAdminOrAPIKey(s.requirePermission("update", http.HandlerFunc(s.handleRotateSubscriptionToken))))
 
+	// Reporting page: read-tier like every other account read, namespace-scoped for
+	// resellers and API keys (see handleReports).
+	mux.Handle("GET /api/v1/reports", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleReports))))
+
 	// API key issuance is super-admin-only, same reasoning as join-token generation above -
 	// except that a reseller may manage the keys it owns (requireRoleOrReseller).
 	mux.Handle("POST /api/v1/api-keys", s.requireAdmin(s.requireRoleOrReseller("super_admin", http.HandlerFunc(s.handleCreateAPIKey))))
