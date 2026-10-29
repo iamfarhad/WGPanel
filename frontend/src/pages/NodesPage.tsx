@@ -474,7 +474,7 @@ function NodeDetailDialog({ node, onClose }: { node: Node; onClose: () => void }
         {latest?.mem_total_bytes != null && latest.mem_used_bytes != null && (
           <div className="flex items-center justify-between gap-4">
             <span className="text-muted">{t('Memory')}</span>
-            <span className="text-fg tabular-nums">
+            <span className="ltr text-fg tabular-nums">
               {formatBytesShort(latest.mem_used_bytes)} / {formatBytesShort(latest.mem_total_bytes)}
             </span>
           </div>

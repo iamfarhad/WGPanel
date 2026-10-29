@@ -347,7 +347,7 @@ function PlanRow({ label, used, max, format }: { label: string; used: number; ma
       <div className="mb-2 flex items-center justify-between gap-4 text-sm">
         <span className="font-medium text-fg">{label}</span>
         <span className="text-xs text-muted tabular-nums">
-          {ltr(format(used))} / {max === null ? t('Unlimited') : ltr(format(max))}
+          {ltr(`${format(used)} / ${max === null ? t('Unlimited') : format(max)}`)}
         </span>
       </div>
       {max !== null && <Progress value={used} max={max} />}

@@ -4,6 +4,7 @@ import { Ban, CheckCircle2, HardDrive, Pencil, PauseCircle, PlayCircle, Plus, St
 import { apiFetch } from '../lib/api'
 import { apiErrorMessage } from '../lib/apiErrors'
 import { useI18n } from '../lib/i18n'
+import { ltr } from '../lib/bidi'
 import { useToast } from '../lib/toast'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
@@ -169,8 +170,8 @@ export function ResellersPage() {
           <StatCard
             icon={HardDrive}
             label={t('Traffic used')}
-            value={formatGB(totals.used)}
-            hint={t('{amount} allocated', { amount: formatGB(totals.allocated) })}
+            value={ltr(formatGB(totals.used))}
+            hint={t('{amount} allocated', { amount: ltr(formatGB(totals.allocated)) })}
           />
         </div>
       )}
@@ -226,7 +227,7 @@ export function ResellersPage() {
                       unlimited={t('Unlimited')}
                     />
                   </Td>
-                  <Td className="text-muted tabular-nums">{formatGB(r.usage.data_used_bytes)}</Td>
+                  <Td className="text-muted tabular-nums">{ltr(formatGB(r.usage.data_used_bytes))}</Td>
                   <Td className="whitespace-nowrap">
                     <ExpiryBadge expiresAt={r.expires_at} soonDays={7} />
                   </Td>
@@ -309,9 +310,9 @@ function UsageCell({
 }) {
   return (
     <div className="min-w-32">
-      <span className="tabular-nums">
-        {format(used)} / {max === null ? unlimited : format(max)}
-      </span>
+      {/* One isolate around "used / max": isolating the numbers separately still lets
+          RTL flip their order, which reads as usage exceeding the limit. */}
+      <span className="tabular-nums">{ltr(`${format(used)} / ${max === null ? unlimited : format(max)}`)}</span>
       {max !== null && max > 0 && <Progress value={used} max={max} className="mt-1.5 max-w-32" />}
     </div>
   )

@@ -365,7 +365,8 @@ export function AccountsPage() {
                       )}
                     </Td>
                     <Td className="text-muted">
-                      <span className="tabular-nums">
+                      {/* ltr isolates "used / quota" as one unit - RTL would otherwise swap the two. */}
+                      <span className="ltr tabular-nums">
                         {formatBytes(a.data_used_bytes)}
                         {a.data_quota_bytes ? ` / ${formatBytes(a.data_quota_bytes)}` : ''}
                       </span>
@@ -760,7 +761,7 @@ function AccountDetailDialog({
         <div>
           <div className="grid grid-cols-1 gap-x-8 gap-y-3 text-sm sm:grid-cols-2">
             <Row label="Usage">
-              <span className="tabular-nums">
+              <span className="ltr tabular-nums">
                 {formatBytes(account.data_used_bytes)}
                 {account.data_quota_bytes ? ` / ${formatBytes(account.data_quota_bytes)}` : ` / ${t('unlimited')}`}
               </span>
