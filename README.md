@@ -200,7 +200,7 @@ Architecture notes, the API reference and design docs for each feature area live
 
 | Path | What it is |
 | --- | --- |
-| `backend/` | Go 1.25 control plane. `cmd/api` (the panel API + node-agent server) and `cmd/agent` (the WireGuard node agent, including its DNS forwarder). SQL migrations in `internal/store/migrations`. |
+| `backend/` | Go 1.26 control plane. `cmd/api` (the panel API + node-agent server) and `cmd/agent` (the WireGuard node agent, including its DNS forwarder). SQL migrations in `internal/store/migrations`. |
 | `frontend/` | React 19 + TypeScript + Vite + Tailwind SPA. Translations live in `src/locales/` (English text is the key; Persian per page in `src/locales/fa/`). |
 | `deploy/` | Docker Compose, Caddy, the `install.sh` / `install-node.sh` installers and the `wgpanel` management CLI. |
 | `docs/` | Product/architecture docs, `openapi.yaml` and the README screenshots. |
