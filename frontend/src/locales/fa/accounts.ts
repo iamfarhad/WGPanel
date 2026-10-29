@@ -46,7 +46,7 @@ export const accounts: Record<string, string> = {
   // Create dialog
   'Account "{name}" created': 'اکانت «{name}» ساخته شد',
   'Failed to create account': 'ساخت اکانت ناموفق بود',
-  'e.g. alice-laptop': 'مثلاً alice-laptop',
+  'e.g. alice-laptop': 'alice-laptop',
   'By default this account gets a peer on every registered node, and stays synced as nodes are added later.':
     'به‌صورت پیش‌فرض این اکانت روی همه‌ی نودهای ثبت‌شده پیر می‌گیرد و با اضافه شدن نودهای جدید هم همگام می‌ماند.',
   'All eligible nodes (recommended)': 'همه‌ی نودهای مجاز (پیشنهادی)',
@@ -109,6 +109,7 @@ export const accounts: Record<string, string> = {
   'Downloaded (RX)': 'دانلود (RX)',
   'Uploaded (TX)': 'آپلود (TX)',
   'Renew 30d': 'تمدید ۳۰ روزه',
+  Config: 'کانفیگ',
   Enable: 'فعال‌سازی',
   Suspend: 'تعلیق',
 

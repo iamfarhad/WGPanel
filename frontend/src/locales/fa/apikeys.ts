@@ -27,7 +27,7 @@ export const apikeys: Record<string, string> = {
   'Secret copied to clipboard': 'سکرت کپی شد',
   'Copy secret': 'کپی سکرت',
   'Failed to create API key': 'ساخت کلید API ناموفق بود',
-  'e.g. telegram-sales-bot': 'مثلاً telegram-sales-bot',
+  'e.g. telegram-sales-bot': 'telegram-sales-bot',
   'eu-west, us-east': 'eu-west, us-east',
   '(comma-separated, blank = all)': '(با کاما جدا کنید؛ خالی یعنی همه)',
   'Creating…': 'در حال ساخت…',

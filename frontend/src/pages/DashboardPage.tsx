@@ -4,6 +4,7 @@ import { Server, Users, ShieldAlert, Activity, HardDrive, Wifi, ArrowRight } fro
 import { apiFetch } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { useI18n } from '../lib/i18n'
+import { ltr } from '../lib/bidi'
 import { Button } from '../components/ui/Button'
 import { Mascot } from '../components/brand/Brand'
 import { PageHeader } from '../components/ui/PageHeader'
@@ -36,10 +37,10 @@ interface Account {
 }
 
 function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
+  if (bytes === 0) return ltr('0 B')
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  return `${(bytes / 1024 ** i).toFixed(1)} ${units[i]}`
+  return ltr(`${(bytes / 1024 ** i).toFixed(1)} ${units[i]}`)
 }
 
 /** Compact greeting strip - the dashboard's one illustrated moment. A status line,
@@ -160,7 +161,7 @@ export function DashboardPage() {
           <StatCard
             icon={Server}
             label="Nodes online"
-            value={`${onlineNodes} / ${nodes.length}`}
+            value={ltr(`${onlineNodes} / ${nodes.length}`)}
             hint={
               nodes.length === 0
                 ? t('No nodes yet')
@@ -199,7 +200,7 @@ export function DashboardPage() {
                           <Badge dot tone={statusTone(n.status)}>{n.status}</Badge>
                         </div>
                         <span className="shrink-0 text-xs text-muted tabular-nums">
-                          {t('{used} / {max} peers', { used, max: n.capacity_max_peers })}
+                          {t('{ratio} peers', { ratio: ltr(`${used} / ${n.capacity_max_peers}`) })}
                         </span>
                       </div>
                       <Progress value={used} max={n.capacity_max_peers} />

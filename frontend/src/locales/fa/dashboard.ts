@@ -25,7 +25,7 @@ export const dashboard: Record<string, string> = {
   'Node capacity': 'ظرفیت نودها',
   'Peers provisioned per node': 'تعداد پیرهای هر نود',
   'No nodes registered yet.': 'هنوز نودی ثبت نشده است.',
-  '{used} / {max} peers': '{used} / {max} پیر',
+  '{ratio} peers': '{ratio} پیر',
   'Recent accounts': 'اکانت‌های اخیر',
   'No accounts yet.': 'هنوز اکانتی نیست.',
 }

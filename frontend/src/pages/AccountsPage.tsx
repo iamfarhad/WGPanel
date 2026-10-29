@@ -8,6 +8,7 @@ import { apiFetch, ApiError } from '../lib/api'
 import { getAccessToken } from '../lib/tokenStore'
 import { useToast } from '../lib/toast'
 import { useI18n } from '../lib/i18n'
+import { ltr } from '../lib/bidi'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
@@ -84,10 +85,10 @@ interface DevicesResponse {
 type DetailTab = 'overview' | 'devices' | 'usage' | 'edit'
 
 function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
+  if (bytes === 0) return ltr('0 B')
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  return `${(bytes / 1024 ** i).toFixed(1)} ${units[i]}`
+  return ltr(`${(bytes / 1024 ** i).toFixed(1)} ${units[i]}`)
 }
 
 // Mirrors the backend's confFilename (subscription.go): WireGuard clients derive
@@ -292,13 +293,13 @@ export function AccountsPage() {
                 return (
                   <Tr key={a.id} interactive onClick={() => openDetail(a)}>
                     <Td className="font-medium text-fg">{a.label}</Td>
-                    <Td className="text-muted">
+                    <Td className="whitespace-nowrap text-muted">
                       <span className="inline-flex items-center gap-1.5">
                         <Server className="h-3.5 w-3.5 text-faint" />
                         {a.peers.length === 0 ? t('none yet') : t('{n} nodes', { n: a.peers.length })}
                       </span>
                     </Td>
-                    <Td className="text-muted">
+                    <Td className="whitespace-nowrap text-muted">
                       {a.peers.length === 0 ? (
                         '—'
                       ) : (

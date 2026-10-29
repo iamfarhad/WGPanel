@@ -7,6 +7,7 @@ import { apiFetch, ApiError } from '../lib/api'
 import { useToast } from '../lib/toast'
 import { useAuth } from '../lib/auth'
 import { useI18n } from '../lib/i18n'
+import { ltr } from '../lib/bidi'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
@@ -50,10 +51,10 @@ interface MetricsSample {
 }
 
 function formatBytesShort(bytes: number): string {
-  if (bytes === 0) return '0 B'
+  if (bytes === 0) return ltr('0 B')
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  return `${(bytes / 1024 ** i).toFixed(1)} ${units[i]}`
+  return ltr(`${(bytes / 1024 ** i).toFixed(1)} ${units[i]}`)
 }
 
 interface SubnetGroup {
@@ -428,7 +429,8 @@ function EditNodeDialog({
           label="Public endpoint"
           hint="Changing the port here does not change the port WireGuard listens on at the node — clients only connect while the two match."
         >
-          <Input value={publicEndpoint} onChange={(e) => setPublicEndpoint(e.target.value)} required placeholder="vpn1.example.com:51820" />
+          <Input value={publicEndpoint} onChange={(e) => setPublicEndpoint(e.target.value)} required placeholder="vpn1.example.com:51820"
+            className="ltr" />
         </Field>
         <Field label="WireGuard subnet" hint="Not editable once peers may already be allocated from it.">
           <Input value={node.wg_subnet} disabled />
@@ -610,6 +612,7 @@ function CreateNodeDialog({
             onChange={(e) => setPublicEndpoint(e.target.value)}
             required
             placeholder="vpn1.example.com:51820"
+            className="ltr"
           />
         </Field>
         <Field
@@ -640,6 +643,7 @@ function CreateNodeDialog({
               onChange={(e) => setCustomSubnet(e.target.value)}
               required
               placeholder="10.66.0.0/24"
+              dir="ltr"
             />
           )}
         </Field>
