@@ -4,7 +4,10 @@
 # Editor / tooling
 .vscode/
 .idea/
-.claude/
+# Claude Code: keep project skills, ignore per-machine state.
+.claude/worktrees/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # Secrets - never commit real deployment env files, only .env.example
 deploy/.env
