@@ -23,6 +23,9 @@ func writeResellerError(w http.ResponseWriter, err error) bool {
 		writeJSONError(w, http.StatusConflict, "reseller_account_limit_reached", "you have reached your maximum number of accounts")
 	case errors.Is(err, store.ErrResellerDataCredit):
 		writeJSONError(w, http.StatusConflict, "reseller_data_credit_exceeded", "this would allocate more data than your remaining traffic credit")
+	case errors.Is(err, store.ErrResellerResetNotAllowed):
+		writeJSONError(w, http.StatusForbidden, "reseller_reset_not_allowed", "a reseller with a traffic credit cannot reset usage; renew with add_quota_gb instead")
+		return true
 	case errors.Is(err, store.ErrResellerUnlimitedNotAllowed):
 		writeJSONError(w, http.StatusUnprocessableEntity, "reseller_unlimited_not_allowed", "a data quota is required: unlimited accounts are not allowed with a traffic credit")
 	case errors.Is(err, store.ErrResellerExpiryTooLong):

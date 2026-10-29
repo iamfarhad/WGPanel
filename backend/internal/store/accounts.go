@@ -44,6 +44,11 @@ type Account struct {
 	OwnerKeyNamespace *string // the api_keys.key_id that created this account, or nil if created by an admin
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	// LastHandshakeAt is max(account_peers.last_handshake_at) over the account's peers,
+	// nil if no peer has ever completed a handshake. Computed by accountColumns's
+	// scalar subquery, so every query that returns an Account carries it (list
+	// included) without a per-account follow-up query.
+	LastHandshakeAt *time.Time
 }
 
 // AccountPeer is one (account, node) membership - an account can have a peer on
@@ -79,7 +84,13 @@ type AccountPeerWithNode struct {
 	NodeDNSForwarder   bool // see migration 0020
 }
 
-const accountColumns = `id, external_ref, label, public_key, data_quota_bytes, data_used_bytes, expiry_at, device_limit, device_limit_hard_enforce, device_limit_exceeded_at, bandwidth_limit_mbps, subscription_token, status, suspend_reason, ip_release_at, owner_key_namespace, created_at, updated_at`
+// The trailing subquery is the account's most recent peer handshake (see
+// Account.LastHandshakeAt). It names accounts.id explicitly, so accountColumns is only
+// valid in statements whose target/FROM table is `accounts` un-aliased - which is every
+// use today, including INSERT/UPDATE ... RETURNING. idx_account_peers_account_id makes
+// it an index lookup per returned row.
+const accountColumns = `id, external_ref, label, public_key, data_quota_bytes, data_used_bytes, expiry_at, device_limit, device_limit_hard_enforce, device_limit_exceeded_at, bandwidth_limit_mbps, subscription_token, status, suspend_reason, ip_release_at, owner_key_namespace, created_at, updated_at,
+	(SELECT max(ap.last_handshake_at) FROM account_peers ap WHERE ap.account_id = accounts.id)`
 
 func scanAccount(row pgx.Row, a *Account) error {
 	return row.Scan(
@@ -87,6 +98,7 @@ func scanAccount(row pgx.Row, a *Account) error {
 		&a.DataQuotaBytes, &a.DataUsedBytes, &a.ExpiryAt, &a.DeviceLimit,
 		&a.DeviceLimitHardEnforce, &a.DeviceLimitExceededAt, &a.BandwidthLimitMbps, &a.SubscriptionToken,
 		&a.Status, &a.SuspendReason, &a.IPReleaseAt, &a.OwnerKeyNamespace, &a.CreatedAt, &a.UpdatedAt,
+		&a.LastHandshakeAt,
 	)
 }
 
@@ -533,16 +545,49 @@ func (s *Store) GetAccount(ctx context.Context, id string, callerNamespace *stri
 
 // ListAccounts' ownerFilter is an admin-only narrowing on top of the caller
 // namespace: "" = no filter, "admin" = accounts created by admins (no owner),
-// anything else = that exact owner_key_namespace (e.g. "reseller:<id>").
-func (s *Store) ListAccounts(ctx context.Context, limit int, callerNamespace *string, ownerFilter string) ([]Account, error) {
+// anything else = that exact owner_key_namespace (e.g. "reseller:<id>"). Deleted
+// accounts are excluded. The order is (created_at, id) - id is the tiebreak that keeps
+// limit/offset paging stable when several accounts share a created_at.
+func (s *Store) ListAccounts(ctx context.Context, limit, offset int, callerNamespace *string, ownerFilter string) ([]Account, error) {
 	if err := s.reconcileExpiry(ctx); err != nil {
 		return nil, err
 	}
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+accountColumns+` FROM accounts WHERE status != 'deleted' AND `+namespaceFilter+`
 		 AND ($3 = '' OR ($3 = 'admin' AND owner_key_namespace IS NULL) OR owner_key_namespace = $3)
-		 ORDER BY created_at LIMIT $2`,
-		callerNamespace, limit, ownerFilter,
+		 ORDER BY created_at, id LIMIT $2 OFFSET $4`,
+		callerNamespace, limit, ownerFilter, offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accounts []Account
+	for rows.Next() {
+		var a Account
+		if err := scanAccount(rows, &a); err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, a)
+	}
+	return accounts, rows.Err()
+}
+
+// FindAccountsByExternalRef returns the account(s) in callerNamespace whose
+// external_ref equals ref exactly. Unlike every other read it INCLUDES status
+// 'deleted': external_ref stays unique after a soft delete (the row is kept), so a
+// client that wants to know "is this ref taken?" has to see the tombstone too. The
+// column is globally UNIQUE, so at most one row can match; a slice is returned only to
+// keep the list-shaped API response. Empty (nil) when nothing matches or the match is
+// in another namespace.
+func (s *Store) FindAccountsByExternalRef(ctx context.Context, ref string, callerNamespace *string) ([]Account, error) {
+	if err := s.reconcileExpiry(ctx); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+accountColumns+` FROM accounts WHERE external_ref = $2 AND `+namespaceFilter+` ORDER BY created_at, id`,
+		callerNamespace, ref,
 	)
 	if err != nil {
 		return nil, err
@@ -571,11 +616,26 @@ type UpdateAccountParams struct {
 	// and 0 Mbps is meaningless as an actual limit, so the sentinel is unambiguous.
 	BandwidthLimitMbps     *int
 	DeviceLimitHardEnforce *bool
+	// ClearDataQuota / ClearDeviceLimit set the column back to NULL (unlimited). They are
+	// the only way to do that - a nil DataQuotaBytes/DeviceLimit means "unchanged". The
+	// HTTP layer rejects combining a clear flag with a value for the same field; if both
+	// reach here the clear wins.
+	ClearDataQuota   bool
+	ClearDeviceLimit bool
 }
 
 // UpdateAccount only touches fields explicitly provided (nil = leave unchanged). For a
 // reseller caller the new quota/expiry are validated against its limits inside the
 // same transaction, under the reseller row lock.
+//
+// ClearDataQuota makes the account unlimited, so a reseller with a data credit is
+// refused with ErrResellerUnlimitedNotAllowed - the same rule CreateAccount applies.
+// Because an unlimited account can no longer be over quota, clearing the quota also
+// lifts a quota_exceeded suspension (never any other reason, and not when the account
+// is expired). Raising a quota to a finite value does NOT lift it - that is RenewAccount's
+// job and UpdateAccount has never done it. ClearDeviceLimit also resets the standing
+// device_limit_exceeded_at flag: reconcileDeviceLimitsTx skips accounts whose limit is
+// NULL, so a stale flag would otherwise never clear.
 func (s *Store) UpdateAccount(ctx context.Context, id string, callerNamespace *string, p UpdateAccountParams) (Account, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -593,7 +653,10 @@ func (s *Store) UpdateAccount(ctx context.Context, id string, callerNamespace *s
 				return Account{}, err
 			}
 		}
-		if p.DataQuotaBytes != nil {
+		if p.ClearDataQuota && lim.DataLimitBytes != nil {
+			return Account{}, ErrResellerUnlimitedNotAllowed
+		}
+		if p.DataQuotaBytes != nil && !p.ClearDataQuota {
 			if *p.DataQuotaBytes < 0 {
 				return Account{}, ErrInvalidQuota
 			}
@@ -607,21 +670,31 @@ func (s *Store) UpdateAccount(ctx context.Context, id string, callerNamespace *s
 		}
 	}
 
+	// $9 = clear quota, $10 = clear device limit. liftQuota is evaluated against the OLD
+	// status/suspend_reason (every RHS in an UPDATE sees the pre-update row) but the
+	// NEW expiry (COALESCE($5, expiry_at)), so a PATCH that also moves expiry_at is
+	// judged on the date the account will actually carry.
+	const liftQuota = `($9::bool AND status = 'suspended' AND suspend_reason = 'quota_exceeded'
+			AND (COALESCE($5::timestamptz, expiry_at) IS NULL OR COALESCE($5::timestamptz, expiry_at) > now()))`
 	var a Account
 	err = scanAccount(tx.QueryRow(ctx, `
 		UPDATE accounts SET
 			label = COALESCE($3, label),
-			data_quota_bytes = COALESCE($4, data_quota_bytes),
+			data_quota_bytes = CASE WHEN $9::bool THEN NULL ELSE COALESCE($4, data_quota_bytes) END,
 			expiry_at = COALESCE($5, expiry_at),
-			device_limit = COALESCE($6, device_limit),
+			device_limit = CASE WHEN $10::bool THEN NULL ELSE COALESCE($6, device_limit) END,
+			device_limit_exceeded_at = CASE WHEN $10::bool THEN NULL ELSE device_limit_exceeded_at END,
 			bandwidth_limit_mbps = CASE WHEN $7::int IS NULL THEN bandwidth_limit_mbps
 			                            WHEN $7 = 0 THEN NULL
 			                            ELSE $7 END,
 			device_limit_hard_enforce = COALESCE($8, device_limit_hard_enforce),
+			status = CASE WHEN `+liftQuota+` THEN 'active' ELSE status END,
+			suspend_reason = CASE WHEN `+liftQuota+` THEN NULL ELSE suspend_reason END,
 			updated_at = now()
 		WHERE id = $2 AND status != 'deleted' AND `+namespaceFilter+`
 		RETURNING `+accountColumns,
 		callerNamespace, id, p.Label, p.DataQuotaBytes, p.ExpiryAt, p.DeviceLimit, p.BandwidthLimitMbps, p.DeviceLimitHardEnforce,
+		p.ClearDataQuota, p.ClearDeviceLimit,
 	), &a)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Account{}, ErrAccountNotFound
@@ -755,6 +828,65 @@ func (s *Store) RenewAccount(ctx context.Context, id string, callerNamespace *st
 		}
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		return Account{}, err
+	}
+	return a, nil
+}
+
+// ResetAccountUsage zeroes data_used_bytes (a new billing cycle for the same quota) and,
+// if the account was suspended for quota_exceeded and has not expired, reactivates it.
+// It is one UPDATE, so both effects commit or neither does. Every other suspension
+// reason (manual, abuse_flag, expired, device_limit, reseller_suspended) is left alone
+// - resetting usage must never override an operator's deliberate suspension - and
+// data_quota_bytes is untouched.
+//
+// Reactivation is just the status flip, exactly like EnableAccount: the node agents
+// pick the account back up on their next heartbeat, because ListDesiredPeersForNode
+// returns every 'active' account's peers.
+//
+// Sampling is unaffected: account_peers.last_receive_bytes/last_transmit_bytes are the
+// per-peer baselines IngestHeartbeatTelemetry diffs against, and this does not touch
+// them, so the next sample adds only the traffic since the previous heartbeat.
+//
+// A reseller caller goes through the same row lock/blocked check as RenewAccount
+// (disabled or expired reseller -> ErrResellerDisabled/Expired).
+func (s *Store) ResetAccountUsage(ctx context.Context, id string, callerNamespace *string) (Account, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Account{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	limits, err := lockResellerForNamespace(ctx, tx, callerNamespace)
+	if err != nil {
+		return Account{}, err
+	}
+	// The credit counts quota handed out, not traffic used, so a reset by a credit-limited
+	// reseller would hand the same quota out again for nothing. Such a reseller renews with
+	// add_quota_gb instead, which spends credit.
+	if limits != nil && limits.DataLimitBytes != nil {
+		return Account{}, ErrResellerResetNotAllowed
+	}
+
+	const liftQuota = `(status = 'suspended' AND suspend_reason = 'quota_exceeded' AND (expiry_at IS NULL OR expiry_at > now()))`
+	var a Account
+	err = scanAccount(tx.QueryRow(ctx, `
+		UPDATE accounts SET
+			data_used_bytes = 0,
+			status = CASE WHEN `+liftQuota+` THEN 'active' ELSE status END,
+			suspend_reason = CASE WHEN `+liftQuota+` THEN NULL ELSE suspend_reason END,
+			updated_at = now()
+		WHERE id = $2 AND status != 'deleted' AND `+namespaceFilter+`
+		RETURNING `+accountColumns,
+		callerNamespace, id,
+	), &a)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Account{}, ErrAccountNotFound
+	}
+	if err != nil {
+		return Account{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Account{}, err
 	}

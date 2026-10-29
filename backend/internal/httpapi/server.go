@@ -100,6 +100,11 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /api/v1/accounts/{id}/suspend", s.requireAdminOrAPIKey(s.requirePermission("suspend", http.HandlerFunc(s.handleSuspendAccount))))
 	mux.Handle("POST /api/v1/accounts/{id}/enable", s.requireAdminOrAPIKey(s.requirePermission("suspend", http.HandlerFunc(s.handleEnableAccount))))
 	mux.Handle("POST /api/v1/accounts/{id}/renew", s.requireAdminOrAPIKey(s.requirePermission("update", http.HandlerFunc(s.handleRenewAccount))))
+	// Same protection as renew (API key `update`; support-role sessions refused). Left OFF
+	// the reseller session allowlist on purpose: a reseller's data credit counts the quota
+	// it hands out, not the usage, so a self-service usage reset would let it re-sell the
+	// same credit. Reseller-owned API keys with `update` are not subject to that allowlist.
+	mux.Handle("POST /api/v1/accounts/{id}/reset-usage", s.requireAdminOrAPIKey(s.requirePermission("update", http.HandlerFunc(s.handleResetAccountUsage))))
 	mux.Handle("DELETE /api/v1/accounts/{id}", s.requireAdminOrAPIKey(s.requirePermission("delete", http.HandlerFunc(s.handleDeleteAccount))))
 	mux.Handle("GET /api/v1/accounts/{id}/config", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleGetAccountConfig))))
 	// docs/STORY-10-monitoring-and-domain-management.md - account usage-over-time chart.
