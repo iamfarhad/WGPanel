@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"wgpanel-api/internal/ipalloc"
 	"wgpanel-api/internal/steering"
 	"wgpanel-api/internal/store"
 	"wgpanel-api/internal/wgkeys"
@@ -55,14 +56,9 @@ func (s *Server) renderPeerConfig(ctx context.Context, accountID string, ns *str
 	// 0018), because the right resolver depends on where the exit node egresses: the
 	// Cloudflare default is unreachable on networks that filter it, which presents as
 	// "connected but no internet" - the tunnel works, name resolution silently doesn't.
-	dns := "1.1.1.1, 1.0.0.1"
-	if settings, err := s.Store.GetSettings(ctx); err == nil && settings.ClientDNS != "" {
-		dns = settings.ClientDNS
-	} else if err != nil {
-		// A settings read failure shouldn't block config delivery - fall back to the
-		// historical default rather than failing the whole request.
-		s.Logger.Warn("get_settings_for_config_dns_failed", "error", err)
-	}
+	// The default ("node", migration 0020) sidesteps that: clients ask the node itself,
+	// which relays to whatever resolver its server uses (see resolveClientDNS).
+	dns := resolveClientDNS(s.clientDNS(ctx), target.NodeWGSubnet, target.NodeDNSForwarder)
 
 	// AllowedIPs carries BOTH families on purpose. Without ::/0, a dual-stack client
 	// (most mobile carriers, many home ISPs) keeps its native IPv6 route outside the
@@ -85,6 +81,44 @@ Endpoint = %s
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 `, privateKey, target.AssignedIP, dns, *target.NodePublicKey, target.NodePublicEndpoint), nil
+}
+
+// nodeClientDNS is the client_dns setting value meaning "each node's own forwarder".
+const nodeClientDNS = "node"
+
+// publicClientDNS is used wherever no node forwarder can be: client_dns = "node" on a
+// node whose agent predates the forwarder (or whose forwarder failed to start).
+const publicClientDNS = "1.1.1.1, 1.0.0.1"
+
+// clientDNS is the raw client_dns setting. Shared by config rendering and the agent
+// heartbeat, so nodes probe exactly the resolvers their clients will be told to use.
+func (s *Server) clientDNS(ctx context.Context) string {
+	dns := nodeClientDNS
+	if settings, err := s.Store.GetSettings(ctx); err == nil && settings.ClientDNS != "" {
+		dns = settings.ClientDNS
+	} else if err != nil {
+		// A settings read failure shouldn't block config delivery - fall back to the
+		// historical default rather than failing the whole request.
+		s.Logger.Warn("get_settings_for_config_dns_failed", "error", err)
+	}
+	return dns
+}
+
+// resolveClientDNS turns the client_dns setting into the DNS = value for one node's
+// clients: with "node", the node's tunnel address (the subnet's .1, where its agent's
+// forwarder listens) if that node reported a working forwarder on its last heartbeat,
+// else the public default; any other value is used as configured.
+func resolveClientDNS(setting, nodeSubnet string, nodeForwarder bool) string {
+	if setting != nodeClientDNS {
+		return setting
+	}
+	if nodeForwarder {
+		if gateway, err := ipalloc.Gateway(nodeSubnet); err == nil {
+			ip, _, _ := strings.Cut(gateway, "/")
+			return ip
+		}
+	}
+	return publicClientDNS
 }
 
 // resolveSubscriptionAccount is the shared front half of both /sub/{token} handlers:

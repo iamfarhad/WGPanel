@@ -75,6 +75,8 @@ type AccountPeerWithNode struct {
 	NodeName           string
 	NodePublicEndpoint string
 	NodePublicKey      *string
+	NodeWGSubnet       string
+	NodeDNSForwarder   bool // see migration 0020
 }
 
 const accountColumns = `id, external_ref, label, public_key, data_quota_bytes, data_used_bytes, expiry_at, device_limit, device_limit_hard_enforce, device_limit_exceeded_at, bandwidth_limit_mbps, subscription_token, status, suspend_reason, ip_release_at, owner_key_namespace, created_at, updated_at`
@@ -134,6 +136,48 @@ func (s *Store) CreateAccount(ctx context.Context, p CreateAccountParams) (Accou
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once committed
 
+	// A reseller's limits row is locked FIRST (before any node row) so concurrent
+	// creates for one reseller serialise here and cannot overshoot max_accounts or the
+	// data credit; consistent lock order also rules out deadlocks against node locks.
+	groupErr := ErrNodeGroupNotAllowed
+	lim, err := lockResellerForNamespace(ctx, tx, p.OwnerKeyNamespace)
+	if err != nil {
+		return Account{}, err
+	}
+	if lim != nil {
+		groupErr = ErrResellerNodeGroupNotAllowed
+		// The reseller's groups come from the locked row (authoritative). A
+		// reseller-owned API key may narrow them further via p.AllowedNodeGroups; the
+		// effective set is the intersection, and a disjoint one refuses outright (an
+		// empty result must not fall through to "no restriction").
+		eff, ok := intersectGroups(lim.NodeGroups, p.AllowedNodeGroups)
+		if !ok {
+			return Account{}, ErrResellerNodeGroupNotAllowed
+		}
+		p.AllowedNodeGroups = eff
+		if p.DataQuotaBytes != nil && *p.DataQuotaBytes < 0 {
+			return Account{}, ErrInvalidQuota
+		}
+		if lim.DataLimitBytes != nil && p.DataQuotaBytes == nil {
+			return Account{}, ErrResellerUnlimitedNotAllowed
+		}
+		if err := lim.checkExpiry(p.ExpiryAt); err != nil {
+			return Account{}, err
+		}
+		count, allocated, err := resellerAllocatedTx(ctx, tx, *p.OwnerKeyNamespace, "")
+		if err != nil {
+			return Account{}, err
+		}
+		if lim.MaxAccounts != nil && count >= *lim.MaxAccounts {
+			return Account{}, ErrResellerAccountLimit
+		}
+		if p.DataQuotaBytes != nil {
+			if err := lim.checkCredit(allocated, *p.DataQuotaBytes); err != nil {
+				return Account{}, err
+			}
+		}
+	}
+
 	restrictGroups := len(p.AllowedNodeGroups) > 0
 	pinned := p.NodeIDOrAuto != "" && p.NodeIDOrAuto != "auto"
 
@@ -158,7 +202,7 @@ func (s *Store) CreateAccount(ctx context.Context, p CreateAccountParams) (Accou
 			return Account{}, ErrNodeNotRegistered
 		}
 		if restrictGroups && !contains(p.AllowedNodeGroups, nodeGroup) {
-			return Account{}, ErrNodeGroupNotAllowed
+			return Account{}, groupErr
 		}
 		nodes = append(nodes, n)
 	} else {
@@ -346,7 +390,7 @@ func (s *Store) ListAccountPeersWithNode(ctx context.Context, accountID string, 
 	rows, err := s.pool.Query(ctx, `
 		SELECT ap.id, ap.account_id, ap.node_id, ap.assigned_ip,
 		       ap.last_receive_bytes, ap.last_transmit_bytes, ap.last_handshake_at, ap.created_at,
-		       n.name, n.public_endpoint, n.public_key
+		       n.name, n.public_endpoint, n.public_key, n.wg_subnet, n.dns_forwarder
 		FROM account_peers ap
 		JOIN nodes n ON n.id = ap.node_id
 		JOIN accounts a ON a.id = ap.account_id
@@ -364,7 +408,7 @@ func (s *Store) ListAccountPeersWithNode(ctx context.Context, accountID string, 
 		if err := rows.Scan(
 			&p.ID, &p.AccountID, &p.NodeID, &p.AssignedIP,
 			&p.LastReceiveBytes, &p.LastTransmitBytes, &p.LastHandshakeAt, &p.CreatedAt,
-			&p.NodeName, &p.NodePublicEndpoint, &p.NodePublicKey,
+			&p.NodeName, &p.NodePublicEndpoint, &p.NodePublicKey, &p.NodeWGSubnet, &p.NodeDNSForwarder,
 		); err != nil {
 			return nil, err
 		}
@@ -487,13 +531,18 @@ func (s *Store) GetAccount(ctx context.Context, id string, callerNamespace *stri
 	return a, err
 }
 
-func (s *Store) ListAccounts(ctx context.Context, limit int, callerNamespace *string) ([]Account, error) {
+// ListAccounts' ownerFilter is an admin-only narrowing on top of the caller
+// namespace: "" = no filter, "admin" = accounts created by admins (no owner),
+// anything else = that exact owner_key_namespace (e.g. "reseller:<id>").
+func (s *Store) ListAccounts(ctx context.Context, limit int, callerNamespace *string, ownerFilter string) ([]Account, error) {
 	if err := s.reconcileExpiry(ctx); err != nil {
 		return nil, err
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+accountColumns+` FROM accounts WHERE status != 'deleted' AND `+namespaceFilter+` ORDER BY created_at LIMIT $2`,
-		callerNamespace, limit,
+		`SELECT `+accountColumns+` FROM accounts WHERE status != 'deleted' AND `+namespaceFilter+`
+		 AND ($3 = '' OR ($3 = 'admin' AND owner_key_namespace IS NULL) OR owner_key_namespace = $3)
+		 ORDER BY created_at LIMIT $2`,
+		callerNamespace, limit, ownerFilter,
 	)
 	if err != nil {
 		return nil, err
@@ -524,10 +573,42 @@ type UpdateAccountParams struct {
 	DeviceLimitHardEnforce *bool
 }
 
-// UpdateAccount only touches fields explicitly provided (nil = leave unchanged).
+// UpdateAccount only touches fields explicitly provided (nil = leave unchanged). For a
+// reseller caller the new quota/expiry are validated against its limits inside the
+// same transaction, under the reseller row lock.
 func (s *Store) UpdateAccount(ctx context.Context, id string, callerNamespace *string, p UpdateAccountParams) (Account, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Account{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	lim, err := lockResellerForNamespace(ctx, tx, callerNamespace)
+	if err != nil {
+		return Account{}, err
+	}
+	if lim != nil {
+		if p.ExpiryAt != nil {
+			if err := lim.checkExpiry(p.ExpiryAt); err != nil {
+				return Account{}, err
+			}
+		}
+		if p.DataQuotaBytes != nil {
+			if *p.DataQuotaBytes < 0 {
+				return Account{}, ErrInvalidQuota
+			}
+			_, allocated, err := resellerAllocatedTx(ctx, tx, *callerNamespace, id)
+			if err != nil {
+				return Account{}, err
+			}
+			if err := lim.checkCredit(allocated, *p.DataQuotaBytes); err != nil {
+				return Account{}, err
+			}
+		}
+	}
+
 	var a Account
-	err := scanAccount(s.pool.QueryRow(ctx, `
+	err = scanAccount(tx.QueryRow(ctx, `
 		UPDATE accounts SET
 			label = COALESCE($3, label),
 			data_quota_bytes = COALESCE($4, data_quota_bytes),
@@ -545,7 +626,13 @@ func (s *Store) UpdateAccount(ctx context.Context, id string, callerNamespace *s
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Account{}, ErrAccountNotFound
 	}
-	return a, err
+	if err != nil {
+		return Account{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Account{}, err
+	}
+	return a, nil
 }
 
 func (s *Store) SuspendAccount(ctx context.Context, id string, callerNamespace *string, reason string) (Account, error) {
@@ -562,15 +649,25 @@ func (s *Store) SuspendAccount(ctx context.Context, id string, callerNamespace *
 	return a, err
 }
 
+// EnableAccount reactivates an account. A reseller caller may not undo the
+// super-admin bulk suspension (suspend_reason 'reseller_suspended') - that is
+// ErrAccountLockedByAdmin (403), distinct from the 404 for a foreign namespace.
 func (s *Store) EnableAccount(ctx context.Context, id string, callerNamespace *string) (Account, error) {
+	_, isReseller := resellerIDFromNamespace(callerNamespace)
 	var a Account
 	err := scanAccount(s.pool.QueryRow(ctx, `
 		UPDATE accounts SET status = 'active', suspend_reason = NULL, updated_at = now()
 		WHERE id = $2 AND status != 'deleted' AND `+namespaceFilter+`
+		  AND NOT ($3::bool AND suspend_reason = 'reseller_suspended')
 		RETURNING `+accountColumns,
-		callerNamespace, id,
+		callerNamespace, id, isReseller,
 	), &a)
 	if errors.Is(err, pgx.ErrNoRows) {
+		if isReseller {
+			if _, gerr := s.GetAccount(ctx, id, callerNamespace); gerr == nil {
+				return Account{}, ErrAccountLockedByAdmin
+			}
+		}
 		return Account{}, ErrAccountNotFound
 	}
 	return a, err
@@ -586,6 +683,41 @@ func (s *Store) RenewAccount(ctx context.Context, id string, callerNamespace *st
 		return Account{}, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+
+	lim, err := lockResellerForNamespace(ctx, tx, callerNamespace)
+	if err != nil {
+		return Account{}, err
+	}
+	if lim != nil {
+		if extendExpiryTo != nil {
+			if err := lim.checkExpiry(extendExpiryTo); err != nil {
+				return Account{}, err
+			}
+		}
+		if addQuotaBytes != nil {
+			var cur *int64
+			err := tx.QueryRow(ctx, `SELECT data_quota_bytes FROM accounts WHERE id = $2 AND status != 'deleted' AND `+namespaceFilter,
+				callerNamespace, id).Scan(&cur)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return Account{}, ErrAccountNotFound
+			}
+			if err != nil {
+				return Account{}, err
+			}
+			if cur != nil { // an unlimited account stays unlimited; nothing to allocate
+				if *cur+*addQuotaBytes < 0 {
+					return Account{}, ErrInvalidQuota
+				}
+				_, allocated, err := resellerAllocatedTx(ctx, tx, *callerNamespace, "")
+				if err != nil {
+					return Account{}, err
+				}
+				if err := lim.checkCredit(allocated, *addQuotaBytes); err != nil {
+					return Account{}, err
+				}
+			}
+		}
+	}
 
 	var a Account
 	err = scanAccount(tx.QueryRow(ctx, `
@@ -661,4 +793,22 @@ func (s *Store) GetAccountPrivateKey(ctx context.Context, id string, callerNames
 		return "", ErrAccountNotFound
 	}
 	return encrypted, err
+}
+
+// intersectGroups combines a reseller's groups with a key's narrower set; empty on
+// either side means "no restriction from that side". ok=false = both restrict and
+// share nothing.
+func intersectGroups(reseller, key []string) (out []string, ok bool) {
+	switch {
+	case len(reseller) == 0:
+		return key, true
+	case len(key) == 0:
+		return reseller, true
+	}
+	for _, g := range key {
+		if contains(reseller, g) {
+			out = append(out, g)
+		}
+	}
+	return out, len(out) > 0
 }

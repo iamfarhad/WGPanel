@@ -1,3 +1,4 @@
+import { useI18n } from '../../lib/i18n'
 import type { HTMLAttributes, ReactNode, TdHTMLAttributes, ThHTMLAttributes } from 'react'
 
 /** Data-table primitives shared by every list page. Wraps the table in a
@@ -5,21 +6,22 @@ import type { HTMLAttributes, ReactNode, TdHTMLAttributes, ThHTMLAttributes } fr
 export function Table({ className = '', ...props }: HTMLAttributes<HTMLTableElement>) {
   return (
     <div className="overflow-x-auto">
-      <table className={`w-full text-left text-sm ${className}`} {...props} />
+      <table className={`w-full text-start text-sm ${className}`} {...props} />
     </div>
   )
 }
 
 export function THead({ children }: { children: ReactNode }) {
-  return (
-    <thead className="border-b border-edge bg-inset/60 text-xs tracking-wide text-muted uppercase">
-      {children}
-    </thead>
-  )
+  return <thead className="border-b border-edge bg-inset/50 text-xs text-muted">{children}</thead>
 }
 
-export function Th({ className = '', ...props }: ThHTMLAttributes<HTMLTableCellElement>) {
-  return <th className={`px-6 py-3 font-medium ${className}`} {...props} />
+export function Th({ className = '', children, ...props }: ThHTMLAttributes<HTMLTableCellElement>) {
+  const { t } = useI18n()
+  return (
+    <th className={`px-5 py-2.5 text-start font-medium ${className}`} {...props}>
+      {typeof children === 'string' ? t(children) : children}
+    </th>
+  )
 }
 
 export function Tr({
@@ -29,8 +31,8 @@ export function Tr({
 }: HTMLAttributes<HTMLTableRowElement> & { interactive?: boolean }) {
   return (
     <tr
-      className={`border-b border-edge/70 transition-colors last:border-0 ${
-        interactive ? 'cursor-pointer hover:bg-inset/60' : ''
+      className={`border-b border-edge/70 transition-colors duration-150 last:border-0 ${
+        interactive ? 'cursor-pointer hover:bg-inset/50' : ''
       } ${className}`}
       {...props}
     />
@@ -38,5 +40,5 @@ export function Tr({
 }
 
 export function Td({ className = '', ...props }: TdHTMLAttributes<HTMLTableCellElement>) {
-  return <td className={`px-6 py-3.5 ${className}`} {...props} />
+  return <td className={`px-5 py-3 ${className}`} {...props} />
 }

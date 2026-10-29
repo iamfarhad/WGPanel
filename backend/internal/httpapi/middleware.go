@@ -37,12 +37,12 @@ func (s *Server) requireAdmin(next http.Handler) http.Handler {
 		// to be two disconnected mechanisms, which is how role enforcement went missing
 		// entirely - requireRole needs one consistent place to read the role from
 		// regardless of which of the two admin-auth paths a route uses).
+		identity, ok := s.admitAdminClaims(w, r, claims)
+		if !ok {
+			return
+		}
 		ctx := context.WithValue(r.Context(), adminClaimsKey, claims)
-		ctx = context.WithValue(ctx, callerIdentityKey, &CallerIdentity{
-			IsAdmin:       true,
-			AdminUsername: claims.Username,
-			AdminRole:     claims.Role,
-		})
+		ctx = context.WithValue(ctx, callerIdentityKey, identity)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -66,6 +66,21 @@ func (s *Server) requireRole(minRole string, next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// requireRoleOrReseller is requireRole for routes a reseller session may also use on
+// its own resources (API keys): resellers pass (the handler scopes to their rows, and
+// the allowlist in reseller_gate.go already limited which routes they reach), staff
+// need minRole.
+func (s *Server) requireRoleOrReseller(minRole string, next http.Handler) http.Handler {
+	gated := s.requireRole(minRole, next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if identity, ok := callerIdentityFromContext(r.Context()); ok && identity.ResellerID != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		gated.ServeHTTP(w, r)
 	})
 }
 

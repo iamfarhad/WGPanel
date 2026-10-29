@@ -1,0 +1,14 @@
+{
+  "name": "Jirjirak WireGuard",
+  "short_name": "Jirjirak",
+  "description": "WireGuard infrastructure management by Jirjirak",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#f7faf9",
+  "theme_color": "#0e2b22",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

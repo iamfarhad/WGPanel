@@ -30,10 +30,16 @@ const callerIdentityKey contextKey = 1 // adminClaimsKey (middleware.go) is 0 - 
 type CallerIdentity struct {
 	IsAdmin       bool
 	AdminUsername string
-	AdminRole     string // super_admin | operator | support - only meaningful when IsAdmin
-	KeyNamespace  string // == the api_keys.key_id, only meaningful when !IsAdmin
-	Permissions   []string
-	NodeGroups    []string
+	AdminRole     string // super_admin | operator | support | reseller - only meaningful when IsAdmin
+	AdminID       string // admins.id of the JWT subject (IsAdmin only)
+	// ResellerID is set (== AdminID) only for role 'reseller' sessions. Such a caller
+	// is IsAdmin (a human login) yet namespace-scoped like an API key: see
+	// callerNamespaceArg. NodeGroups then holds its allowed groups (empty = all).
+	ResellerID   string
+	KeyID        string // the api_keys.key_id (API-key callers only)
+	KeyNamespace string // the api_keys.key_id, or "reseller:<id>" for a reseller-owned key; only meaningful when !IsAdmin
+	Permissions  []string
+	NodeGroups   []string
 }
 
 func callerIdentityFromContext(ctx context.Context) (*CallerIdentity, bool) {
@@ -44,6 +50,10 @@ func callerIdentityFromContext(ctx context.Context) (*CallerIdentity, bool) {
 // callerNamespaceArg is what handlers pass to the namespace-scoped store methods:
 // nil for an admin (no filtering), a pointer to the key's namespace otherwise.
 func callerNamespaceArg(identity *CallerIdentity) *string {
+	if identity.ResellerID != "" {
+		ns := store.ResellerNamespace(identity.ResellerID)
+		return &ns
+	}
 	if identity.IsAdmin {
 		return nil
 	}
@@ -79,7 +89,10 @@ func (s *Server) authenticateAdmin(w http.ResponseWriter, r *http.Request, next 
 		return
 	}
 
-	identity := &CallerIdentity{IsAdmin: true, AdminUsername: claims.Username, AdminRole: claims.Role}
+	identity, ok := s.admitAdminClaims(w, r, claims)
+	if !ok {
+		return
+	}
 	ctx := context.WithValue(r.Context(), callerIdentityKey, identity)
 	next.ServeHTTP(w, r.WithContext(ctx))
 }
@@ -143,9 +156,35 @@ func (s *Server) authenticateAPIKey(w http.ResponseWriter, r *http.Request, next
 	}
 
 	identity := &CallerIdentity{
+		KeyID:        key.KeyID,
 		KeyNamespace: key.KeyID,
 		Permissions:  key.Permissions,
 		NodeGroups:   key.NodeGroups,
+	}
+	if key.ResellerID != nil {
+		// A reseller-owned key acts as its reseller (namespace + quota enforcement) but
+		// stays an API-key caller (IsAdmin false), so route permissions are the key's own.
+		// The owner's state is re-checked on every request: disabling or expiring a
+		// reseller must cut off its bots immediately.
+		limits, err := s.resellerLimits(ctx, *key.ResellerID)
+		switch {
+		case errors.Is(err, store.ErrResellerNotFound):
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized", "invalid API key")
+			return
+		case err != nil:
+			s.Logger.Error("reseller_limits_lookup_failed", "error", err)
+			writeJSONError(w, http.StatusInternalServerError, "internal_error", "authentication failed")
+			return
+		case limits.Disabled:
+			writeJSONError(w, http.StatusUnauthorized, "reseller_disabled", "the reseller owning this API key is disabled")
+			return
+		case limits.ExpiresAt != nil && !limits.ExpiresAt.After(time.Now()):
+			writeJSONError(w, http.StatusUnauthorized, "reseller_expired", "the reseller plan owning this API key has expired")
+			return
+		}
+		identity.ResellerID = *key.ResellerID
+		identity.KeyNamespace = store.ResellerNamespace(*key.ResellerID)
+		identity.NodeGroups = effectiveKeyGroups(limits.NodeGroups, key.NodeGroups)
 	}
 	next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, callerIdentityKey, identity)))
 }
@@ -219,4 +258,27 @@ func stringSliceContains(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// effectiveKeyGroups is the node-group set a reseller-owned key may use: the key's own
+// groups when it narrows the reseller's, the reseller's when the key inherits (empty).
+// A disjoint pair yields a sentinel no real group can match (group names are non-empty),
+// because an empty slice would read as "all groups" for a reseller.
+func effectiveKeyGroups(reseller, key []string) []string {
+	switch {
+	case len(key) == 0:
+		return reseller
+	case len(reseller) == 0:
+		return key
+	}
+	var out []string
+	for _, g := range key {
+		if stringSliceContains(reseller, g) {
+			out = append(out, g)
+		}
+	}
+	if len(out) == 0 {
+		return []string{""}
+	}
+	return out
 }

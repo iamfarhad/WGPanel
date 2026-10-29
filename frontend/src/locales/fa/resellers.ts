@@ -1,0 +1,115 @@
+/** Persian for the reseller UI, the shared error state and API error codes. */
+export const resellers: Record<string, string> = {
+  // Navigation and page
+  Resellers: 'نماینده‌ها',
+  'Partners who sell WireGuard accounts under their own limits.': 'همکارانی که با سقف‌های مخصوص خودشان اکانت وایرگارد می‌فروشند.',
+  'New reseller': 'نماینده‌ی جدید',
+  'Edit reseller': 'ویرایش نماینده',
+  'Reseller accounts': 'اکانت‌های نماینده‌ها',
+  'Across all resellers': 'در همه‌ی نماینده‌ها',
+  'Traffic used': 'ترافیک مصرف‌شده',
+  '{amount} allocated': '{amount} تخصیص‌یافته',
+  '{n} disabled': '{n} غیرفعال',
+  'All active': 'همه فعال',
+  'Could not load resellers.': 'بارگذاری نماینده‌ها ممکن نشد.',
+  'No resellers yet': 'هنوز نماینده‌ای ندارید',
+  'Add a reseller to let a partner sell accounts under their own limits.':
+    'یک نماینده اضافه کنید تا همکارتان با سقف‌های خودش اکانت بفروشد.',
+  Reseller: 'نماینده',
+  'Traffic credit': 'اعتبار ترافیک',
+  'Node groups': 'گروه‌های نود',
+  All: 'همه',
+  disabled: 'غیرفعال',
+  'Suspend all accounts': 'تعلیق همه‌ی اکانت‌ها',
+  'Reactivate accounts': 'فعال‌سازی دوباره‌ی اکانت‌ها',
+  'Enable reseller': 'فعال کردن نماینده',
+  'Disable reseller': 'غیرفعال کردن نماینده',
+  'Suspend all accounts?': 'همه‌ی اکانت‌ها تعلیق شوند؟',
+  "Every active account of {name} stops working until you reactivate them. The reseller can't re-enable them.":
+    'همه‌ی اکانت‌های فعال {name} تا وقتی دوباره فعالشان نکنید کار نمی‌کنند. خود نماینده نمی‌تواند فعالشان کند.',
+  'Suspend accounts': 'تعلیق اکانت‌ها',
+  'Reactivate accounts?': 'اکانت‌ها دوباره فعال شوند؟',
+  'Accounts suspended by the bulk action come back. Accounts that have since expired or used up their quota stay suspended.':
+    'اکانت‌هایی که با تعلیق گروهی متوقف شده بودند برمی‌گردند. اکانت‌هایی که در این فاصله منقضی شده‌اند یا حجمشان تمام شده معلق می‌مانند.',
+  Reactivate: 'فعال‌سازی دوباره',
+  'Delete reseller?': 'نماینده حذف شود؟',
+  '{name} will no longer be able to sign in. A reseller that still owns accounts cannot be deleted.':
+    '{name} دیگر نمی‌تواند وارد شود. نماینده‌ای که هنوز اکانت دارد قابل حذف نیست.',
+  'Disable reseller?': 'نماینده غیرفعال شود؟',
+  '{name} is signed out on the next request and cannot sign in. Their accounts keep working - suspend them separately if needed.':
+    '{name} با درخواست بعدی از پنل خارج می‌شود و دیگر نمی‌تواند وارد شود. اکانت‌هایش کار می‌کنند؛ اگر لازم است جداگانه تعلیقشان کنید.',
+  Disable: 'غیرفعال کردن',
+  '{n} accounts suspended': '{n} اکانت تعلیق شد',
+  '{n} accounts reactivated · {m} still suspended': '{n} اکانت دوباره فعال شد · {m} اکانت هنوز معلق است',
+  'Reseller {name} deleted': 'نماینده‌ی {name} حذف شد',
+  'Reseller enabled': 'نماینده فعال شد',
+  'Reseller disabled': 'نماینده غیرفعال شد',
+  'Reseller updated': 'نماینده به‌روز شد',
+  'Reseller {name} created': 'نماینده‌ی {name} ساخته شد',
+  '(leave blank to keep)': '(برای حفظ رمز فعلی خالی بگذارید)',
+  Limits: 'سقف‌ها',
+  'Leave a field empty for no limit.': 'هر فیلدی را که خالی بگذارید یعنی بدون سقف.',
+  'Max accounts': 'حداکثر اکانت',
+  'Traffic credit (GB)': 'اعتبار ترافیک (GB)',
+  'Traffic credit is the total data quota the reseller can hand out across its accounts. With a credit set, it cannot create unlimited accounts.':
+    'اعتبار ترافیک مجموع حجمی است که نماینده می‌تواند بین اکانت‌هایش پخش کند. وقتی اعتبار تعیین شده، نماینده نمی‌تواند اکانت نامحدود بسازد.',
+  'None selected means all node groups.': 'اگر هیچ‌کدام را انتخاب نکنید یعنی همه‌ی گروه‌های نود.',
+  'No node groups yet.': 'هنوز گروه نودی وجود ندارد.',
+  Notes: 'یادداشت',
+  'Saving…': 'در حال ذخیره…',
+  'Save changes': 'ذخیره‌ی تغییرات',
+  'Create reseller': 'ساخت نماینده',
+
+  // Reseller dashboard and account ownership
+  'Your plan': 'طرح من',
+  'Your limits as a reseller': 'سقف‌های شما به‌عنوان نماینده',
+  'Filter by owner': 'فیلتر بر اساس مالک',
+  'All owners': 'همه‌ی مالک‌ها',
+  'Panel admins': 'ادمین‌های پنل',
+  'API keys': 'کلیدهای API',
+  'Reseller: {name}': 'نماینده: {name}',
+  'API key': 'کلید API',
+  'Panel admin': 'ادمین پنل',
+  Owner: 'مالک',
+
+  // Expiry
+  'No expiry': 'بدون انقضا',
+  'Expired today': 'امروز منقضی شد',
+  'Expired {n} days ago': '{n} روز پیش منقضی شد',
+  'Expires today': 'امروز منقضی می‌شود',
+  '{n} days left': '{n} روز مانده',
+  Expiry: 'انقضا',
+  'Expiring soon': 'نزدیک انقضا',
+  'Within the next 3 days': 'در ۳ روز آینده',
+  'Nothing expires in the next 3 days': 'در ۳ روز آینده چیزی منقضی نمی‌شود',
+  'Plan expiry': 'انقضای طرح',
+  'Plan expires on': 'تاریخ انقضای طرح',
+  'After the plan expires the reseller and its API keys stop working; its accounts keep running, and none can be set to expire after the plan.':
+    'بعد از انقضای طرح، نماینده و کلیدهای API او کار نمی‌کنند؛ اکانت‌هایش فعال می‌مانند و هیچ اکانتی نمی‌تواند دیرتر از طرح منقضی شود.',
+  'Your plan expires today. Contact the panel admin to renew it.': 'طرح شما امروز منقضی می‌شود. برای تمدید با مدیر پنل تماس بگیرید.',
+  'Your plan expires in {n} days. Contact the panel admin to renew it.': 'طرح شما {n} روز دیگر منقضی می‌شود. برای تمدید با مدیر پنل تماس بگیرید.',
+  'Your reseller plan has expired.': 'طرح نمایندگی شما منقضی شده است.',
+  'This account is disabled.': 'این حساب غیرفعال است.',
+
+  'Keys for your own bot. A key acts as you: it sees only your accounts and is held to your plan limits.':
+    'کلید برای ربات خودتان. هر کلید به‌جای شما کار می‌کند: فقط اکانت‌های شما را می‌بیند و سقف‌های طرحتان رویش اعمال می‌شود.',
+
+  // Shared error state
+  'Check your connection to the panel and try again.': 'اتصال خود به پنل را بررسی کنید و دوباره امتحان کنید.',
+  'Try again': 'تلاش دوباره',
+  'Something went wrong': 'مشکلی پیش آمد',
+
+  // API error codes (lib/apiErrors.ts)
+  'You have reached your account limit.': 'به سقف تعداد اکانت‌هایتان رسیده‌اید.',
+  'This would exceed your traffic credit.': 'این کار از اعتبار ترافیک شما بیشتر می‌شود.',
+  'Set a data quota - unlimited accounts are not available on your plan.':
+    'برای اکانت سقف حجم تعیین کنید؛ اکانت نامحدود در طرح شما مجاز نیست.',
+  'This expiry is later than your plan allows.': 'این تاریخ انقضا دیرتر از پایان طرح شماست.',
+  'Set an expiry date - your plan requires one.': 'تاریخ انقضا را تعیین کنید؛ طرح شما آن را لازم دارد.',
+  'That node is not available on your plan.': 'این نود در طرح شما در دسترس نیست.',
+  'Your reseller account is disabled.': 'حساب نمایندگی شما غیرفعال است.',
+  'An administrator suspended this account; only they can re-enable it.':
+    'این اکانت را مدیر پنل تعلیق کرده و فقط خود او می‌تواند دوباره فعالش کند.',
+  'This reseller still owns accounts. Delete or move them first.': 'این نماینده هنوز اکانت دارد. اول آن‌ها را حذف کنید.',
+  'That username is already taken.': 'این نام کاربری قبلاً گرفته شده است.',
+}

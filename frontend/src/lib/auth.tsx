@@ -3,7 +3,7 @@ import { apiFetch, getStoredRefreshToken, setStoredRefreshToken } from './api'
 import { setAccessToken } from './tokenStore'
 import { decodeAccessToken } from './jwt'
 
-export type AdminRole = 'super_admin' | 'operator' | 'support'
+export type AdminRole = 'super_admin' | 'operator' | 'support' | 'reseller'
 
 interface CurrentUser {
   username: string

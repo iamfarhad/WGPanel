@@ -1,9 +1,10 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
 import { apiFetch, ApiError } from '../lib/api'
 import { useToast } from '../lib/toast'
 import { useAuth } from '../lib/auth'
+import { useI18n } from '../lib/i18n'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
@@ -14,8 +15,10 @@ import { Dialog } from '../components/ui/Dialog'
 import { ConfirmDialog } from '../components/ui/ConfirmDialog'
 import { Badge } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
+import { ErrorState } from '../components/ui/ErrorState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
+import { RowActions } from '../components/ui/RowActions'
 
 interface AdminUser {
   id: string
@@ -31,6 +34,7 @@ const ROLE_TONE: Record<string, 'blue' | 'green' | 'slate'> = {
 }
 
 export function AdminUsersPage() {
+  const { t, formatDate } = useI18n()
   const queryClient = useQueryClient()
   const { user: currentUser } = useAuth()
   const { push } = useToast()
@@ -51,7 +55,7 @@ export function AdminUsersPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiFetch<void>(`/api/v1/admins/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
-      push('success', `${deleteTarget?.username} deleted`)
+      push('success', t('{name} deleted', { name: deleteTarget?.username ?? '' }))
       invalidate()
       setDeleteTarget(null)
     },
@@ -73,9 +77,9 @@ export function AdminUsersPage() {
 
       <Card className="overflow-hidden">
         {adminsQuery.isLoading && <TableSkeleton cols={3} />}
-        {adminsQuery.isError && <p className="p-6 text-sm text-rose-600 dark:text-rose-400">Could not load admin users.</p>}
+        {adminsQuery.isError && <ErrorState title="Could not load admin users." onRetry={() => adminsQuery.refetch()} />}
         {!adminsQuery.isLoading && !adminsQuery.isError && admins.length === 0 && (
-          <EmptyState icon={ShieldCheck} title="No admin users found" />
+          <EmptyState illustration="security" title="No admin users found" />
         )}
         {!adminsQuery.isLoading && !adminsQuery.isError && admins.length > 0 && (
           <Table>
@@ -84,7 +88,7 @@ export function AdminUsersPage() {
                 <Th>Username</Th>
                 <Th>Role</Th>
                 <Th>Created</Th>
-                <Th className="text-right">Actions</Th>
+                <Th className="text-end">Actions</Th>
               </tr>
             </THead>
             <tbody>
@@ -94,28 +98,15 @@ export function AdminUsersPage() {
                   <Tr key={a.id} interactive onClick={() => setEditTarget(a)}>
                     <Td className="font-medium text-fg">
                       {a.username}
-                      {isSelf && <span className="ml-2 text-xs font-normal text-faint">(you)</span>}
+                      {isSelf && <span className="ms-2 text-xs font-normal text-faint">{t('(you)')}</span>}
                     </Td>
                     <Td>
-                      <Badge tone={ROLE_TONE[a.role] ?? 'slate'}>{a.role.replace('_', ' ')}</Badge>
+                      <Badge tone={ROLE_TONE[a.role] ?? 'slate'}>{t(a.role.replace('_', ' '))}</Badge>
                     </Td>
-                    <Td className="text-muted">{new Date(a.created_at).toLocaleDateString()}</Td>
-                    <Td>
+                    <Td className="text-muted">{formatDate(a.created_at, { dateStyle: 'medium' })}</Td>
+                    <Td className="text-end">
                       {!isSelf && (
-                        <div className="flex justify-end">
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setDeleteTarget(a)
-                            }}
-                            className="text-rose-600 hover:border-rose-300 hover:bg-rose-500/10 dark:text-rose-400 dark:hover:border-rose-500/40"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            Delete
-                          </Button>
-                        </div>
+                        <RowActions actions={[{ label: 'Delete', icon: Trash2, onSelect: () => setDeleteTarget(a), danger: true }]} />
                       )}
                     </Td>
                   </Tr>
@@ -152,7 +143,9 @@ export function AdminUsersPage() {
           onClose={() => setDeleteTarget(null)}
           onConfirm={() => deleteMutation.mutate(deleteTarget.id)}
           title="Delete admin"
-          description={`This will permanently remove "${deleteTarget.username}"'s access to the panel. This cannot be undone.`}
+          description={t('This will permanently remove "{name}"\'s access to the panel. This cannot be undone.', {
+            name: deleteTarget.username,
+          })}
           confirmLabel="Delete"
           danger
           submitting={deleteMutation.isPending}
@@ -171,6 +164,7 @@ function EditAdminDialog({
   onClose: () => void
   onSaved: () => void
 }) {
+  const { t } = useI18n()
   const { push } = useToast()
   const [role, setRole] = useState(admin.role)
   const [password, setPassword] = useState('')
@@ -190,10 +184,10 @@ function EditAdminDialog({
       return apiFetch(`/api/v1/admins/${admin.id}`, { method: 'PATCH', body: JSON.stringify(body) })
     },
     onSuccess: () => {
-      push('success', `${admin.username} updated`)
+      push('success', t('{name} updated', { name: admin.username }))
       onSaved()
     },
-    onError: (err) => setError(err instanceof ApiError ? err.message : 'Failed to update admin'),
+    onError: (err) => setError(err instanceof ApiError ? err.message : t('Failed to update admin')),
   })
 
   function handleSubmit(e: FormEvent) {
@@ -207,13 +201,13 @@ function EditAdminDialog({
   }
 
   return (
-    <Dialog open onClose={onClose} title={`Edit ${admin.username}`}>
+    <Dialog open onClose={onClose} title={t('Edit {name}', { name: admin.username })}>
       <form onSubmit={handleSubmit} className="space-y-4">
         <Field label="Role">
           <Select value={role} onChange={(e) => setRole(e.target.value)}>
-            <option value="support">Support (read-only)</option>
-            <option value="operator">Operator</option>
-            <option value="super_admin">Super admin</option>
+            <option value="support">{t('Support (read-only)')}</option>
+            <option value="operator">{t('Operator')}</option>
+            <option value="super_admin">{t('Super admin')}</option>
           </Select>
         </Field>
         <Field label="Reset password">
@@ -221,11 +215,11 @@ function EditAdminDialog({
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="Leave blank to keep current password"
+            placeholder={t('Leave blank to keep current password')}
             autoComplete="new-password"
           />
         </Field>
-        {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
+        {error && <p className="text-sm text-danger-fg">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel
@@ -248,6 +242,7 @@ function CreateAdminDialog({
   onClose: () => void
   onCreated: () => void
 }) {
+  const { t } = useI18n()
   const { push } = useToast()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -261,13 +256,13 @@ function CreateAdminDialog({
         body: JSON.stringify({ username, password, role }),
       }),
     onSuccess: () => {
-      push('success', `Admin "${username}" created`)
+      push('success', t('Admin "{name}" created', { name: username }))
       setUsername('')
       setPassword('')
       setRole('support')
       onCreated()
     },
-    onError: (err) => setError(err instanceof ApiError ? err.message : 'Failed to create admin'),
+    onError: (err) => setError(err instanceof ApiError ? err.message : t('Failed to create admin')),
   })
 
   function handleSubmit(e: FormEvent) {
@@ -293,12 +288,12 @@ function CreateAdminDialog({
         </Field>
         <Field label="Role">
           <Select value={role} onChange={(e) => setRole(e.target.value)}>
-            <option value="support">Support (read-only)</option>
-            <option value="operator">Operator</option>
-            <option value="super_admin">Super admin</option>
+            <option value="support">{t('Support (read-only)')}</option>
+            <option value="operator">{t('Operator')}</option>
+            <option value="super_admin">{t('Super admin')}</option>
           </Select>
         </Field>
-        {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
+        {error && <p className="text-sm text-danger-fg">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel

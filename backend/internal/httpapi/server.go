@@ -3,6 +3,7 @@
 package httpapi
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
@@ -43,6 +44,9 @@ type Server struct {
 	// on - surfaced in the join-token response so the panel can show the exact
 	// control-plane address install-node.sh needs (see controlPlaneAddr).
 	NodeAgentPort string
+	// ResellerLimitsLookup overrides the per-request reseller limits lookup in tests;
+	// nil means Store.GetResellerLimits (see reseller_gate.go).
+	ResellerLimitsLookup func(ctx context.Context, adminID string) (store.ResellerLimits, error)
 }
 
 // Routes builds the full handler tree: public routes (proxied by Caddy), the
@@ -107,11 +111,16 @@ func (s *Server) Routes() http.Handler {
 	// Rotating the subscription URL is an account mutation, same tier as PATCH.
 	mux.Handle("POST /api/v1/accounts/{id}/subscription/rotate", s.requireAdminOrAPIKey(s.requirePermission("update", http.HandlerFunc(s.handleRotateSubscriptionToken))))
 
-	// API key issuance is super-admin-only, same reasoning as join-token generation above.
-	mux.Handle("POST /api/v1/api-keys", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleCreateAPIKey))))
-	mux.Handle("GET /api/v1/api-keys", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleListAPIKeys))))
-	mux.Handle("POST /api/v1/api-keys/{id}/revoke", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleRevokeAPIKey))))
-	mux.Handle("POST /api/v1/api-keys/{id}/rotate", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleRotateAPIKey))))
+	// Reporting page: read-tier like every other account read, namespace-scoped for
+	// resellers and API keys (see handleReports).
+	mux.Handle("GET /api/v1/reports", s.requireAdminOrAPIKey(s.requirePermission("read", http.HandlerFunc(s.handleReports))))
+
+	// API key issuance is super-admin-only, same reasoning as join-token generation above -
+	// except that a reseller may manage the keys it owns (requireRoleOrReseller).
+	mux.Handle("POST /api/v1/api-keys", s.requireAdmin(s.requireRoleOrReseller("super_admin", http.HandlerFunc(s.handleCreateAPIKey))))
+	mux.Handle("GET /api/v1/api-keys", s.requireAdmin(s.requireRoleOrReseller("super_admin", http.HandlerFunc(s.handleListAPIKeys))))
+	mux.Handle("POST /api/v1/api-keys/{id}/revoke", s.requireAdmin(s.requireRoleOrReseller("super_admin", http.HandlerFunc(s.handleRevokeAPIKey))))
+	mux.Handle("POST /api/v1/api-keys/{id}/rotate", s.requireAdmin(s.requireRoleOrReseller("super_admin", http.HandlerFunc(s.handleRotateAPIKey))))
 
 	// Admin user management (PRD-admin-panel-ux.md §3.6) - super-admin-only, same tier
 	// as API keys and join tokens: all three mint new trust into the system.
@@ -119,6 +128,19 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /api/v1/admins", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleListAdminUsers))))
 	mux.Handle("PATCH /api/v1/admins/{id}", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleUpdateAdminUser))))
 	mux.Handle("DELETE /api/v1/admins/{id}", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleDeleteAdminUser))))
+
+	// Reseller management (super_admin only) and the reseller's own self-view. Resellers
+	// are reachable only through the allowlist in reseller_gate.go - every route they
+	// may call is listed there, everything else (including routes added later) is denied.
+	mux.Handle("GET /api/v1/me", s.requireAdmin(http.HandlerFunc(s.handleMe)))
+	mux.Handle("GET /api/v1/reseller/me", s.requireAdmin(http.HandlerFunc(s.handleResellerMe)))
+	mux.Handle("GET /api/v1/resellers", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleListResellers))))
+	mux.Handle("POST /api/v1/resellers", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleCreateReseller))))
+	mux.Handle("GET /api/v1/resellers/{id}", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleGetReseller))))
+	mux.Handle("PATCH /api/v1/resellers/{id}", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleUpdateReseller))))
+	mux.Handle("DELETE /api/v1/resellers/{id}", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleDeleteReseller))))
+	mux.Handle("POST /api/v1/resellers/{id}/suspend-accounts", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleSuspendResellerAccounts))))
+	mux.Handle("POST /api/v1/resellers/{id}/reactivate-accounts", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleReactivateResellerAccounts))))
 
 	// Audit Log (PRD-admin-panel-ux.md §3.7) - a global view, super-admin-only.
 	mux.Handle("GET /api/v1/audit-log", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleListAuditLog))))

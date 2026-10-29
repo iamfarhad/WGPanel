@@ -26,6 +26,9 @@ type bootstrapSelfNodeResponse struct {
 	NodeID    string `json:"node_id"`
 	Token     string `json:"token"`
 	ExpiresAt string `json:"expires_at"`
+	// install.sh takes the self-node's interface address from here (wg_interface_address)
+	// rather than deriving it itself, so it always matches what ipalloc reserves.
+	nodeNetwork
 }
 
 // handleBootstrapSelfNode combines CreateNode + join-token generation into one
@@ -45,6 +48,16 @@ func (s *Server) handleBootstrapSelfNode(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "name, public_endpoint, and wg_subnet are required")
 		return
 	}
+	endpoint, err := normalizePublicEndpoint(req.PublicEndpoint)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	subnet, err := normalizeWGSubnet(req.WGSubnet)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
 	if req.NodeGroup == "" {
 		req.NodeGroup = "default"
 	}
@@ -53,7 +66,7 @@ func (s *Server) handleBootstrapSelfNode(w http.ResponseWriter, r *http.Request)
 	}
 
 	ctx := r.Context()
-	node, err := s.Store.CreateNode(ctx, req.Name, req.NodeGroup, req.Region, req.PublicEndpoint, req.WGSubnet, req.CapacityMaxPeers, req.PublicKey)
+	node, err := s.Store.CreateNode(ctx, req.Name, req.NodeGroup, req.Region, endpoint, subnet, req.CapacityMaxPeers, req.PublicKey)
 	if errors.Is(err, store.ErrNodeNameTaken) {
 		writeJSONError(w, http.StatusConflict, "node_name_taken", "a node with this name already exists")
 		return
@@ -89,8 +102,9 @@ func (s *Server) handleBootstrapSelfNode(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusCreated, bootstrapSelfNodeResponse{
-		NodeID:    node.ID,
-		Token:     rawToken,
-		ExpiresAt: expiresAt.Format(time.RFC3339),
+		NodeID:      node.ID,
+		Token:       rawToken,
+		ExpiresAt:   expiresAt.Format(time.RFC3339),
+		nodeNetwork: nodeNetworkFor(node),
 	})
 }

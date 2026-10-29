@@ -88,6 +88,10 @@ servers:
       override).
 
 tags:
+  - name: Reports
+    description: Traffic, account-status, quota and expiry reporting for staff and resellers.
+  - name: Resellers
+    description: Reseller logins with account/traffic/expiry/node-group limits (super_admin manages; reseller self-service is limited to its own accounts).
   - name: Auth
     description: Admin login/session management.
   - name: Nodes
@@ -478,7 +482,17 @@ paths:
                 type: object
                 properties:
                   token: { type: string }
-                  expires_at: { type: string, format: date-time }
+                  expires_at: { type: string, format: date-time, nullable: true }
+                  unlimited: { type: boolean }
+                  panel_addr:
+                    type: string
+                    nullable: true
+                    description: >-
+                      The exact host:port to give install-node.sh as the control-plane
+                      address: the panel domain (falling back to the Host this request
+                      was made on, for IP-only deployments) + NODE_AGENT_PORT. This is
+                      NOT the panel's web/HTTPS port.
+                    example: panel.example.com:48443
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -544,6 +558,14 @@ paths:
         - name: limit
           in: query
           schema: { type: integer, default: 50, maximum: 200, minimum: 1 }
+        - name: owner
+          in: query
+          description: Staff admins only (ignored for resellers/API keys). `admin` = created by an admin; otherwise an exact owner namespace such as `reseller:<id>`.
+          schema: { type: string }
+        - name: reseller_id
+          in: query
+          description: Staff admins only. Shorthand for `owner=reseller:<id>`.
+          schema: { type: string, format: uuid }
       responses:
         "200":
           description: OK
@@ -951,9 +973,13 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: wg-quick config text (Content-Disposition attachment).
+          description: >-
+            wg-quick config text (Content-Disposition attachment). Served as
+            `application/octet-stream` rather than `text/plain` so Android
+            Chrome keeps the `.conf` extension instead of renaming the
+            download to `.conf.txt`, which the WireGuard app can't import.
           content:
-            text/plain:
+            application/octet-stream:
               schema: { type: string }
         "403":
           description: "`account_suspended`"
@@ -1025,8 +1051,13 @@ paths:
       tags: [API Keys]
       summary: Create a bot/reseller API key
       description: >-
-        Requires an admin session with role = `super_admin`. The response's
-        `secret` field is shown **exactly once** - it cannot be retrieved again,
+        Requires an admin session with role = `super_admin`, or a `reseller` session.
+        A key created by a reseller is owned by it (`reseller_id` set): it acts inside
+        the reseller's namespace, is subject to the reseller's quotas, and its
+        `node_groups` must be a subset of the reseller's (else 422
+        `reseller_node_group_not_allowed`; empty = inherit the reseller's). Resellers
+        list/revoke/rotate only their own keys (404 otherwise); super_admin sees all.
+        The response's `secret` field is shown **exactly once** - it cannot be retrieved again,
         only rotated (which invalidates it after a 24h grace period).
       security:
         - BearerAuth: []
@@ -1158,6 +1189,7 @@ paths:
                   type: string
                   enum: [super_admin, operator, support]
                   default: support
+                  description: "`reseller` is not accepted here; use POST /api/v1/resellers. Resellers are hidden from GET /admins and rejected by PATCH/DELETE /admins/{id} (409 managed_via_resellers)."
       responses:
         "201":
           description: Admin created.
@@ -1194,6 +1226,242 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/me:
+    get:
+      tags: [Resellers]
+      summary: Who am I (any admin session)
+      description: >-
+        Returns the logged-in admin's id, username and role. `role` is also the `role`
+        claim of the JWT. For a `reseller` session `reseller` carries its limits and
+        live usage; otherwise it is null.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current user.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  username: { type: string }
+                  role: { type: string, enum: [super_admin, operator, support, reseller] }
+                  reseller:
+                    nullable: true
+                    allOf: [{ $ref: "#/components/schemas/Reseller" }]
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/reseller/me:
+    get:
+      tags: [Resellers]
+      summary: A reseller's own limits and usage
+      description: Reseller sessions only (403 for anyone else).
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Limits and usage.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reseller" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/resellers:
+    get:
+      tags: [Resellers]
+      summary: List resellers with limits and usage
+      description: Requires role `super_admin`.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Resellers.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resellers:
+                    type: array
+                    items: { $ref: "#/components/schemas/Reseller" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Resellers]
+      summary: Create a reseller
+      description: Requires role `super_admin`. Omitted/null limits are unlimited; empty `node_groups` means all groups.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password, minLength: 8 }
+                notes: { type: string }
+                disabled: { type: boolean }
+                max_accounts: { type: integer, nullable: true, minimum: 0 }
+                data_limit_gb: { type: number, nullable: true, minimum: 0 }
+                node_groups: { type: array, items: { type: string } }
+                expires_at: { type: string, format: date-time, nullable: true, description: "Plan end date; must be in the future. Omit or null = never expires." }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reseller" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: "`username_taken`." }
+
+  /api/v1/resellers/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Resellers]
+      summary: Get a reseller
+      description: Requires role `super_admin`.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Reseller.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reseller" }
+        "404": { description: "`reseller_not_found`." }
+    patch:
+      tags: [Resellers]
+      summary: Update limits, notes, disabled flag or password
+      description: >-
+        Requires role `super_admin`. Omitted fields are unchanged; an explicit `null`
+        on `max_accounts`/`data_limit_gb` means unlimited and on `expires_at` means never expires. Lowering a
+        limit below current usage is allowed (blocks growth only). Disabling takes
+        effect on the reseller's next request.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                password: { type: string, format: password, minLength: 8 }
+                notes: { type: string }
+                disabled: { type: boolean }
+                max_accounts: { type: integer, nullable: true }
+                data_limit_gb: { type: number, nullable: true }
+                node_groups: { type: array, items: { type: string } }
+                expires_at: { type: string, format: date-time, nullable: true, description: "Explicit null = never expires; omitted = unchanged." }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reseller" }
+        "404": { description: "`reseller_not_found`." }
+    delete:
+      tags: [Resellers]
+      summary: Delete a reseller
+      description: Requires role `super_admin`. Refused with 409 `reseller_has_accounts` while it owns non-deleted accounts.
+      security:
+        - BearerAuth: []
+      responses:
+        "204": { description: Deleted. }
+        "404": { description: "`reseller_not_found`." }
+        "409": { description: "`reseller_has_accounts`." }
+
+  /api/v1/resellers/{id}/suspend-accounts:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [Resellers]
+      summary: Suspend all of a reseller's active accounts
+      description: Requires role `super_admin`. Sets `suspend_reason = reseller_suspended`; the reseller cannot re-enable these.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Count suspended.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suspended: { type: integer }
+                  reason: { type: string, example: reseller_suspended }
+        "404": { description: "`reseller_not_found`." }
+
+  /api/v1/resellers/{id}/reactivate-accounts:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [Resellers]
+      summary: Reactivate accounts suspended by the bulk action
+      description: >-
+        Requires role `super_admin`. Touches only `reseller_suspended` accounts; one that
+        has since expired or exhausted its quota stays suspended with the real reason
+        and is counted in `still_suspended`.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reactivated: { type: integer }
+                  still_suspended: { type: integer }
+        "404": { description: "`reseller_not_found`." }
+
+  /api/v1/reports:
+    get:
+      tags: [Reports]
+      summary: Reporting dashboard data
+      description: >-
+        One payload for the reports page. Hourly buckets (24h, 7d) come from raw samples;
+        daily buckets (30d, 90d, 365d) from the `traffic_daily` continuous aggregate.
+        Series are gap-free and evenly spaced (missing buckets are zero); the last bucket
+        is the current, partial one. Resellers (session or reseller-owned key) and plain
+        API keys are always scoped to their own namespace and `reseller_id`/`owner` are
+        ignored for them. Staff may narrow with `reseller_id` or `owner`. `nodes[].cpu_avg`
+        and `mem_avg_percent` are null unless the caller is staff; `resellers` is present
+        only for a super_admin with no scope filter, otherwise null.
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: range
+          in: query
+          schema: { type: string, enum: ["24h", "7d", "30d", "90d", "365d"], default: "7d" }
+        - name: reseller_id
+          in: query
+          description: Staff only. Scope to one reseller.
+          schema: { type: string, format: uuid }
+        - name: owner
+          in: query
+          description: Staff only. `admin` = staff-created accounts, or an exact owner namespace.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Report" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /api/v1/audit-log:
     get:
       tags: [Audit Log]
@@ -1218,6 +1486,52 @@ paths:
                     items: { $ref: "#/components/schemas/AuditLogEntry" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /agent/preflight:
+    servers:
+      - url: https://node-agent.internal:48443
+    post:
+      tags: [Node Agent]
+      summary: Look up a join token's node and expected WireGuard settings without redeeming it
+      description: >-
+        Called by install-node.sh before the agent starts, so the installer can
+        take the node's WireGuard listen port and interface address from the
+        panel instead of asking for values that must match it exactly. Same
+        credential and validity rules as `/agent/register` (the join token), but
+        the token is NOT redeemed. No client certificate required.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [join_token]
+              properties:
+                join_token: { type: string }
+      responses:
+        "200":
+          description: The token is valid; the node it would register.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    properties:
+                      node_id: { type: string, format: uuid }
+                      name: { type: string }
+                  - $ref: "#/components/schemas/NodeNetwork"
+        "400":
+          description: "`invalid_request` - join_token missing."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401":
+          description: "`invalid_token` - join token invalid, expired, or already used."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /agent/register:
@@ -1255,11 +1569,13 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  node_id: { type: string, format: uuid }
-                  certificate_pem: { type: string }
-                  ca_certificate_pem: { type: string }
+                allOf:
+                  - type: object
+                    properties:
+                      node_id: { type: string, format: uuid }
+                      certificate_pem: { type: string }
+                      ca_certificate_pem: { type: string }
+                  - $ref: "#/components/schemas/NodeNetwork"
         "400":
           description: "`invalid_request` (missing fields) or `invalid_csr` (CSR could not be parsed/signed)."
           content:
@@ -1297,6 +1613,9 @@ paths:
               properties:
                 peer_count: { type: integer }
                 load_avg: { type: number }
+                dns_forwarder:
+                  type: boolean
+                  description: The agent serves DNS for its clients on the node's tunnel address (see client_dns = node).
               description: Informational only - malformed/absent bodies are tolerated, not rejected.
       responses:
         "200":
@@ -1307,6 +1626,14 @@ paths:
                 type: object
                 properties:
                   status: { type: string, example: ok }
+                  client_dns:
+                    type: string
+                    description: The resolved DNS = value this node's clients get; the agent probes it from the node.
+                  network:
+                    $ref: "#/components/schemas/NodeNetwork"
+                    description: >-
+                      The node's expected WireGuard settings, so agents registered before
+                      `/agent/register` returned them can check their interface too.
         "401":
           description: "`client_certificate_required` (no client cert presented) or `certificate_superseded` (cert's fingerprint no longer matches this node's pinned identity)."
           content:
@@ -1510,6 +1837,156 @@ components:
           schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
   schemas:
+    Report:
+      type: object
+      properties:
+        range:
+          type: object
+          properties:
+            key: { type: string }
+            from: { type: string, format: date-time }
+            to: { type: string, format: date-time }
+            bucket: { type: string, enum: [hour, day] }
+        scope:
+          type: object
+          properties:
+            reseller_id: { type: string, nullable: true }
+            owner: { type: string, nullable: true }
+        totals:
+          type: object
+          properties:
+            rx_bytes: { type: integer, format: int64 }
+            tx_bytes: { type: integer, format: int64 }
+            active_accounts: { type: integer, description: Accounts with any traffic in range. }
+            new_accounts: { type: integer, description: Accounts created in range. }
+            accounts_total: { type: integer }
+            accounts_active: { type: integer }
+            accounts_suspended: { type: integer }
+            online_now: { type: integer, description: Accounts with a peer handshake in the last 3 minutes. }
+        traffic_series:
+          type: array
+          items:
+            type: object
+            properties:
+              ts: { type: string, format: date-time }
+              rx_bytes: { type: integer, format: int64 }
+              tx_bytes: { type: integer, format: int64 }
+              active_accounts: { type: integer }
+        new_accounts_series:
+          type: array
+          items:
+            type: object
+            properties:
+              ts: { type: string, format: date-time }
+              count: { type: integer }
+        status_breakdown:
+          type: array
+          items:
+            type: object
+            properties:
+              status: { type: string }
+              reason: { type: string, nullable: true }
+              count: { type: integer }
+        quota_buckets:
+          type: array
+          description: "Always five entries: unlimited, lt50, 50to80, 80to100, exceeded."
+          items:
+            type: object
+            properties:
+              bucket: { type: string }
+              count: { type: integer }
+        expiry_buckets:
+          type: array
+          description: "Always seven mutually exclusive entries: expired, today, 3d, 7d, 30d, later, never."
+          items:
+            type: object
+            properties:
+              bucket: { type: string }
+              count: { type: integer }
+        expiring:
+          type: array
+          description: Active accounts expiring within 7 days, soonest first, max 20.
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              label: { type: string }
+              owner: { type: string, nullable: true }
+              reseller_id: { type: string, nullable: true }
+              expiry_at: { type: string, format: date-time }
+              status: { type: string }
+              data_used_bytes: { type: integer, format: int64 }
+              data_quota_bytes: { type: integer, format: int64, nullable: true }
+        top_accounts:
+          type: array
+          description: By rx+tx in range, max 10.
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              label: { type: string }
+              owner: { type: string, nullable: true }
+              reseller_id: { type: string, nullable: true }
+              rx_bytes: { type: integer, format: int64 }
+              tx_bytes: { type: integer, format: int64 }
+        nodes:
+          type: array
+          description: Traffic from the scoped accounts only. Staff with no filter see every node; otherwise only nodes the scoped accounts use.
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
+              status: { type: string }
+              rx_bytes: { type: integer, format: int64 }
+              tx_bytes: { type: integer, format: int64 }
+              accounts: { type: integer }
+              cpu_avg: { type: number, nullable: true }
+              mem_avg_percent: { type: number, nullable: true }
+        resellers:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              username: { type: string }
+              disabled: { type: boolean }
+              expires_at: { type: string, format: date-time, nullable: true }
+              accounts: { type: integer }
+              data_allocated_bytes: { type: integer, format: int64 }
+              data_limit_bytes: { type: integer, format: int64, nullable: true }
+              rx_bytes: { type: integer, format: int64 }
+              tx_bytes: { type: integer, format: int64 }
+
+    Reseller:
+      type: object
+      description: >-
+        A reseller login with its limits (null = unlimited; empty node_groups = all
+        groups) and live usage. Reseller quota errors on account create/update/renew use
+        codes `reseller_account_limit_reached` (409), `reseller_data_credit_exceeded` (409),
+        `reseller_unlimited_not_allowed` (422), `reseller_expiry_too_long` (422),
+        `reseller_expiry_required` (422), `reseller_node_group_not_allowed` (422),
+        `reseller_disabled` (403), `account_suspended_by_admin` (403). Sessions of a
+        disabled / expired reseller get 401 `account_disabled` / `reseller_expired`.
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        namespace: { type: string, example: "reseller:6f0c..." }
+        disabled: { type: boolean }
+        notes: { type: string }
+        max_accounts: { type: integer, nullable: true }
+        data_limit_bytes: { type: integer, format: int64, nullable: true }
+        node_groups: { type: array, items: { type: string } }
+        expires_at: { type: string, format: date-time, nullable: true, description: "Reseller plan end date; null = never. After it the reseller is blocked (401 reseller_expired); its accounts keep working and none may expire after it." }
+        usage:
+          type: object
+          properties:
+            accounts_used: { type: integer }
+            data_allocated_bytes: { type: integer, format: int64 }
+            data_used_bytes: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
     ErrorEnvelope:
       type: object
       properties:
@@ -1561,6 +2038,23 @@ components:
         created_at: { type: string, format: date-time }
       required: [id, name, node_group, public_endpoint, wg_subnet, capacity_max_peers, status, created_at]
 
+    NodeNetwork:
+      type: object
+      description: >-
+        What the node's own WireGuard interface must look like for the panel's
+        client configs to work.
+      properties:
+        wg_subnet: { type: string, example: "10.66.0.0/24" }
+        wg_interface_address:
+          type: string
+          example: "10.66.0.1/24"
+          description: The subnet's .1 - the address reserved for the node itself.
+        public_endpoint: { type: string, example: "vpn1.example.com:51820" }
+        wg_listen_port:
+          type: integer
+          example: 51820
+          description: public_endpoint's port; 0 if a legacy endpoint has none.
+
     CreateNodeRequest:
       type: object
       required: [name, public_endpoint, wg_subnet]
@@ -1568,8 +2062,16 @@ components:
         name: { type: string }
         node_group: { type: string, default: default }
         region: { type: string, default: "", description: Optional steering label, e.g. "eu" or "us-east". }
-        public_endpoint: { type: string, example: "vpn1.example.com:51820" }
-        wg_subnet: { type: string, example: "10.66.0.0/24" }
+        public_endpoint:
+          type: string
+          example: "vpn1.example.com:51820"
+          description: >-
+            host:port clients dial (IPv6 hosts in brackets). Required to include the
+            port, which must be the node's WireGuard listen port; stored in canonical form.
+        wg_subnet:
+          type: string
+          example: "10.66.0.0/24"
+          description: IPv4 CIDR, /16 to /30. Stored in network form (10.66.0.5/24 becomes 10.66.0.0/24).
         capacity_max_peers: { type: integer, default: 250 }
         public_key:
           type: string
@@ -1580,6 +2082,14 @@ components:
       type: object
       properties:
         id: { type: string, format: uuid }
+        owner:
+          type: string
+          nullable: true
+          description: Owner namespace - `reseller:<admin id>`, an API key id, or null for accounts created by a staff admin.
+        reseller_id:
+          type: string
+          nullable: true
+          description: Admin id of the owning reseller, when the owner is a reseller.
         external_ref:
           type: string
           nullable: true
@@ -1690,6 +2200,11 @@ components:
             type: string
             enum: [read, create, update, suspend, delete]
         revoked: { type: boolean }
+        reseller_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Owning reseller; null for a staff-created key. Requests with a reseller-owned key get 401 `reseller_disabled` / `reseller_expired` when the reseller is disabled / past its plan end date.
         created_at: { type: string, format: date-time }
       required: [id, key_id, label, node_groups, permissions, revoked, created_at]
 
@@ -1777,10 +2292,14 @@ components:
             never set from the panel; Caddy runs the .env PANEL_DOMAIN it booted with.
         client_dns:
           type: string
-          example: "1.1.1.1, 1.0.0.1"
+          example: node
           description: >-
-            The DNS = line written into every generated wg-quick config
-            (comma-separated). Takes effect on the next config download.
+            The DNS = line of every generated wg-quick config. `node` (the default)
+            points each node's clients at that node's own DNS forwarder on its tunnel
+            address, which resolves through the node server's resolver; nodes whose
+            agent predates the forwarder get `1.1.1.1, 1.0.0.1` instead. Otherwise a
+            comma-separated list of resolver IPs (optionally with search domains).
+            Takes effect on the next config download.
         sub_domain:
           type: string
           nullable: true

@@ -1,14 +1,20 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ShieldHalf, AlertCircle } from 'lucide-react'
+import { AlertCircle } from 'lucide-react'
 import { useAuth } from '../lib/auth'
-import { ApiError } from '../lib/api'
+import { apiErrorMessage } from '../lib/apiErrors'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Field } from '../components/ui/Field'
+import { BrandLockup, Illustration } from '../components/brand/Brand'
+import { LanguageToggle } from '../components/ui/LanguageToggle'
+import { useI18n } from '../lib/i18n'
+import heroLight from '../assets/brand/jirjirak-hero-light.webp'
+import heroDark from '../assets/brand/jirjirak-hero-dark.webp'
 
 export function LoginPage() {
   const { login } = useAuth()
+  const { t } = useI18n()
   const navigate = useNavigate()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -23,61 +29,71 @@ export function LoginPage() {
       await login(username, password)
       navigate('/dashboard', { replace: true })
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Login failed')
+      setError(apiErrorMessage(err, t, 'Login failed'))
     } finally {
       setSubmitting(false)
     }
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-bg p-4">
-      {/* Soft brand glow behind the card - purely decorative. */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -top-40 left-1/2 h-96 w-[42rem] -translate-x-1/2 rounded-full bg-gradient-to-r from-indigo-500/15 via-violet-500/10 to-sky-500/15 blur-3xl"
-      />
-
-      <div className="w-full max-w-sm">
-        <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-600/30">
-            <ShieldHalf className="h-6 w-6" />
-          </div>
-          <h1 className="text-xl font-semibold tracking-tight text-fg">Sign in to WGPanel</h1>
-          <p className="mt-1 text-sm text-muted">Manage your WireGuard fleet</p>
+    <div className="grid min-h-screen bg-bg lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+      <div className="flex flex-col px-6 py-8 sm:px-12">
+        <div className="flex items-center justify-between gap-4">
+          <BrandLockup />
+          <LanguageToggle className="w-24" />
         </div>
 
-        <div className="rounded-2xl border border-edge bg-surface p-6 shadow-xl shadow-slate-950/5 sm:p-8">
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <Field label="Username" htmlFor="username">
-              <Input
-                id="username"
-                autoComplete="username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoFocus
-                required
-              />
-            </Field>
-            <Field label="Password" htmlFor="password">
-              <Input
-                id="password"
-                type="password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </Field>
-            {error && (
-              <div className="flex items-start gap-2 rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 py-2.5 text-sm text-rose-700 dark:text-rose-400">
-                <AlertCircle className="mt-px h-4 w-4 shrink-0" />
-                {error}
-              </div>
-            )}
-            <Button type="submit" className="w-full" disabled={submitting}>
-              {submitting ? 'Signing in…' : 'Sign in'}
-            </Button>
-          </form>
+        <div className="flex flex-1 items-center justify-center py-12">
+          <div className="w-full max-w-sm">
+            {/* Phones get no visual panel, so the mascot greets them here instead. */}
+            <Illustration name="wave" size={132} className="mx-auto mb-6 lg:hidden" />
+            <h1 className="text-2xl font-semibold tracking-tight text-fg">{t('Sign in')}</h1>
+            <p className="mt-1.5 text-sm text-muted">{t('Manage your WireGuard infrastructure.')}</p>
+
+            <form onSubmit={handleSubmit} className="mt-8 space-y-4">
+              <Field label={t('Username')} htmlFor="username">
+                <Input
+                  id="username"
+                  autoComplete="username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  autoFocus
+                  required
+                />
+              </Field>
+              <Field label={t('Password')} htmlFor="password">
+                <Input
+                  id="password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+              </Field>
+              {error && (
+                <div className="flex items-start gap-2 rounded-control border border-danger/25 bg-danger-soft px-3 py-2.5 text-sm text-danger-fg">
+                  <AlertCircle className="mt-px h-4 w-4 shrink-0" />
+                  {error}
+                </div>
+              )}
+              <Button type="submit" className="w-full" disabled={submitting}>
+                {submitting ? t('Signing in…') : t('Sign in')}
+              </Button>
+            </form>
+          </div>
+        </div>
+
+        <p className="text-xs text-faint">{t('Jirjirak WireGuard · Secure. Simple. Fast.')}</p>
+      </div>
+
+      {/* Brand visual. The hero's own wordmark sits on its far left, so it is cropped
+          toward the mascot (object-position) - the lockup on the form side already
+          names the product. Desktop only; phones get the form alone. */}
+      <div className="relative hidden p-3 lg:block">
+        <div className="relative h-full overflow-hidden rounded-surface border border-edge">
+          <img src={heroLight} alt="" className="absolute inset-0 h-full w-full object-cover object-[86%_50%] dark:hidden" />
+          <img src={heroDark} alt="" className="absolute inset-0 hidden h-full w-full object-cover object-[86%_50%] dark:block" />
         </div>
       </div>
     </div>

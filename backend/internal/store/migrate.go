@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"strings"
 )
 
 //go:embed migrations/*.sql
@@ -47,6 +48,13 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
 
+		if isNoTxMigration(string(sqlBytes)) {
+			if err := s.applyNoTx(ctx, name, string(sqlBytes)); err != nil {
+				return err
+			}
+			continue
+		}
+
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("begin tx for migration %s: %w", name, err)
@@ -65,6 +73,54 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// noTxMarker, as the first line of a migration, makes the runner execute it WITHOUT a
+// wrapping transaction. TimescaleDB refuses CREATE MATERIALIZED VIEW ... WITH
+// (timescaledb.continuous) and CALL refresh_continuous_aggregate inside a transaction
+// block, so those migrations cannot use the default all-or-nothing path.
+//
+// The trade-off is that such a file is not atomic: a failure midway leaves the earlier
+// statements applied and the file unrecorded, so every statement in it MUST be
+// idempotent (IF NOT EXISTS / if_not_exists => true) so the next start can re-run it.
+// Statements are split on ';', run one at a time (a multi-statement simple query is
+// itself an implicit transaction), so a no-tx file must not contain ';' inside string
+// literals or comments.
+const noTxMarker = "-- +notx"
+
+func isNoTxMigration(sql string) bool {
+	first, _, _ := strings.Cut(sql, "\n")
+	return strings.TrimSpace(first) == noTxMarker
+}
+
+func (s *Store) applyNoTx(ctx context.Context, name, sql string) error {
+	for _, stmt := range splitStatements(sql) {
+		if _, err := s.pool.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("apply migration %s (no-tx): %w", name, err)
+		}
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO schema_migrations (filename) VALUES ($1)`, name); err != nil {
+		return fmt.Errorf("record migration %s: %w", name, err)
+	}
+	return nil
+}
+
+// splitStatements drops whole-line `--` comments and splits on ';'.
+func splitStatements(sql string) []string {
+	var kept []string
+	for _, line := range strings.Split(sql, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	var out []string
+	for _, stmt := range strings.Split(strings.Join(kept, "\n"), ";") {
+		if strings.TrimSpace(stmt) != "" {
+			out = append(out, strings.TrimSpace(stmt))
+		}
+	}
+	return out
 }
 
 // MigrationsApplied reports whether every embedded migration file has a matching

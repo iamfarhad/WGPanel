@@ -1,11 +1,13 @@
 import { Fragment, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ScrollText, ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { apiFetch } from '../lib/api'
+import { useI18n } from '../lib/i18n'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Select } from '../components/ui/Select'
 import { EmptyState } from '../components/ui/EmptyState'
+import { ErrorState } from '../components/ui/ErrorState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 
@@ -20,6 +22,7 @@ interface AuditLogEntry {
 }
 
 export function AuditLogPage() {
+  const { t, formatDate } = useI18n()
   const [limit, setLimit] = useState(50)
   const [expanded, setExpanded] = useState<number | null>(null)
 
@@ -36,19 +39,19 @@ export function AuditLogPage() {
         description="Every admin and API-key action recorded against this panel."
         action={
           <Select value={limit} onChange={(e) => setLimit(Number(e.target.value))} className="w-40">
-            <option value={20}>Last 20</option>
-            <option value={50}>Last 50</option>
-            <option value={100}>Last 100</option>
-            <option value={200}>Last 200</option>
+            <option value={20}>{t('Last {n}', { n: 20 })}</option>
+            <option value={50}>{t('Last {n}', { n: 50 })}</option>
+            <option value={100}>{t('Last {n}', { n: 100 })}</option>
+            <option value={200}>{t('Last {n}', { n: 200 })}</option>
           </Select>
         }
       />
 
       <Card className="overflow-hidden">
         {logQuery.isLoading && <TableSkeleton cols={4} />}
-        {logQuery.isError && <p className="p-6 text-sm text-rose-600 dark:text-rose-400">Could not load audit log.</p>}
+        {logQuery.isError && <ErrorState title="Could not load audit log." onRetry={() => logQuery.refetch()} />}
         {!logQuery.isLoading && !logQuery.isError && entries.length === 0 && (
-          <EmptyState icon={ScrollText} title="No audit entries yet" />
+          <EmptyState illustration="search" title="No audit entries yet" description="Every change made in this panel will be recorded here." />
         )}
         {!logQuery.isLoading && !logQuery.isError && entries.length > 0 && (
           <Table>
@@ -69,7 +72,7 @@ export function AuditLogPage() {
                       {expanded === entry.id ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                     </Td>
                     <Td className="whitespace-nowrap text-muted tabular-nums">
-                      {new Date(entry.created_at).toLocaleString()}
+                      {formatDate(entry.created_at)}
                     </Td>
                     <Td className="font-medium text-fg">{entry.actor}</Td>
                     <Td>
@@ -83,7 +86,7 @@ export function AuditLogPage() {
                         <div className="grid grid-cols-1 gap-4 text-xs sm:grid-cols-2">
                           <div>
                             <p className="mb-1.5 font-semibold tracking-wider text-faint uppercase">IP address</p>
-                            <p className="font-mono text-fg">{entry.ip_address ?? 'unknown'}</p>
+                            <p className="font-mono text-fg">{entry.ip_address ?? t('unknown')}</p>
                           </div>
                           <div>
                             <p className="mb-1.5 font-semibold tracking-wider text-faint uppercase">Detail</p>

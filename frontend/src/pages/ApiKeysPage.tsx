@@ -1,8 +1,10 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, KeyRound, Ban, RotateCw, Copy, AlertTriangle } from 'lucide-react'
+import { Plus, Ban, RotateCw, Copy, AlertTriangle } from 'lucide-react'
 import { apiFetch, ApiError } from '../lib/api'
 import { useToast } from '../lib/toast'
+import { useI18n } from '../lib/i18n'
+import { useAuth } from '../lib/auth'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
@@ -12,8 +14,10 @@ import { Dialog } from '../components/ui/Dialog'
 import { ConfirmDialog } from '../components/ui/ConfirmDialog'
 import { Badge } from '../components/ui/Badge'
 import { EmptyState } from '../components/ui/EmptyState'
+import { ErrorState } from '../components/ui/ErrorState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
+import { RowActions } from '../components/ui/RowActions'
 
 interface ApiKey {
   id: string
@@ -22,6 +26,9 @@ interface ApiKey {
   node_groups: string[]
   permissions: string[]
   revoked: boolean
+  // Set when a reseller created the key: it then acts as that reseller (its accounts,
+  // limits and node groups). null for keys created by staff.
+  reseller_id: string | null
   created_at: string
 }
 
@@ -32,6 +39,9 @@ interface ApiKeyCreated extends ApiKey {
 const ALL_PERMISSIONS = ['read', 'create', 'update', 'suspend', 'delete']
 
 export function ApiKeysPage() {
+  const { t } = useI18n()
+  const { user } = useAuth()
+  const isReseller = user?.role === 'reseller'
   const queryClient = useQueryClient()
   const { push } = useToast()
   const [createOpen, setCreateOpen] = useState(false)
@@ -43,6 +53,13 @@ export function ApiKeysPage() {
     queryFn: () => apiFetch<{ api_keys: ApiKey[] | null }>('/api/v1/api-keys'),
   })
   const keys = keysQuery.data?.api_keys ?? []
+  // Staff see whose key it is; resellers only ever see their own.
+  const resellersQuery = useQuery({
+    queryKey: ['resellers'],
+    queryFn: () => apiFetch<{ resellers: { id: string; username: string }[] | null }>('/api/v1/resellers'),
+    enabled: !isReseller,
+  })
+  const resellerNames = new Map((resellersQuery.data?.resellers ?? []).map((r) => [r.id, r.username]))
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: ['api-keys'] })
@@ -61,7 +78,7 @@ export function ApiKeysPage() {
   const rotateMutation = useMutation({
     mutationFn: (id: string) => apiFetch<ApiKeyCreated>(`/api/v1/api-keys/${id}/rotate`, { method: 'POST' }),
     onSuccess: (key) => {
-      push('success', `Secret rotated for ${key.label}`)
+      push('success', t('Secret rotated for {name}', { name: key.label }))
       invalidate()
       setRevealedSecret({ keyId: key.key_id, secret: key.secret })
     },
@@ -72,7 +89,11 @@ export function ApiKeysPage() {
     <div>
       <PageHeader
         title="API Keys"
-        description="Credentials for the Telegram sales bot and other integrations to call this panel's API."
+        description={
+          isReseller
+            ? 'Keys for your own bot. A key acts as you: it sees only your accounts and is held to your plan limits.'
+            : "Credentials for the Telegram sales bot and other integrations to call this panel's API."
+        }
         action={
           <Button onClick={() => setCreateOpen(true)}>
             <Plus className="h-4 w-4" />
@@ -83,14 +104,14 @@ export function ApiKeysPage() {
 
       <Card className="overflow-hidden">
         {keysQuery.isLoading && <TableSkeleton cols={5} />}
-        {keysQuery.isError && <p className="p-6 text-sm text-rose-600 dark:text-rose-400">Could not load API keys.</p>}
+        {keysQuery.isError && <ErrorState title="Could not load API keys." onRetry={() => keysQuery.refetch()} />}
         {!keysQuery.isLoading && !keysQuery.isError && keys.length === 0 && (
           <EmptyState
-            icon={KeyRound}
+            illustration="security"
             title="No API keys yet"
             description="Create one to let your Telegram bot talk to this panel."
             action={
-              <Button variant="secondary" onClick={() => setCreateOpen(true)}>
+              <Button onClick={() => setCreateOpen(true)}>
                 <Plus className="h-4 w-4" />
                 New API key
               </Button>
@@ -105,8 +126,9 @@ export function ApiKeysPage() {
                 <Th>Key ID</Th>
                 <Th>Permissions</Th>
                 <Th>Node groups</Th>
+                {!isReseller && <Th>Owner</Th>}
                 <Th>Status</Th>
-                <Th className="text-right">Actions</Th>
+                <Th className="text-end">Actions</Th>
               </tr>
             </THead>
             <tbody>
@@ -123,27 +145,27 @@ export function ApiKeysPage() {
                       ))}
                     </div>
                   </Td>
-                  <Td className="text-muted">{k.node_groups.length > 0 ? k.node_groups.join(', ') : 'all'}</Td>
+                  <Td className="text-muted">{k.node_groups.length > 0 ? k.node_groups.join(', ') : t('all')}</Td>
+                  {!isReseller && (
+                    <Td className="whitespace-nowrap text-muted">
+                      {k.reseller_id ? (
+                        <Badge tone="blue">{resellerNames.get(k.reseller_id) ?? t('Reseller')}</Badge>
+                      ) : (
+                        <span className="text-xs text-faint">{t('Panel admin')}</span>
+                      )}
+                    </Td>
+                  )}
                   <Td>
                     <Badge dot tone={k.revoked ? 'red' : 'green'}>{k.revoked ? 'revoked' : 'active'}</Badge>
                   </Td>
-                  <Td>
+                  <Td className="text-end">
                     {!k.revoked && (
-                      <div className="flex justify-end gap-1.5">
-                        <Button variant="secondary" size="sm" onClick={() => rotateMutation.mutate(k.id)} disabled={rotateMutation.isPending}>
-                          <RotateCw className="h-3.5 w-3.5" />
-                          Rotate
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => setRevokeTarget(k)}
-                          className="text-rose-600 hover:border-rose-300 hover:bg-rose-500/10 dark:text-rose-400 dark:hover:border-rose-500/40"
-                        >
-                          <Ban className="h-3.5 w-3.5" />
-                          Revoke
-                        </Button>
-                      </div>
+                      <RowActions
+                        actions={[
+                          { label: 'Rotate secret', icon: RotateCw, onSelect: () => rotateMutation.mutate(k.id), disabled: rotateMutation.isPending },
+                          { label: 'Revoke', icon: Ban, onSelect: () => setRevokeTarget(k), danger: true },
+                        ]}
+                      />
                     )}
                   </Td>
                 </Tr>
@@ -169,7 +191,9 @@ export function ApiKeysPage() {
           onClose={() => setRevokeTarget(null)}
           onConfirm={() => revokeMutation.mutate(revokeTarget.id)}
           title="Revoke API key"
-          description={`"${revokeTarget.label}" will immediately stop being able to authenticate. This cannot be undone.`}
+          description={t('"{name}" will immediately stop being able to authenticate. This cannot be undone.', {
+            name: revokeTarget.label,
+          })}
           confirmLabel="Revoke"
           danger
           submitting={revokeMutation.isPending}
@@ -178,19 +202,19 @@ export function ApiKeysPage() {
 
       {revealedSecret && (
         <Dialog open onClose={() => setRevealedSecret(null)} title="Secret key">
-          <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700 dark:text-amber-400">
+          <div className="mb-4 flex items-start gap-2.5 rounded-control border border-warning/25 bg-warning-soft px-3 py-2.5 text-sm text-warning-fg">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>This secret is shown once. Store it securely — it cannot be retrieved again.</span>
+            <span>{t('This secret is shown once. Store it securely — it cannot be retrieved again.')}</span>
           </div>
           <div className="space-y-3">
             <div>
-              <p className="mb-1.5 text-xs font-medium text-muted">Key ID</p>
+              <p className="mb-1.5 text-xs font-medium text-muted">{t('Key ID')}</p>
               <p className="rounded-lg border border-edge bg-inset p-2.5 font-mono text-xs text-fg">
                 {revealedSecret.keyId}
               </p>
             </div>
             <div>
-              <p className="mb-1.5 text-xs font-medium text-muted">Secret</p>
+              <p className="mb-1.5 text-xs font-medium text-muted">{t('Secret')}</p>
               <p className="break-all rounded-lg border border-edge bg-inset p-2.5 font-mono text-xs leading-relaxed text-fg">
                 {revealedSecret.secret}
               </p>
@@ -223,6 +247,7 @@ function CreateApiKeyDialog({
   onClose: () => void
   onCreated: (created: ApiKeyCreated) => void
 }) {
+  const { t } = useI18n()
   const [label, setLabel] = useState('')
   const [nodeGroups, setNodeGroups] = useState('')
   const [permissions, setPermissions] = useState<string[]>(['read'])
@@ -247,7 +272,7 @@ function CreateApiKeyDialog({
       setPermissions(['read'])
       onCreated(created)
     },
-    onError: (err) => setError(err instanceof ApiError ? err.message : 'Failed to create API key'),
+    onError: (err) => setError(err instanceof ApiError ? err.message : t('Failed to create API key')),
   })
 
   function togglePermission(perm: string) {
@@ -264,13 +289,13 @@ function CreateApiKeyDialog({
     <Dialog open={open} onClose={onClose} title="New API key">
       <form onSubmit={handleSubmit} className="space-y-4">
         <Field label="Label">
-          <Input value={label} onChange={(e) => setLabel(e.target.value)} required placeholder="e.g. telegram-sales-bot" />
+          <Input value={label} onChange={(e) => setLabel(e.target.value)} required placeholder={t('e.g. telegram-sales-bot')} />
         </Field>
         <Field label="Node groups" labelSuffix="(comma-separated, blank = all)">
-          <Input value={nodeGroups} onChange={(e) => setNodeGroups(e.target.value)} placeholder="eu-west, us-east" />
+          <Input value={nodeGroups} onChange={(e) => setNodeGroups(e.target.value)} placeholder={t('eu-west, us-east')} />
         </Field>
         <div>
-          <p className="mb-2 block text-sm font-medium text-fg">Permissions</p>
+          <p className="mb-2 block text-sm font-medium text-fg">{t('Permissions')}</p>
           <div className="flex flex-wrap gap-2">
             {ALL_PERMISSIONS.map((perm) => (
               <button
@@ -289,7 +314,7 @@ function CreateApiKeyDialog({
             ))}
           </div>
         </div>
-        {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
+        {error && <p className="text-sm text-danger-fg">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel

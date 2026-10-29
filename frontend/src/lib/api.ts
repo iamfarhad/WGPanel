@@ -14,9 +14,13 @@ export function setStoredRefreshToken(token: string | null): void {
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  /** The API's machine-readable error code (body.error.code), e.g.
+   * "reseller_account_limit_reached" - see lib/apiErrors.ts. */
+  code?: string
+  constructor(status: number, message: string, code?: string) {
     super(message)
     this.status = status
+    this.code = code
   }
 }
 
@@ -84,9 +88,11 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
 
   if (!res.ok) {
     let message = res.statusText
+    let code: string | undefined
     try {
-      const body = (await res.json()) as { error?: { message?: string } }
+      const body = (await res.json()) as { error?: { message?: string; code?: string } }
       message = body?.error?.message ?? message
+      code = body?.error?.code
     } catch {
       // Response wasn't JSON - fall back to statusText.
     }
@@ -94,7 +100,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
       setAccessToken(null)
       setStoredRefreshToken(null)
     }
-    throw new ApiError(res.status, message)
+    throw new ApiError(res.status, message, code)
   }
 
   if (res.status === 204) return undefined as T

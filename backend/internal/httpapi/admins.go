@@ -40,6 +40,10 @@ func (s *Server) handleCreateAdmin(w http.ResponseWriter, r *http.Request) {
 	if role == "" {
 		role = "super_admin"
 	}
+	if !validAdminRoles[role] {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "role must be one of: super_admin, operator, support (resellers are created via /api/v1/resellers)")
+		return
+	}
 
 	hash, err := authcrypto.HashPassword(req.Password)
 	if err != nil {
@@ -71,6 +75,9 @@ func (s *Server) handleCreateAdmin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// validAdminRoles deliberately excludes "reseller": a reseller needs a limits row, so
+// it can only be created through /api/v1/resellers, and the generic admin endpoints
+// can neither mint one nor turn an existing admin into one.
 var validAdminRoles = map[string]bool{"super_admin": true, "operator": true, "support": true}
 
 // handleCreateAdminUser is the admin-panel-facing equivalent of handleCreateAdmin
@@ -187,6 +194,10 @@ func (s *Server) handleUpdateAdminUser(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not fetch admin")
 		return
 	}
+	if target.Role == "reseller" {
+		writeJSONError(w, http.StatusConflict, "managed_via_resellers", "resellers are managed through /api/v1/resellers/{id}")
+		return
+	}
 
 	if req.Role != nil && *req.Role != target.Role && target.Role == "super_admin" {
 		count, err := s.Store.CountAdminsByRole(ctx, "super_admin")
@@ -248,6 +259,11 @@ func (s *Server) handleDeleteAdminUser(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.Logger.Error("get_admin_failed", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not fetch admin")
+		return
+	}
+
+	if target.Role == "reseller" {
+		writeJSONError(w, http.StatusConflict, "managed_via_resellers", "resellers are managed through /api/v1/resellers/{id}")
 		return
 	}
 
