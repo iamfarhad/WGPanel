@@ -91,6 +91,9 @@ export const resellers: Record<string, string> = {
   'Your reseller plan has expired.': 'طرح نمایندگی شما منقضی شده است.',
   'This account is disabled.': 'این حساب غیرفعال است.',
 
+  'Keys for your own bot. A key acts as you: it sees only your accounts and is held to your plan limits.':
+    'کلید برای ربات خودتان. هر کلید به‌جای شما کار می‌کند: فقط اکانت‌های شما را می‌بیند و سقف‌های طرحتان رویش اعمال می‌شود.',
+
   // Shared error state
   'Check your connection to the panel and try again.': 'اتصال خود به پنل را بررسی کنید و دوباره امتحان کنید.',
   'Try again': 'تلاش دوباره',

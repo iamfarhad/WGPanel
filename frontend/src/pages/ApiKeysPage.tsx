@@ -4,6 +4,7 @@ import { Plus, Ban, RotateCw, Copy, AlertTriangle } from 'lucide-react'
 import { apiFetch, ApiError } from '../lib/api'
 import { useToast } from '../lib/toast'
 import { useI18n } from '../lib/i18n'
+import { useAuth } from '../lib/auth'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
@@ -25,6 +26,9 @@ interface ApiKey {
   node_groups: string[]
   permissions: string[]
   revoked: boolean
+  // Set when a reseller created the key: it then acts as that reseller (its accounts,
+  // limits and node groups). null for keys created by staff.
+  reseller_id: string | null
   created_at: string
 }
 
@@ -36,6 +40,8 @@ const ALL_PERMISSIONS = ['read', 'create', 'update', 'suspend', 'delete']
 
 export function ApiKeysPage() {
   const { t } = useI18n()
+  const { user } = useAuth()
+  const isReseller = user?.role === 'reseller'
   const queryClient = useQueryClient()
   const { push } = useToast()
   const [createOpen, setCreateOpen] = useState(false)
@@ -47,6 +53,13 @@ export function ApiKeysPage() {
     queryFn: () => apiFetch<{ api_keys: ApiKey[] | null }>('/api/v1/api-keys'),
   })
   const keys = keysQuery.data?.api_keys ?? []
+  // Staff see whose key it is; resellers only ever see their own.
+  const resellersQuery = useQuery({
+    queryKey: ['resellers'],
+    queryFn: () => apiFetch<{ resellers: { id: string; username: string }[] | null }>('/api/v1/resellers'),
+    enabled: !isReseller,
+  })
+  const resellerNames = new Map((resellersQuery.data?.resellers ?? []).map((r) => [r.id, r.username]))
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: ['api-keys'] })
@@ -76,7 +89,11 @@ export function ApiKeysPage() {
     <div>
       <PageHeader
         title="API Keys"
-        description="Credentials for the Telegram sales bot and other integrations to call this panel's API."
+        description={
+          isReseller
+            ? 'Keys for your own bot. A key acts as you: it sees only your accounts and is held to your plan limits.'
+            : "Credentials for the Telegram sales bot and other integrations to call this panel's API."
+        }
         action={
           <Button onClick={() => setCreateOpen(true)}>
             <Plus className="h-4 w-4" />
@@ -109,6 +126,7 @@ export function ApiKeysPage() {
                 <Th>Key ID</Th>
                 <Th>Permissions</Th>
                 <Th>Node groups</Th>
+                {!isReseller && <Th>Owner</Th>}
                 <Th>Status</Th>
                 <Th className="text-end">Actions</Th>
               </tr>
@@ -128,6 +146,15 @@ export function ApiKeysPage() {
                     </div>
                   </Td>
                   <Td className="text-muted">{k.node_groups.length > 0 ? k.node_groups.join(', ') : t('all')}</Td>
+                  {!isReseller && (
+                    <Td className="whitespace-nowrap text-muted">
+                      {k.reseller_id ? (
+                        <Badge tone="blue">{resellerNames.get(k.reseller_id) ?? t('Reseller')}</Badge>
+                      ) : (
+                        <span className="text-xs text-faint">{t('Panel admin')}</span>
+                      )}
+                    </Td>
+                  )}
                   <Td>
                     <Badge dot tone={k.revoked ? 'red' : 'green'}>{k.revoked ? 'revoked' : 'active'}</Badge>
                   </Td>

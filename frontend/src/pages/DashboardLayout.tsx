@@ -63,13 +63,13 @@ const navGroups: NavGroup[] = [
     label: 'Administration',
     items: [
       { to: '/resellers', label: 'Resellers', icon: Store, minRole: 'super_admin' },
-      { to: '/api-keys', label: 'API Keys', icon: KeyRound, minRole: 'super_admin' },
+      { to: '/api-keys', label: 'API Keys', icon: KeyRound, minRole: 'super_admin', reseller: true },
       { to: '/admins', label: 'Admin Users', icon: ShieldCheck, minRole: 'super_admin' },
       { to: '/audit-log', label: 'Audit Log', icon: ScrollText, minRole: 'super_admin' },
       { to: '/settings', label: 'Settings', icon: Settings, minRole: 'super_admin' },
       // No minRole: the Swagger page is a static asset nginx serves to anyone
       // with the URL anyway, so hiding the link would only be security theater.
-      { to: '/api-docs.html', label: 'API Docs', icon: BookOpen, external: true },
+      { to: '/api-docs.html', label: 'API Docs', icon: BookOpen, external: true, reseller: true },
     ],
   },
 ]
