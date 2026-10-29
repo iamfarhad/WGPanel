@@ -46,7 +46,7 @@ export function AuditLogPage() {
 
       <Card className="overflow-hidden">
         {logQuery.isLoading && <TableSkeleton cols={4} />}
-        {logQuery.isError && <p className="p-6 text-sm text-rose-600 dark:text-rose-400">Could not load audit log.</p>}
+        {logQuery.isError && <p className="p-6 text-sm text-danger-fg">Could not load audit log.</p>}
         {!logQuery.isLoading && !logQuery.isError && entries.length === 0 && (
           <EmptyState icon={ScrollText} title="No audit entries yet" />
         )}

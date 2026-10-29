@@ -29,17 +29,17 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={{ push }}>
       {children}
-      <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex w-full max-w-sm flex-col gap-2">
+      <div className="pointer-events-none fixed end-4 bottom-4 z-50 flex w-full max-w-sm flex-col gap-2">
         {toasts.map((t) => (
           <div
             key={t.id}
             role="status"
-            className="animate-toast-in pointer-events-auto flex items-start gap-2.5 rounded-xl border border-edge bg-surface px-4 py-3 text-sm font-medium text-fg shadow-lg shadow-slate-950/10"
+            className="animate-toast-in pointer-events-auto flex items-start gap-2.5 rounded-card border border-edge bg-surface px-4 py-3 text-sm font-medium text-fg shadow-pop"
           >
             {t.kind === 'success' ? (
-              <CheckCircle2 className="mt-px h-4.5 w-4.5 shrink-0 text-emerald-500" />
+              <CheckCircle2 className="mt-px h-4.5 w-4.5 shrink-0 text-success" />
             ) : (
-              <XCircle className="mt-px h-4.5 w-4.5 shrink-0 text-rose-500" />
+              <XCircle className="mt-px h-4.5 w-4.5 shrink-0 text-danger" />
             )}
             {t.message}
           </div>

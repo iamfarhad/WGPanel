@@ -8,7 +8,6 @@ import {
   ShieldCheck,
   ScrollText,
   LogOut,
-  ShieldHalf,
   Settings,
   Menu,
   X,
@@ -21,6 +20,7 @@ import {
 import { useAuth } from '../lib/auth'
 import type { AdminRole } from '../lib/auth'
 import { useTheme, type Theme } from '../lib/theme'
+import { BrandLockup, BrandTile } from '../components/brand/Brand'
 
 interface NavItem {
   to: string
@@ -86,7 +86,7 @@ function ThemeToggle() {
             title={`${themeMeta[t].label} theme`}
             aria-pressed={active}
             onClick={() => setTheme(t)}
-            className={`flex h-6.5 flex-1 cursor-pointer items-center justify-center rounded-md transition-colors ${
+            className={`flex h-7 flex-1 cursor-pointer items-center justify-center rounded-md transition-colors duration-150 ${
               active ? 'bg-surface text-fg shadow-xs ring-1 ring-edge' : 'text-faint hover:text-muted'
             }`}
           >
@@ -114,25 +114,19 @@ export function DashboardLayout() {
 
   const initials = (user?.username ?? '?').slice(0, 2).toUpperCase()
   const currentLabel =
-    navGroups.flatMap((g) => g.items).find((i) => location.pathname.startsWith(i.to))?.label ?? 'WGPanel'
+    navGroups.flatMap((g) => g.items).find((i) => location.pathname.startsWith(i.to))?.label ?? 'Jirjirak'
 
   const sidebar = (
     <>
-      <div className="flex items-center gap-2.5 px-5 py-5">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-md shadow-indigo-600/30">
-          <ShieldHalf className="h-5 w-5" />
-        </div>
-        <div className="leading-tight">
-          <p className="text-[15px] font-semibold tracking-tight text-fg">WGPanel</p>
-          <p className="text-[11px] font-medium text-faint">WireGuard fleet</p>
-        </div>
+      <div className="px-5 pt-5 pb-4">
+        <BrandLockup subtitle="WireGuard · Infrastructure" />
       </div>
 
       <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-2">
         {visibleGroups.map((group, gi) => (
           <div key={group.label ?? gi}>
             {group.label && (
-              <p className="mb-1.5 px-3 text-[11px] font-semibold tracking-wider text-faint uppercase">
+              <p className="mb-1.5 px-3 text-[11px] font-medium tracking-wide text-faint uppercase">
                 {group.label}
               </p>
             )}
@@ -145,11 +139,11 @@ export function DashboardLayout() {
                     target="_blank"
                     rel="noreferrer"
                     onClick={() => setMobileOpen(false)}
-                    className="group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted transition-colors hover:bg-inset hover:text-fg"
+                    className="group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted transition-colors duration-150 hover:bg-inset/70 hover:text-fg"
                   >
-                    <item.icon className="h-4 w-4 shrink-0 text-faint group-hover:text-muted" />
+                    <item.icon className="h-[18px] w-[18px] shrink-0 text-faint group-hover:text-muted" strokeWidth={1.75} />
                     {item.label}
-                    <ExternalLink className="ml-auto h-3.5 w-3.5 shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+                    <ExternalLink className="ms-auto h-3.5 w-3.5 shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
                   </a>
                 ) : (
                   <NavLink
@@ -157,19 +151,20 @@ export function DashboardLayout() {
                     to={item.to}
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                        isActive
-                          ? 'bg-accent-soft text-accent-fg'
-                          : 'text-muted hover:bg-inset hover:text-fg'
+                      `group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150 ${
+                        isActive ? 'bg-accent/10 text-accent-fg' : 'text-muted hover:bg-inset/70 hover:text-fg'
                       }`
                     }
                   >
                     {({ isActive }) => (
                       <>
                         {isActive && (
-                          <span className="absolute top-1/2 left-0 h-4 w-1 -translate-y-1/2 rounded-r-full bg-accent" />
+                          <span className="absolute start-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-e-full bg-accent" />
                         )}
-                        <item.icon className={`h-4 w-4 shrink-0 ${isActive ? 'text-accent-fg' : 'text-faint group-hover:text-muted'}`} />
+                        <item.icon
+                          className={`h-[18px] w-[18px] shrink-0 ${isActive ? 'text-accent' : 'text-faint group-hover:text-muted'}`}
+                          strokeWidth={1.75}
+                        />
                         {item.label}
                       </>
                     )}
@@ -183,7 +178,7 @@ export function DashboardLayout() {
 
       <div className="space-y-3 border-t border-edge p-4">
         <div className="flex items-center gap-3 px-1">
-          <div className="flex h-8.5 w-8.5 shrink-0 items-center justify-center rounded-full bg-accent-soft text-xs font-semibold text-accent-fg">
+          <div className="flex h-8.5 w-8.5 shrink-0 items-center justify-center rounded-full bg-accent/10 text-xs font-semibold text-accent-fg">
             {initials}
           </div>
           <div className="min-w-0 flex-1 leading-tight">
@@ -193,7 +188,7 @@ export function DashboardLayout() {
           <button
             onClick={logout}
             title="Log out"
-            className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-faint transition-colors hover:bg-inset hover:text-fg"
+            className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-faint transition-colors duration-150 hover:bg-inset hover:text-fg"
           >
             <LogOut className="h-4 w-4" />
             <span className="sr-only">Log out</span>
@@ -207,20 +202,20 @@ export function DashboardLayout() {
   return (
     <div className="flex min-h-screen bg-bg">
       {/* Desktop sidebar */}
-      <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-edge bg-surface lg:flex">
+      <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-e border-edge bg-surface lg:flex">
         {sidebar}
       </aside>
 
       {/* Mobile slide-over sidebar */}
       {mobileOpen && (
         <div className="fixed inset-0 z-40 lg:hidden">
-          <div className="animate-backdrop-in absolute inset-0 bg-slate-950/50 backdrop-blur-[2px]" onClick={() => setMobileOpen(false)} />
-          <aside className="animate-dialog-in absolute inset-y-0 left-0 flex w-72 flex-col border-r border-edge bg-surface shadow-2xl">
+          <div className="animate-backdrop-in absolute inset-0 bg-overlay" onClick={() => setMobileOpen(false)} />
+          <aside className="animate-dialog-in absolute inset-y-0 start-0 flex w-72 flex-col border-e border-edge bg-surface shadow-pop">
             <button
               type="button"
               onClick={() => setMobileOpen(false)}
               aria-label="Close menu"
-              className="absolute top-4 right-3 cursor-pointer rounded-lg p-1.5 text-faint hover:bg-inset hover:text-fg"
+              className="absolute end-3 top-4 cursor-pointer rounded-lg p-1.5 text-faint hover:bg-inset hover:text-fg"
             >
               <X className="h-5 w-5" />
             </button>
@@ -240,7 +235,8 @@ export function DashboardLayout() {
           >
             <Menu className="h-5 w-5" />
           </button>
-          <span className="text-sm font-semibold tracking-tight text-fg">{currentLabel}</span>
+          <BrandTile size="sm" />
+          <span className="text-sm font-semibold text-fg">{currentLabel}</span>
         </header>
 
         <main className="flex-1 overflow-y-auto">

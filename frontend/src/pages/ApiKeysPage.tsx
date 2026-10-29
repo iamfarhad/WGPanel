@@ -83,7 +83,7 @@ export function ApiKeysPage() {
 
       <Card className="overflow-hidden">
         {keysQuery.isLoading && <TableSkeleton cols={5} />}
-        {keysQuery.isError && <p className="p-6 text-sm text-rose-600 dark:text-rose-400">Could not load API keys.</p>}
+        {keysQuery.isError && <p className="p-6 text-sm text-danger-fg">Could not load API keys.</p>}
         {!keysQuery.isLoading && !keysQuery.isError && keys.length === 0 && (
           <EmptyState
             icon={KeyRound}
@@ -106,7 +106,7 @@ export function ApiKeysPage() {
                 <Th>Permissions</Th>
                 <Th>Node groups</Th>
                 <Th>Status</Th>
-                <Th className="text-right">Actions</Th>
+                <Th className="text-end">Actions</Th>
               </tr>
             </THead>
             <tbody>
@@ -138,7 +138,7 @@ export function ApiKeysPage() {
                           variant="secondary"
                           size="sm"
                           onClick={() => setRevokeTarget(k)}
-                          className="text-rose-600 hover:border-rose-300 hover:bg-rose-500/10 dark:text-rose-400 dark:hover:border-rose-500/40"
+                          className="text-danger-fg hover:border-danger/40 hover:bg-danger-soft"
                         >
                           <Ban className="h-3.5 w-3.5" />
                           Revoke
@@ -178,7 +178,7 @@ export function ApiKeysPage() {
 
       {revealedSecret && (
         <Dialog open onClose={() => setRevealedSecret(null)} title="Secret key">
-          <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700 dark:text-amber-400">
+          <div className="mb-4 flex items-start gap-2.5 rounded-control border border-warning/25 bg-warning-soft px-3 py-2.5 text-sm text-warning-fg">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <span>This secret is shown once. Store it securely — it cannot be retrieved again.</span>
           </div>
@@ -289,7 +289,7 @@ function CreateApiKeyDialog({
             ))}
           </div>
         </div>
-        {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
+        {error && <p className="text-sm text-danger-fg">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel

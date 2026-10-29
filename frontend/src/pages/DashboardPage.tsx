@@ -3,7 +3,7 @@ import { Server, Users, ShieldAlert, Activity, HardDrive, Wifi } from 'lucide-re
 import { apiFetch } from '../lib/api'
 import { PageHeader } from '../components/ui/PageHeader'
 import { StatCard } from '../components/ui/StatCard'
-import { Card } from '../components/ui/Card'
+import { Card, CardHeader } from '../components/ui/Card'
 import { Badge, statusTone } from '../components/ui/Badge'
 import { Skeleton } from '../components/ui/Skeleton'
 import { Progress } from '../components/ui/Progress'
@@ -71,31 +71,52 @@ export function DashboardPage() {
 
   return (
     <div>
-      <PageHeader title="Dashboard" description="Overview of your WireGuard fleet." />
+      <PageHeader title="Dashboard" description="Overview of your WireGuard infrastructure." />
 
       {isLoading ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
           {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-28" />
+            <Skeleton key={i} className="h-[118px]" />
           ))}
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-          <StatCard icon={Server} label="Nodes online" value={`${onlineNodes} / ${nodes.length}`} tone="blue" />
-          <StatCard icon={Wifi} label="Accounts online" value={`${onlineAccounts} / ${accounts.length}`} tone="green" />
-          <StatCard icon={Users} label="Active accounts" value={activeAccounts} tone="green" />
-          <StatCard icon={ShieldAlert} label="Suspended accounts" value={suspendedAccounts} tone="red" />
-          <StatCard icon={Activity} label="Total accounts" value={accounts.length} tone="slate" />
-          <StatCard icon={HardDrive} label="Data transferred" value={formatBytes(totalDataUsed)} tone="amber" />
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
+          <StatCard
+            icon={Wifi}
+            label="Connected clients"
+            value={onlineAccounts}
+            hint={`of ${accounts.length} accounts`}
+            positive={onlineAccounts > 0}
+          />
+          <StatCard icon={Users} label="Active accounts" value={activeAccounts} hint={`${accounts.length} total`} />
+          <StatCard
+            icon={Server}
+            label="Nodes online"
+            value={`${onlineNodes} / ${nodes.length}`}
+            hint={
+              nodes.length === 0
+                ? 'No nodes yet'
+                : onlineNodes === nodes.length
+                  ? 'All nodes online'
+                  : `${nodes.length - onlineNodes} not online`
+            }
+            positive={nodes.length > 0 && onlineNodes === nodes.length}
+          />
+          <StatCard icon={HardDrive} label="Traffic" value={formatBytes(totalDataUsed)} hint="Transferred by all accounts" />
+          <StatCard
+            icon={ShieldAlert}
+            label="Suspended accounts"
+            value={suspendedAccounts}
+            hint={suspendedAccounts > 0 ? 'Need attention' : 'None suspended'}
+          />
+          <StatCard icon={Activity} label="Total accounts" value={accounts.length} hint="Across every node" />
         </div>
       )}
 
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card>
-          <div className="border-b border-edge px-6 py-4">
-            <h2 className="text-sm font-semibold tracking-tight text-fg">Node capacity</h2>
-          </div>
-          <div className="p-6">
+          <CardHeader title="Node capacity" description="Peers provisioned per node" />
+          <div className="p-5">
             {nodes.length === 0 ? (
               <p className="text-sm text-muted">No nodes registered yet.</p>
             ) : (
@@ -123,10 +144,8 @@ export function DashboardPage() {
         </Card>
 
         <Card>
-          <div className="border-b border-edge px-6 py-4">
-            <h2 className="text-sm font-semibold tracking-tight text-fg">Recent accounts</h2>
-          </div>
-          <div className="p-6">
+          <CardHeader title="Recent accounts" />
+          <div className="p-5">
             {accounts.length === 0 ? (
               <p className="text-sm text-muted">No accounts yet.</p>
             ) : (
@@ -137,7 +156,7 @@ export function DashboardPage() {
                     <div key={a.id} className="flex items-center justify-between gap-4 text-sm">
                       <span className="inline-flex min-w-0 items-center gap-2 font-medium text-fg">
                         <span
-                          className={`h-2 w-2 shrink-0 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-edge-strong'}`}
+                          className={`h-2 w-2 shrink-0 rounded-full ${isOnline ? 'bg-success' : 'bg-edge-strong'}`}
                           title={isOnline ? 'Online' : 'Offline'}
                         />
                         <span className="truncate">{a.label}</span>

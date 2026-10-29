@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Server, KeyRound, Copy, Activity, Pencil } from 'lucide-react'
+import { Plus, KeyRound, Copy, Activity, Pencil } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
+import { chartAxis, chartColors, chartGrid, chartLegend, chartTooltip } from '../lib/chartTheme'
 import { apiFetch, ApiError } from '../lib/api'
 import { useToast } from '../lib/toast'
 import { useAuth } from '../lib/auth'
@@ -140,14 +141,14 @@ export function NodesPage() {
 
       <Card className="overflow-hidden">
         {nodesQuery.isLoading && <TableSkeleton cols={5} />}
-        {nodesQuery.isError && <p className="p-6 text-sm text-rose-600 dark:text-rose-400">Could not load nodes.</p>}
+        {nodesQuery.isError && <p className="p-6 text-sm text-danger-fg">Could not load nodes.</p>}
         {!nodesQuery.isLoading && !nodesQuery.isError && nodes.length === 0 && (
           <EmptyState
-            icon={Server}
-            title="No nodes registered yet"
-            description="Add a node, then run install-node.sh with its join token."
+            mascot
+            title="No nodes yet"
+            description="Add your first WireGuard server, then run install-node.sh on it with its join token."
             action={
-              <Button variant="secondary" onClick={() => setCreateOpen(true)}>
+              <Button onClick={() => setCreateOpen(true)}>
                 <Plus className="h-4 w-4" />
                 New node
               </Button>
@@ -164,7 +165,7 @@ export function NodesPage() {
                 <Th>Endpoint</Th>
                 <Th>Status</Th>
                 <Th>Capacity</Th>
-                <Th className="text-right">Actions</Th>
+                <Th className="text-end">Actions</Th>
               </tr>
             </THead>
             <tbody>
@@ -430,7 +431,7 @@ function EditNodeDialog({
         <Field label="WireGuard subnet" hint="Not editable once peers may already be allocated from it.">
           <Input value={node.wg_subnet} disabled />
         </Field>
-        {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
+        {error && <p className="text-sm text-danger-fg">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel
@@ -486,21 +487,13 @@ function NodeDetailDialog({ node, onClose }: { node: Node; onClose: () => void }
           <div className="h-56 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData} margin={{ top: 4, right: 8, left: 8, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--ui-edge)" />
-                <XAxis dataKey="time" tick={{ fontSize: 10, fill: 'var(--ui-faint)' }} stroke="var(--ui-edge)" minTickGap={30} />
-                <YAxis tick={{ fontSize: 10, fill: 'var(--ui-faint)' }} stroke="var(--ui-edge)" domain={[0, 100]} unit="%" width={40} />
-                <Tooltip
-                  contentStyle={{
-                    fontSize: 12,
-                    backgroundColor: 'var(--ui-surface)',
-                    border: '1px solid var(--ui-edge)',
-                    borderRadius: 8,
-                    color: 'var(--ui-fg)',
-                  }}
-                />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Line type="monotone" dataKey="CPU %" stroke="#6366f1" dot={false} strokeWidth={1.5} connectNulls />
-                <Line type="monotone" dataKey="RAM %" stroke="#f59e0b" dot={false} strokeWidth={1.5} connectNulls />
+                <CartesianGrid {...chartGrid} />
+                <XAxis dataKey="time" {...chartAxis} minTickGap={30} />
+                <YAxis {...chartAxis} domain={[0, 100]} unit="%" width={40} />
+                <Tooltip {...chartTooltip} />
+                <Legend {...chartLegend} />
+                <Line type="monotone" dataKey="CPU %" stroke={chartColors.primary} dot={false} strokeWidth={1.75} connectNulls />
+                <Line type="monotone" dataKey="RAM %" stroke={chartColors.secondary} dot={false} strokeWidth={1.75} connectNulls />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -644,7 +637,7 @@ function CreateNodeDialog({
             />
           )}
         </Field>
-        {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
+        {error && <p className="text-sm text-danger-fg">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel

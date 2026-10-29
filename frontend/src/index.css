@@ -1,5 +1,5 @@
 @import "tailwindcss";
-@import "@fontsource-variable/inter";
+@import "@fontsource-variable/vazirmatn";
 @import "@fontsource-variable/jetbrains-mono";
 
 /* Dark mode is toggled by putting .dark on <html> (see index.html init script
@@ -8,30 +8,39 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Vazirmatn everywhere (it carries its own Latin); mono only for technical data. */
+  --font-sans: "Vazirmatn Variable", system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
+  /* Jirjirak radius scale: small 8 (Tailwind's rounded-lg), then these. */
+  --radius-control: 10px; /* buttons, inputs, selects */
+  --radius-card: 12px;
+  --radius-modal: 16px;
+  --radius-surface: 18px;
+
+  /* Motion stays in the 150-200ms band, ease-out, no overshoot. */
+  --ease-brand: cubic-bezier(0.2, 0, 0, 1);
   --animate-backdrop-in: backdrop-in 0.15s ease-out both;
-  --animate-dialog-in: dialog-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
-  --animate-toast-in: toast-in 0.28s cubic-bezier(0.21, 1.02, 0.73, 1) both;
+  --animate-dialog-in: dialog-in 0.18s var(--ease-brand) both;
+  --animate-toast-in: toast-in 0.18s var(--ease-brand) both;
 
   @keyframes backdrop-in {
     from { opacity: 0; }
     to { opacity: 1; }
   }
   @keyframes dialog-in {
-    from { opacity: 0; transform: translateY(10px) scale(0.97); }
+    from { opacity: 0; transform: translateY(6px) scale(0.985); }
     to { opacity: 1; transform: translateY(0) scale(1); }
   }
   @keyframes toast-in {
-    from { opacity: 0; transform: translateY(12px) scale(0.96); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 }
 
-/* Semantic surfaces/text/accent - single source of truth for both themes.
-   Utilities like bg-surface / text-muted / border-edge compile straight to
-   these vars ("inline"), so flipping .dark restyles everything at runtime. */
+/* Semantic tokens - the only colors components use. Utilities like bg-surface /
+   text-muted / border-edge compile straight to these vars ("inline"), so flipping
+   .dark restyles everything at runtime. */
 @theme inline {
   --color-bg: var(--ui-bg);
   --color-surface: var(--ui-surface);
@@ -41,42 +50,127 @@
   --color-fg: var(--ui-fg);
   --color-muted: var(--ui-muted);
   --color-faint: var(--ui-faint);
+
   --color-accent: var(--ui-accent);
   --color-accent-hover: var(--ui-accent-hover);
+  --color-accent-active: var(--ui-accent-active);
   --color-accent-soft: var(--ui-accent-soft);
   --color-accent-fg: var(--ui-accent-fg);
+  --color-on-accent: var(--ui-on-accent);
+  --color-ring: var(--ui-ring);
+  --color-brand-dark: var(--jirjirak-dark);
+  --color-overlay: var(--ui-overlay);
+
+  --color-success: var(--ui-success);
+  --color-success-fg: var(--ui-success-fg);
+  --color-success-soft: var(--ui-success-soft);
+  --color-warning: var(--ui-warning);
+  --color-warning-fg: var(--ui-warning-fg);
+  --color-warning-soft: var(--ui-warning-soft);
+  --color-danger: var(--ui-danger);
+  --color-danger-fg: var(--ui-danger-fg);
+  --color-danger-soft: var(--ui-danger-soft);
+  --color-info: var(--ui-info);
+  --color-info-fg: var(--ui-info-fg);
+  --color-info-soft: var(--ui-info-soft);
+
+  --shadow-card: var(--ui-shadow-card);
+  --shadow-pop: var(--ui-shadow-pop);
+}
+
+/* Jirjirak brand palette (brand/tokens.css in the brand pack), theme-independent. */
+:root {
+  --jirjirak-primary: #20d884;
+  --jirjirak-primary-hover: #18c477;
+  --jirjirak-primary-active: #14af6a;
+  --jirjirak-primary-soft: #eafbf4;
+  --jirjirak-dark: #0e2b22;
+  --jirjirak-dark-2: #17382e;
 }
 
 :root {
   color-scheme: light;
-  --ui-bg: #f7f8fa;
+  --ui-bg: #f7faf9;
   --ui-surface: #ffffff;
-  --ui-inset: #f1f3f7;
-  --ui-edge: #e6e9f0;
-  --ui-edge-strong: #d3d8e2;
-  --ui-fg: #191e2b;
-  --ui-muted: #5c6474;
-  --ui-faint: #8d94a3;
-  --ui-accent: #4f46e5;
-  --ui-accent-hover: #4338ca;
-  --ui-accent-soft: #eef0fd;
-  --ui-accent-fg: #4338ca;
+  --ui-inset: #f0f6f3;
+  --ui-edge: #dce8e3;
+  --ui-edge-strong: #c5d6cf;
+  --ui-fg: #11251e;
+  --ui-muted: #60756c;
+  --ui-faint: #8c9e96;
+
+  --ui-accent: var(--jirjirak-primary);
+  --ui-accent-hover: var(--jirjirak-primary-hover);
+  --ui-accent-active: var(--jirjirak-primary-active);
+  --ui-accent-soft: var(--jirjirak-primary-soft);
+  --ui-accent-fg: #16b96f;
+  --ui-on-accent: #062016;
+  --ui-ring: rgb(32 216 132 / 0.14);
+  --ui-overlay: rgb(14 43 34 / 0.38);
+
+  --ui-success: #20d884;
+  --ui-success-fg: #0f8f55;
+  --ui-success-soft: #eafbf4;
+  --ui-warning: #f59e0b;
+  --ui-warning-fg: #a15c07;
+  --ui-warning-soft: #fef5e6;
+  --ui-danger: #ef4444;
+  --ui-danger-fg: #c62828;
+  --ui-danger-soft: #fdeeee;
+  --ui-info: #3b82f6;
+  --ui-info-fg: #1d5fd1;
+  --ui-info-soft: #ecf3fe;
+
+  --ui-chart-1: #20d884;
+  --ui-chart-2: #3b82f6;
+
+  --ui-shadow-card: 0 1px 2px rgb(14 43 34 / 0.04), 0 8px 24px rgb(14 43 34 / 0.05);
+  --ui-shadow-pop: 0 2px 6px rgb(14 43 34 / 0.05), 0 16px 40px rgb(14 43 34 / 0.12);
 }
 
+/* Green-tinted darks, never pure black. */
 .dark {
   color-scheme: dark;
-  --ui-bg: #0b0d13;
-  --ui-surface: #12151d;
-  --ui-inset: #1a1e29;
-  --ui-edge: #242a3a;
-  --ui-edge-strong: #333b52;
-  --ui-fg: #e8eaf1;
-  --ui-muted: #9aa1b3;
-  --ui-faint: #656d81;
-  --ui-accent: #6366f1;
-  --ui-accent-hover: #7c7ff4;
-  --ui-accent-soft: #26294b;
-  --ui-accent-fg: #a5b4fc;
+  --ui-bg: #091711;
+  --ui-surface: #10241c;
+  --ui-inset: #153027;
+  --ui-edge: #234438;
+  --ui-edge-strong: #2f5747;
+  --ui-fg: #f2faf6;
+  --ui-muted: #9eb5aa;
+  --ui-faint: #6f8a7e;
+
+  --ui-accent-fg: #20d884;
+  --ui-accent-soft: rgb(32 216 132 / 0.12);
+  --ui-ring: rgb(32 216 132 / 0.18);
+  --ui-overlay: rgb(3 10 7 / 0.6);
+
+  --ui-success-fg: #3fe398;
+  --ui-success-soft: rgb(32 216 132 / 0.12);
+  --ui-warning-fg: #fbbf24;
+  --ui-warning-soft: rgb(245 158 11 / 0.12);
+  --ui-danger-fg: #f87171;
+  --ui-danger-soft: rgb(239 68 68 / 0.12);
+  --ui-info-fg: #60a5fa;
+  --ui-info-soft: rgb(59 130 246 / 0.12);
+
+  --ui-chart-2: #60a5fa;
+
+  --ui-shadow-card: 0 1px 2px rgb(0 0 0 / 0.25);
+  --ui-shadow-pop: 0 2px 6px rgb(0 0 0 / 0.3), 0 20px 48px rgb(0 0 0 / 0.45);
+}
+
+/* Technical values (IPs, CIDRs, keys, endpoints, commands) read left-to-right even
+   inside right-to-left text. Every one of them is set in mono, so mono carries it. */
+@utility ltr {
+  direction: ltr;
+  unicode-bidi: isolate;
+  text-align: left;
+}
+
+[dir="rtl"] .font-mono {
+  direction: ltr;
+  unicode-bidi: isolate;
 }
 
 body {
@@ -94,7 +188,7 @@ input[type="radio"] {
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--ui-accent) 25%, transparent);
+  background: color-mix(in srgb, var(--ui-accent) 28%, transparent);
 }
 
 /* Slim, theme-aware scrollbars for the in-panel scroll areas. */

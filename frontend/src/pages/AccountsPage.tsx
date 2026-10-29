@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Users, Download, Ban, CheckCircle2, RotateCcw, Trash2, Server, Copy, FileDown, Link2, RefreshCw, MonitorSmartphone, Search, Pencil } from 'lucide-react'
+import { Plus, Download, Ban, CheckCircle2, RotateCcw, Trash2, Server, Copy, FileDown, Link2, RefreshCw, MonitorSmartphone, Search, Pencil } from 'lucide-react'
 import QRCode from 'qrcode'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { chartAxis, chartColors, chartGrid, chartTooltip } from '../lib/chartTheme'
 import { apiFetch, ApiError } from '../lib/api'
 import { getAccessToken } from '../lib/tokenStore'
 import { useToast } from '../lib/toast'
@@ -233,12 +234,12 @@ export function AccountsPage() {
 
       {accounts.length > 0 && (
         <div className="relative mb-4 max-w-xs">
-          <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-faint" />
+          <Search className="pointer-events-none absolute top-1/2 start-3 h-4 w-4 -translate-y-1/2 text-faint" />
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search accounts…"
-            className="pl-9"
+            className="ps-9"
             aria-label="Search accounts"
           />
         </div>
@@ -247,15 +248,15 @@ export function AccountsPage() {
       <Card className="overflow-hidden">
         {accountsQuery.isLoading && <TableSkeleton cols={5} />}
         {accountsQuery.isError && (
-          <p className="p-6 text-sm text-rose-600 dark:text-rose-400">Could not load accounts.</p>
+          <p className="p-6 text-sm text-danger-fg">Could not load accounts.</p>
         )}
         {!accountsQuery.isLoading && !accountsQuery.isError && accounts.length === 0 && (
           <EmptyState
-            icon={Users}
+            mascot
             title="No accounts yet"
             description="Create the first WireGuard account to get started."
             action={
-              <Button variant="secondary" onClick={() => setCreateOpen(true)}>
+              <Button onClick={() => setCreateOpen(true)}>
                 <Plus className="h-4 w-4" />
                 New account
               </Button>
@@ -274,7 +275,7 @@ export function AccountsPage() {
                 <Th>Connection</Th>
                 <Th>Usage</Th>
                 <Th>Status</Th>
-                <Th className="text-right">Actions</Th>
+                <Th className="text-end">Actions</Th>
               </tr>
             </THead>
             <tbody>
@@ -299,7 +300,7 @@ export function AccountsPage() {
                         '—'
                       ) : (
                         <span className="inline-flex items-center gap-1.5">
-                          <span className={`h-2 w-2 rounded-full ${onlineCount > 0 ? 'bg-emerald-500' : 'bg-edge-strong'}`} />
+                          <span className={`h-2 w-2 rounded-full ${onlineCount > 0 ? 'bg-success' : 'bg-edge-strong'}`} />
                           {onlineCount > 0
                             ? `Online on ${onlineCount}/${a.peers.length} nodes`
                             : `Offline · ${formatLastSeen(mostRecentHandshake)}`}
@@ -530,7 +531,7 @@ function CreateAccountDialog({
             />
           )}
         </Field>
-        {error && <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p>}
+        {error && <p className="text-sm text-danger-fg">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
             Cancel
@@ -654,7 +655,7 @@ function AccountDetailDialog({
         <Badge dot tone={statusTone(account.status)}>{account.status}</Badge>
         {account.device_limit_exceeded && <Badge tone="amber">over device limit</Badge>}
         {account.suspend_reason && <span className="text-xs text-muted">reason: {account.suspend_reason}</span>}
-        <span className="ml-auto text-xs text-faint">created {new Date(account.created_at).toLocaleDateString()}</span>
+        <span className="ms-auto text-xs text-faint">created {new Date(account.created_at).toLocaleDateString()}</span>
       </div>
 
       {/* Tab bar */}
@@ -697,7 +698,7 @@ function AccountDetailDialog({
           )}
           <p className="mt-3 flex items-baseline justify-between gap-4 text-sm">
             <span className="shrink-0 text-muted">Public key</span>
-            <span className="min-w-0 text-right font-mono text-xs break-all text-fg">{account.public_key}</span>
+            <span className="min-w-0 text-end font-mono text-xs break-all text-fg">{account.public_key}</span>
           </p>
 
           <div className="mt-5 border-t border-edge pt-5">
@@ -722,7 +723,7 @@ function AccountDetailDialog({
               </Button>
             </div>
             <p className="mt-2 text-xs leading-relaxed text-muted">
-              <Link2 className="mr-1 inline h-3 w-3" />
+              <Link2 className="me-1 inline h-3 w-3" />
               Always serves this account's latest config, picking the best node automatically (append{' '}
               <code>?region=</code> to prefer a region, or <code>/nodes</code> to list choices). Rotate if the link leaks —
               the old URL stops working immediately.
@@ -740,11 +741,11 @@ function AccountDetailDialog({
                     <div className="min-w-0">
                       <p className="flex items-center gap-1.5 text-sm font-medium text-fg">
                         <span
-                          className={`h-2 w-2 shrink-0 rounded-full ${p.online ? 'bg-emerald-500' : 'bg-edge-strong'}`}
+                          className={`h-2 w-2 shrink-0 rounded-full ${p.online ? 'bg-success' : 'bg-edge-strong'}`}
                           title={p.online ? 'Online' : 'Offline'}
                         />
                         <span className="truncate">{p.node_name}</span>
-                        <span className={`shrink-0 text-xs font-normal ${p.online ? 'text-emerald-600 dark:text-emerald-400' : 'text-faint'}`}>
+                        <span className={`shrink-0 text-xs font-normal ${p.online ? 'text-success-fg' : 'text-faint'}`}>
                           {p.online ? 'online' : `offline · ${formatLastSeen(p.last_handshake_at)}`}
                         </span>
                       </p>
@@ -816,7 +817,7 @@ function AccountDetailDialog({
           <SectionTitle>
             Devices
             {devicesQuery.data && (
-              <span className="ml-2 font-normal normal-case tracking-normal">
+              <span className="ms-2 font-normal normal-case tracking-normal">
                 ({devicesQuery.data.active_devices} active
                 {account.device_limit != null ? ` / limit ${account.device_limit}` : ''})
               </span>
@@ -825,7 +826,7 @@ function AccountDetailDialog({
           {devicesQuery.isLoading && <p className="text-sm text-muted">Loading…</p>}
           {!devicesQuery.isLoading && devices.length === 0 && (
             <p className="text-sm text-muted">
-              <MonitorSmartphone className="mr-1 inline h-3.5 w-3.5" />
+              <MonitorSmartphone className="me-1 inline h-3.5 w-3.5" />
               No devices observed yet — client endpoints appear here once they connect.
             </p>
           )}
@@ -834,7 +835,7 @@ function AccountDetailDialog({
               {devices.map((d) => (
                 <div key={d.id} className="flex items-center justify-between gap-3 rounded-lg border border-edge px-3 py-2 text-xs">
                   <span className="flex min-w-0 items-center gap-1.5">
-                    <span className={`h-2 w-2 shrink-0 rounded-full ${d.active ? 'bg-emerald-500' : 'bg-edge-strong'}`} />
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${d.active ? 'bg-success' : 'bg-edge-strong'}`} />
                     <span className="truncate font-mono text-fg">{d.source_endpoint}</span>
                   </span>
                   <span className="shrink-0 text-muted">
@@ -876,29 +877,20 @@ function AccountDetailDialog({
                 <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 8, bottom: 0 }}>
                   <defs>
                     <linearGradient id="rxGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#6366f1" stopOpacity={0.35} />
-                      <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                      <stop offset="5%" stopColor={chartColors.primary} stopOpacity={0.22} />
+                      <stop offset="95%" stopColor={chartColors.primary} stopOpacity={0} />
                     </linearGradient>
                     <linearGradient id="txGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.35} />
-                      <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                      <stop offset="5%" stopColor={chartColors.secondary} stopOpacity={0.16} />
+                      <stop offset="95%" stopColor={chartColors.secondary} stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--ui-edge)" />
-                  <XAxis dataKey="time" tick={{ fontSize: 10, fill: 'var(--ui-faint)' }} stroke="var(--ui-edge)" minTickGap={30} />
-                  <YAxis tick={{ fontSize: 10, fill: 'var(--ui-faint)' }} stroke="var(--ui-edge)" tickFormatter={(v) => formatBytes(v)} width={60} />
-                  <Tooltip
-                    formatter={(v) => formatBytes(Number(v ?? 0))}
-                    contentStyle={{
-                      fontSize: 12,
-                      backgroundColor: 'var(--ui-surface)',
-                      border: '1px solid var(--ui-edge)',
-                      borderRadius: 8,
-                      color: 'var(--ui-fg)',
-                    }}
-                  />
-                  <Area type="monotone" dataKey="Downloaded (RX)" stroke="#6366f1" fill="url(#rxGradient)" strokeWidth={1.5} />
-                  <Area type="monotone" dataKey="Uploaded (TX)" stroke="#10b981" fill="url(#txGradient)" strokeWidth={1.5} />
+                  <CartesianGrid {...chartGrid} />
+                  <XAxis dataKey="time" {...chartAxis} minTickGap={30} />
+                  <YAxis {...chartAxis} tickFormatter={(v) => formatBytes(v)} width={60} />
+                  <Tooltip {...chartTooltip} formatter={(v) => formatBytes(Number(v ?? 0))} />
+                  <Area type="monotone" dataKey="Downloaded (RX)" stroke={chartColors.primary} fill="url(#rxGradient)" strokeWidth={1.75} />
+                  <Area type="monotone" dataKey="Uploaded (TX)" stroke={chartColors.secondary} fill="url(#txGradient)" strokeWidth={1.75} />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -925,7 +917,7 @@ function AccountDetailDialog({
             Suspend
           </Button>
         )}
-        <Button variant="danger" onClick={onDelete} disabled={busy} className="ml-auto">
+        <Button variant="danger" onClick={onDelete} disabled={busy} className="ms-auto">
           <Trash2 className="h-4 w-4" />
           Delete
         </Button>
@@ -1030,7 +1022,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-4">
       <span className="shrink-0 text-muted">{label}</span>
-      <span className="min-w-0 text-right text-fg">{children}</span>
+      <span className="min-w-0 text-end text-fg">{children}</span>
     </div>
   )
 }

@@ -120,7 +120,7 @@ function BackupCard() {
       push('success', 'Backup restored')
     } catch (err) {
       if (err instanceof SyntaxError) {
-        push('error', 'That file is not a WGPanel backup')
+        push('error', 'That file is not a Jirjirak WireGuard backup')
       } else {
         push('error', err instanceof ApiError ? err.message : 'Restore failed')
       }
@@ -168,7 +168,7 @@ function BackupCard() {
         </div>
 
         {restoreResult && (
-          <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2.5 text-sm leading-relaxed text-emerald-700 dark:text-emerald-400">
+          <div className="rounded-control border border-success/25 bg-success-soft px-3 py-2.5 text-sm leading-relaxed text-success-fg">
             <p>
               Restored {restoreResult.restored.accounts ?? 0} accounts, {restoreResult.restored.nodes ?? 0} nodes,{' '}
               {restoreResult.restored.admins ?? 0} admins and {restoreResult.restored.api_keys ?? 0} API keys.
@@ -215,7 +215,7 @@ function BackupCard() {
             />
           </Field>
           {downloadPasswordConfirm.length > 0 && downloadPassword !== downloadPasswordConfirm && (
-            <p className="text-sm text-rose-600 dark:text-rose-400">Passwords do not match.</p>
+            <p className="text-sm text-danger-fg">Passwords do not match.</p>
           )}
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="secondary" type="button" onClick={closeDownload} disabled={downloading}>
@@ -421,10 +421,10 @@ export function SettingsPage() {
                 </Field>
               </div>
               {domainLiveApplied && !domainApplyError && (
-                <p className="text-sm text-emerald-600 dark:text-emerald-400">Applied live - Caddy is now serving with this configuration.</p>
+                <p className="text-sm text-success-fg">Applied live - Caddy is now serving with this configuration.</p>
               )}
               {domainApplyError && (
-                <p className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2.5 text-sm leading-relaxed text-amber-700 dark:text-amber-400">
+                <p className="rounded-control border border-warning/25 bg-warning-soft px-3 py-2.5 text-sm leading-relaxed text-warning-fg">
                   Saved, but the live push to Caddy failed: {domainApplyError}. The API retries it automatically on its
                   next restart.
                 </p>
@@ -452,7 +452,7 @@ export function SettingsPage() {
               ))}
             </div>
           ) : settingsQuery.isError ? (
-            <p className="p-6 text-sm text-rose-600 dark:text-rose-400">Could not load settings.</p>
+            <p className="p-6 text-sm text-danger-fg">Could not load settings.</p>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-6 p-6">
               <Field
