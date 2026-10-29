@@ -23,14 +23,14 @@ export function ConfirmDialog({
 }) {
   const { t } = useI18n()
   return (
-    <Dialog open={open} onClose={onClose} title={title}>
-      <p className="text-sm leading-relaxed text-muted">{description}</p>
+    <Dialog open={open} onClose={onClose} title={t(title)}>
+      <p className="text-sm leading-relaxed text-muted">{t(description)}</p>
       <div className="mt-6 flex justify-end gap-2">
         <Button variant="secondary" onClick={onClose} disabled={submitting}>
           {t('Cancel')}
         </Button>
         <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm} disabled={submitting}>
-          {submitting ? t('Working…') : (confirmLabel ?? t('Confirm'))}
+          {submitting ? t('Working…') : t(confirmLabel ?? 'Confirm')}
         </Button>
       </div>
     </Dialog>

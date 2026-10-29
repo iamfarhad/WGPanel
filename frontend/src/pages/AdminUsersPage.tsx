@@ -4,6 +4,7 @@ import { Plus, ShieldCheck, Trash2 } from 'lucide-react'
 import { apiFetch, ApiError } from '../lib/api'
 import { useToast } from '../lib/toast'
 import { useAuth } from '../lib/auth'
+import { useI18n } from '../lib/i18n'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
@@ -32,6 +33,7 @@ const ROLE_TONE: Record<string, 'blue' | 'green' | 'slate'> = {
 }
 
 export function AdminUsersPage() {
+  const { t, formatDate } = useI18n()
   const queryClient = useQueryClient()
   const { user: currentUser } = useAuth()
   const { push } = useToast()
@@ -52,7 +54,7 @@ export function AdminUsersPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiFetch<void>(`/api/v1/admins/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
-      push('success', `${deleteTarget?.username} deleted`)
+      push('success', t('{name} deleted', { name: deleteTarget?.username ?? '' }))
       invalidate()
       setDeleteTarget(null)
     },
@@ -95,12 +97,12 @@ export function AdminUsersPage() {
                   <Tr key={a.id} interactive onClick={() => setEditTarget(a)}>
                     <Td className="font-medium text-fg">
                       {a.username}
-                      {isSelf && <span className="ms-2 text-xs font-normal text-faint">(you)</span>}
+                      {isSelf && <span className="ms-2 text-xs font-normal text-faint">{t('(you)')}</span>}
                     </Td>
                     <Td>
-                      <Badge tone={ROLE_TONE[a.role] ?? 'slate'}>{a.role.replace('_', ' ')}</Badge>
+                      <Badge tone={ROLE_TONE[a.role] ?? 'slate'}>{t(a.role.replace('_', ' '))}</Badge>
                     </Td>
-                    <Td className="text-muted">{new Date(a.created_at).toLocaleDateString()}</Td>
+                    <Td className="text-muted">{formatDate(a.created_at, { dateStyle: 'medium' })}</Td>
                     <Td className="text-end">
                       {!isSelf && (
                         <RowActions actions={[{ label: 'Delete', icon: Trash2, onSelect: () => setDeleteTarget(a), danger: true }]} />
@@ -140,7 +142,9 @@ export function AdminUsersPage() {
           onClose={() => setDeleteTarget(null)}
           onConfirm={() => deleteMutation.mutate(deleteTarget.id)}
           title="Delete admin"
-          description={`This will permanently remove "${deleteTarget.username}"'s access to the panel. This cannot be undone.`}
+          description={t('This will permanently remove "{name}"\'s access to the panel. This cannot be undone.', {
+            name: deleteTarget.username,
+          })}
           confirmLabel="Delete"
           danger
           submitting={deleteMutation.isPending}
@@ -159,6 +163,7 @@ function EditAdminDialog({
   onClose: () => void
   onSaved: () => void
 }) {
+  const { t } = useI18n()
   const { push } = useToast()
   const [role, setRole] = useState(admin.role)
   const [password, setPassword] = useState('')
@@ -178,10 +183,10 @@ function EditAdminDialog({
       return apiFetch(`/api/v1/admins/${admin.id}`, { method: 'PATCH', body: JSON.stringify(body) })
     },
     onSuccess: () => {
-      push('success', `${admin.username} updated`)
+      push('success', t('{name} updated', { name: admin.username }))
       onSaved()
     },
-    onError: (err) => setError(err instanceof ApiError ? err.message : 'Failed to update admin'),
+    onError: (err) => setError(err instanceof ApiError ? err.message : t('Failed to update admin')),
   })
 
   function handleSubmit(e: FormEvent) {
@@ -195,13 +200,13 @@ function EditAdminDialog({
   }
 
   return (
-    <Dialog open onClose={onClose} title={`Edit ${admin.username}`}>
+    <Dialog open onClose={onClose} title={t('Edit {name}', { name: admin.username })}>
       <form onSubmit={handleSubmit} className="space-y-4">
         <Field label="Role">
           <Select value={role} onChange={(e) => setRole(e.target.value)}>
-            <option value="support">Support (read-only)</option>
-            <option value="operator">Operator</option>
-            <option value="super_admin">Super admin</option>
+            <option value="support">{t('Support (read-only)')}</option>
+            <option value="operator">{t('Operator')}</option>
+            <option value="super_admin">{t('Super admin')}</option>
           </Select>
         </Field>
         <Field label="Reset password">
@@ -209,7 +214,7 @@ function EditAdminDialog({
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="Leave blank to keep current password"
+            placeholder={t('Leave blank to keep current password')}
             autoComplete="new-password"
           />
         </Field>
@@ -236,6 +241,7 @@ function CreateAdminDialog({
   onClose: () => void
   onCreated: () => void
 }) {
+  const { t } = useI18n()
   const { push } = useToast()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -249,13 +255,13 @@ function CreateAdminDialog({
         body: JSON.stringify({ username, password, role }),
       }),
     onSuccess: () => {
-      push('success', `Admin "${username}" created`)
+      push('success', t('Admin "{name}" created', { name: username }))
       setUsername('')
       setPassword('')
       setRole('support')
       onCreated()
     },
-    onError: (err) => setError(err instanceof ApiError ? err.message : 'Failed to create admin'),
+    onError: (err) => setError(err instanceof ApiError ? err.message : t('Failed to create admin')),
   })
 
   function handleSubmit(e: FormEvent) {
@@ -281,9 +287,9 @@ function CreateAdminDialog({
         </Field>
         <Field label="Role">
           <Select value={role} onChange={(e) => setRole(e.target.value)}>
-            <option value="support">Support (read-only)</option>
-            <option value="operator">Operator</option>
-            <option value="super_admin">Super admin</option>
+            <option value="support">{t('Support (read-only)')}</option>
+            <option value="operator">{t('Operator')}</option>
+            <option value="super_admin">{t('Super admin')}</option>
           </Select>
         </Field>
         {error && <p className="text-sm text-danger-fg">{error}</p>}

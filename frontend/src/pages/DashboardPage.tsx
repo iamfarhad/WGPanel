@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Server, Users, ShieldAlert, Activity, HardDrive, Wifi, ArrowRight } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 import { useAuth } from '../lib/auth'
+import { useI18n } from '../lib/i18n'
 import { Button } from '../components/ui/Button'
 import { Mascot } from '../components/brand/Brand'
 import { PageHeader } from '../components/ui/PageHeader'
@@ -55,10 +56,15 @@ function WelcomeBanner({
   onlineAccounts: number
 }) {
   const navigate = useNavigate()
+  const { t } = useI18n()
   const status =
     totalNodes === 0
-      ? 'Add your first node to start provisioning WireGuard accounts.'
-      : `${onlineNodes} of ${totalNodes} nodes online · ${onlineAccounts} ${onlineAccounts === 1 ? 'client' : 'clients'} connected right now.`
+      ? t('Add your first node to start provisioning WireGuard accounts.')
+      : t('{online} of {total} nodes online · {clients} connected right now.', {
+          online: onlineNodes,
+          total: totalNodes,
+          clients: onlineAccounts,
+        })
   return (
     <Card className="relative mb-6 overflow-hidden">
       <div
@@ -69,7 +75,7 @@ function WelcomeBanner({
         <div className="min-w-0">
           <p className="text-xs font-medium text-accent-fg">Jirjirak WireGuard</p>
           <h2 className="mt-1 text-xl font-semibold tracking-tight text-fg">
-            Welcome back{username ? `, ${username}` : ''}
+            {username ? t('Welcome back, {name}', { name: username }) : t('Welcome back')}
           </h2>
           <p className="mt-1.5 max-w-md text-sm leading-relaxed text-muted">{status}</p>
           <div className="mt-5 flex flex-wrap gap-2">
@@ -89,6 +95,7 @@ function WelcomeBanner({
 }
 
 export function DashboardPage() {
+  const { t } = useI18n()
   const { user } = useAuth()
   const nodesQuery = useQuery({
     queryKey: ['nodes'],
@@ -146,20 +153,20 @@ export function DashboardPage() {
             icon={Wifi}
             label="Connected clients"
             value={onlineAccounts}
-            hint={`of ${accounts.length} accounts`}
+            hint={t('of {n} accounts', { n: accounts.length })}
             positive={onlineAccounts > 0}
           />
-          <StatCard icon={Users} label="Active accounts" value={activeAccounts} hint={`${accounts.length} total`} />
+          <StatCard icon={Users} label="Active accounts" value={activeAccounts} hint={t('{n} total', { n: accounts.length })} />
           <StatCard
             icon={Server}
             label="Nodes online"
             value={`${onlineNodes} / ${nodes.length}`}
             hint={
               nodes.length === 0
-                ? 'No nodes yet'
+                ? t('No nodes yet')
                 : onlineNodes === nodes.length
-                  ? 'All nodes online'
-                  : `${nodes.length - onlineNodes} not online`
+                  ? t('All nodes online')
+                  : t('{n} not online', { n: nodes.length - onlineNodes })
             }
             positive={nodes.length > 0 && onlineNodes === nodes.length}
           />
@@ -192,7 +199,7 @@ export function DashboardPage() {
                           <Badge dot tone={statusTone(n.status)}>{n.status}</Badge>
                         </div>
                         <span className="shrink-0 text-xs text-muted tabular-nums">
-                          {used} / {n.capacity_max_peers} peers
+                          {t('{used} / {max} peers', { used, max: n.capacity_max_peers })}
                         </span>
                       </div>
                       <Progress value={used} max={n.capacity_max_peers} />
@@ -218,7 +225,7 @@ export function DashboardPage() {
                       <span className="inline-flex min-w-0 items-center gap-2 font-medium text-fg">
                         <span
                           className={`h-2 w-2 shrink-0 rounded-full ${isOnline ? 'bg-success' : 'bg-edge-strong'}`}
-                          title={isOnline ? 'Online' : 'Offline'}
+                          title={isOnline ? t('Online') : t('Offline')}
                         />
                         <span className="truncate">{a.label}</span>
                       </span>
