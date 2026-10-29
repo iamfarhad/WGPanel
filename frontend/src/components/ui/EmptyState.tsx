@@ -1,26 +1,29 @@
 import type { LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { Mascot } from '../brand/Brand'
+import { Illustration, Mascot, type IllustrationName } from '../brand/Brand'
 
-/** Empty list/search state. `mascot` swaps the icon for the Jirjirak mascot - reserve
- * it for "nothing here yet" first-run moments (no servers, no accounts), not for
- * search misses or secondary lists. */
+/** Empty list/search state. `illustration` shows the mascot pose for the moment (see
+ * Illustration); `mascot` is the original shield artwork. Either replaces the icon. */
 export function EmptyState({
   icon: Icon,
   mascot = false,
+  illustration,
   title,
   description,
   action,
 }: {
   icon?: LucideIcon
   mascot?: boolean
+  illustration?: IllustrationName
   title: string
   description?: string
   action?: ReactNode
 }) {
   return (
-    <div className={`flex flex-col items-center justify-center px-6 text-center ${mascot ? 'py-12' : 'py-16'}`}>
-      {mascot ? (
+    <div className={`flex flex-col items-center justify-center px-6 text-center ${mascot || illustration ? 'py-12' : 'py-16'}`}>
+      {illustration ? (
+        <Illustration name={illustration} size={150} className="mb-3" />
+      ) : mascot ? (
         <Mascot width={200} className="mb-3" />
       ) : (
         Icon && (
