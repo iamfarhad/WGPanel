@@ -93,6 +93,9 @@ func resolveAccountSpec(req createAccountRequest, tmpl *store.PlanTemplate, now 
 	if req.ResetStrategy != nil {
 		sp.ResetStrategy = *req.ResetStrategy
 	}
+	if sp.ResetStrategy == "" {
+		sp.ResetStrategy = store.ResetNone
+	}
 	if !store.ValidResetStrategy(sp.ResetStrategy) {
 		return sp, badRequest("reset_strategy must be none, day, week, month or year")
 	}

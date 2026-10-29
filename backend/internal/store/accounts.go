@@ -195,7 +195,15 @@ func (s *Store) CreateAccount(ctx context.Context, p CreateAccountParams) (Accou
 		if lim.DataLimitBytes != nil && p.DataQuotaBytes == nil {
 			return Account{}, ErrResellerUnlimitedNotAllowed
 		}
-		if err := lim.checkExpiry(p.ExpiryAt); err != nil {
+		// An on-hold account has no expiry yet; judge the plan limit on the latest date
+		// it could end (now + its duration) - activation clamps to the plan expiry
+		// again, see activateHeldSQL.
+		effExpiry := p.ExpiryAt
+		if p.HoldDurationDays != nil {
+			t := time.Now().Add(time.Duration(*p.HoldDurationDays) * 24 * time.Hour)
+			effExpiry = &t
+		}
+		if err := lim.checkExpiry(effExpiry); err != nil {
 			return Account{}, err
 		}
 		count, allocated, err := resellerAllocatedTx(ctx, tx, *p.OwnerKeyNamespace, "")
@@ -280,10 +288,13 @@ func (s *Store) CreateAccount(ctx context.Context, p CreateAccountParams) (Accou
 	}
 	var a Account
 	err = scanAccount(tx.QueryRow(ctx, `
-		INSERT INTO accounts (external_ref, label, public_key, private_key_encrypted, data_quota_bytes, expiry_at, device_limit, bandwidth_limit_mbps, subscription_token, owner_key_namespace)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO accounts (external_ref, label, public_key, private_key_encrypted, data_quota_bytes, expiry_at, device_limit, bandwidth_limit_mbps, subscription_token, owner_key_namespace,
+		                      hold_duration_days, hold_deadline_at, reset_strategy, next_reset_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::text,
+		        CASE WHEN $13::text = 'none' THEN NULL ELSE `+nextResetSQL("$13", "now()")+` END)
 		RETURNING `+accountColumns,
 		p.ExternalRef, p.Label, p.PublicKey, p.PrivateKeyEncrypted, p.DataQuotaBytes, p.ExpiryAt, p.DeviceLimit, p.BandwidthLimitMbps, p.SubscriptionToken, p.OwnerKeyNamespace,
+		p.HoldDurationDays, p.HoldDeadlineAt, strategy,
 	), &a)
 	if err != nil {
 		if isUniqueViolation(err) {
