@@ -30,10 +30,15 @@ const callerIdentityKey contextKey = 1 // adminClaimsKey (middleware.go) is 0 - 
 type CallerIdentity struct {
 	IsAdmin       bool
 	AdminUsername string
-	AdminRole     string // super_admin | operator | support - only meaningful when IsAdmin
-	KeyNamespace  string // == the api_keys.key_id, only meaningful when !IsAdmin
-	Permissions   []string
-	NodeGroups    []string
+	AdminRole     string // super_admin | operator | support | reseller - only meaningful when IsAdmin
+	AdminID       string // admins.id of the JWT subject (IsAdmin only)
+	// ResellerID is set (== AdminID) only for role 'reseller' sessions. Such a caller
+	// is IsAdmin (a human login) yet namespace-scoped like an API key: see
+	// callerNamespaceArg. NodeGroups then holds its allowed groups (empty = all).
+	ResellerID   string
+	KeyNamespace string // == the api_keys.key_id, only meaningful when !IsAdmin
+	Permissions  []string
+	NodeGroups   []string
 }
 
 func callerIdentityFromContext(ctx context.Context) (*CallerIdentity, bool) {
@@ -44,6 +49,10 @@ func callerIdentityFromContext(ctx context.Context) (*CallerIdentity, bool) {
 // callerNamespaceArg is what handlers pass to the namespace-scoped store methods:
 // nil for an admin (no filtering), a pointer to the key's namespace otherwise.
 func callerNamespaceArg(identity *CallerIdentity) *string {
+	if identity.ResellerID != "" {
+		ns := store.ResellerNamespace(identity.ResellerID)
+		return &ns
+	}
 	if identity.IsAdmin {
 		return nil
 	}
@@ -79,7 +88,10 @@ func (s *Server) authenticateAdmin(w http.ResponseWriter, r *http.Request, next 
 		return
 	}
 
-	identity := &CallerIdentity{IsAdmin: true, AdminUsername: claims.Username, AdminRole: claims.Role}
+	identity, ok := s.admitAdminClaims(w, r, claims)
+	if !ok {
+		return
+	}
 	ctx := context.WithValue(r.Context(), callerIdentityKey, identity)
 	next.ServeHTTP(w, r.WithContext(ctx))
 }

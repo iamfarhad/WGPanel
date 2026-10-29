@@ -37,12 +37,12 @@ func (s *Server) requireAdmin(next http.Handler) http.Handler {
 		// to be two disconnected mechanisms, which is how role enforcement went missing
 		// entirely - requireRole needs one consistent place to read the role from
 		// regardless of which of the two admin-auth paths a route uses).
+		identity, ok := s.admitAdminClaims(w, r, claims)
+		if !ok {
+			return
+		}
 		ctx := context.WithValue(r.Context(), adminClaimsKey, claims)
-		ctx = context.WithValue(ctx, callerIdentityKey, &CallerIdentity{
-			IsAdmin:       true,
-			AdminUsername: claims.Username,
-			AdminRole:     claims.Role,
-		})
+		ctx = context.WithValue(ctx, callerIdentityKey, identity)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

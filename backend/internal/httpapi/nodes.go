@@ -172,7 +172,7 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]nodeResponse, 0, len(nodes))
 	for _, n := range nodes {
-		if !identity.IsAdmin && !stringSliceContains(identity.NodeGroups, n.NodeGroup) {
+		if !canSeeNodeGroup(identity, n.NodeGroup) {
 			continue
 		}
 		out = append(out, toNodeResponse(n))
@@ -197,7 +197,7 @@ func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not fetch node")
 		return
 	}
-	if !identity.IsAdmin && !stringSliceContains(identity.NodeGroups, node.NodeGroup) {
+	if !canSeeNodeGroup(identity, node.NodeGroup) {
 		writeJSONError(w, http.StatusNotFound, "node_not_found", "no node with that id")
 		return
 	}

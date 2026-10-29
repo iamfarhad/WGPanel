@@ -64,6 +64,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A disabled reseller is refused only after the password checked out, so the
+	// response never reveals which usernames are resellers to someone guessing.
+	if admin.Role == "reseller" && !s.resellerCanSignIn(ctx, admin.ID) {
+		writeJSONError(w, http.StatusUnauthorized, "account_disabled", "this reseller account is disabled")
+		return
+	}
+
 	accessToken, err := authcrypto.IssueAccessToken(s.JWTSecret, admin.ID, admin.Username, admin.Role)
 	if err != nil {
 		s.Logger.Error("issue_access_token_failed", "error", err)
@@ -131,6 +138,11 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.Logger.Error("get_admin_failed", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not refresh session")
+		return
+	}
+
+	if admin.Role == "reseller" && !s.resellerCanSignIn(ctx, admin.ID) {
+		writeJSONError(w, http.StatusUnauthorized, "account_disabled", "this reseller account is disabled")
 		return
 	}
 

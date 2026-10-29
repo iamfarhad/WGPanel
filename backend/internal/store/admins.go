@@ -75,11 +75,12 @@ func (s *Store) AdminCount(ctx context.Context) (int, error) {
 	return count, err
 }
 
-// ListAdmins is used by the admin-facing Admin Users screen (PRD-admin-panel-ux.md
+// ListAdmins excludes resellers: they are managed only through /api/v1/resellers so
+// the generic admin screen can never edit one around its limits. It is used by the admin-facing Admin Users screen (PRD-admin-panel-ux.md
 // §3.6). Deliberately doesn't return password_hash even internally - callers building
 // a response never need it, so there's nothing to accidentally leak.
 func (s *Store) ListAdmins(ctx context.Context) ([]Admin, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, username, role, created_at FROM admins ORDER BY created_at`)
+	rows, err := s.pool.Query(ctx, `SELECT id, username, role, created_at FROM admins WHERE role != 'reseller' ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}

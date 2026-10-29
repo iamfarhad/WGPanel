@@ -74,6 +74,11 @@ type accountResponse struct {
 	// Peers instead.
 	NodeID     *string `json:"node_id"`
 	AssignedIP *string `json:"assigned_ip"`
+	// Owner is the raw owner namespace ("reseller:<admin id>", an API key id, or null
+	// for an account created by a staff admin); ResellerID is the admin id when the
+	// owner is a reseller - what the UI joins against GET /api/v1/resellers.
+	Owner      *string `json:"owner"`
+	ResellerID *string `json:"reseller_id"`
 }
 
 // subscriptionBaseURL is the origin to prepend to subscription paths when a
@@ -140,7 +145,16 @@ func toAccountResponse(a store.Account, peers []store.AccountPeerWithNode, subBa
 		subscriptionURL = &u
 	}
 
+	var resellerID *string
+	if a.OwnerKeyNamespace != nil {
+		if id, ok := strings.CutPrefix(*a.OwnerKeyNamespace, store.ResellerNamespacePrefix); ok {
+			resellerID = &id
+		}
+	}
+
 	return accountResponse{
+		Owner:                  a.OwnerKeyNamespace,
+		ResellerID:             resellerID,
 		ID:                     a.ID,
 		ExternalRef:            a.ExternalRef,
 		Label:                  a.Label,
@@ -172,7 +186,7 @@ func gbToBytes(gb float64) int64 { return int64(gb * bytesPerGB) }
 // admin or a bot/reseller API key.
 func auditActor(identity *CallerIdentity) string {
 	if identity.IsAdmin {
-		return identity.AdminUsername
+		return identity.AdminUsername // for a reseller this is its own username
 	}
 	return "api_key:" + identity.KeyNamespace
 }
@@ -216,6 +230,10 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	var quotaBytes *int64
 	if req.DataQuotaGB != nil {
+		if *req.DataQuotaGB < 0 {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", "data_quota_gb must not be negative")
+			return
+		}
 		b := gbToBytes(*req.DataQuotaGB)
 		quotaBytes = &b
 	}
@@ -249,7 +267,12 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 
 	var ownerNamespace *string
 	var allowedGroups []string
-	if !identity.IsAdmin {
+	if identity.ResellerID != "" {
+		// The store re-reads the reseller's node_groups under its row lock, so the
+		// groups are not passed from the (possibly stale) request identity.
+		ns := store.ResellerNamespace(identity.ResellerID)
+		ownerNamespace = &ns
+	} else if !identity.IsAdmin {
 		ns := identity.KeyNamespace
 		ownerNamespace = &ns
 		allowedGroups = identity.NodeGroups
@@ -275,6 +298,8 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		AllowedNodeGroups:   allowedGroups,
 	})
 	switch {
+	case writeResellerError(w, err):
+		return
 	case errors.Is(err, store.ErrNodeNotFound):
 		writeJSONError(w, http.StatusNotFound, "node_not_found", "no node with that id")
 		return
@@ -317,7 +342,20 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	identity, _ := callerIdentityFromContext(ctx)
 	ns := callerNamespaceArg(identity)
-	accounts, err := s.Store.ListAccounts(ctx, limit, ns)
+	// ?owner= / ?reseller_id= narrow the list for staff admins only. A reseller or API
+	// key is already pinned to its own namespace, so the filter is ignored for them
+	// rather than letting a crafted value probe other namespaces.
+	ownerFilter := ""
+	if identity.IsAdmin && identity.ResellerID == "" {
+		q := r.URL.Query()
+		if v := q.Get("owner"); v != "" {
+			ownerFilter = v
+		}
+		if v := q.Get("reseller_id"); v != "" {
+			ownerFilter = store.ResellerNamespace(v)
+		}
+	}
+	accounts, err := s.Store.ListAccounts(ctx, limit, ns, ownerFilter)
 	if err != nil {
 		s.Logger.Error("list_accounts_failed", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not list accounts")
@@ -382,6 +420,10 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	var quotaBytes *int64
 	if req.DataQuotaGB != nil {
+		if *req.DataQuotaGB < 0 {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", "data_quota_gb must not be negative")
+			return
+		}
 		b := gbToBytes(*req.DataQuotaGB)
 		quotaBytes = &b
 	}
@@ -403,6 +445,9 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	})
 	if errors.Is(err, store.ErrAccountNotFound) {
 		writeJSONError(w, http.StatusNotFound, "account_not_found", "no account with that id")
+		return
+	}
+	if writeResellerError(w, err) {
 		return
 	}
 	if err != nil {
@@ -457,6 +502,9 @@ func (s *Server) handleEnableAccount(w http.ResponseWriter, r *http.Request) {
 	account, err := s.Store.EnableAccount(ctx, r.PathValue("id"), ns)
 	if errors.Is(err, store.ErrAccountNotFound) {
 		writeJSONError(w, http.StatusNotFound, "account_not_found", "no account with that id")
+		return
+	}
+	if writeResellerError(w, err) {
 		return
 	}
 	if err != nil {
@@ -517,6 +565,9 @@ func (s *Server) handleRenewAccount(w http.ResponseWriter, r *http.Request) {
 	account, err := s.Store.RenewAccount(ctx, id, ns, addQuotaBytes, newExpiry)
 	if errors.Is(err, store.ErrAccountNotFound) {
 		writeJSONError(w, http.StatusNotFound, "account_not_found", "no account with that id")
+		return
+	}
+	if writeResellerError(w, err) {
 		return
 	}
 	if err != nil {
