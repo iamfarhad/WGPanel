@@ -435,6 +435,73 @@ func TestAccountAPIAdditionsEndToEnd(t *testing.T) {
 		}
 	})
 
+	t.Run("data cap: PATCH suspends and lifts, enable is refused while over the cap", func(t *testing.T) {
+		d := create(bot, `{"label":"cap","data_quota_gb":1}`)
+		id := d["id"].(string)
+		path := "/api/v1/accounts/" + id
+
+		// Lower the quota to exactly what the account already used: suspended on the spot.
+		sql(`UPDATE accounts SET data_used_bytes = 500000000 WHERE id = $1`, id)
+		code, raw, out := signed(bot, "PATCH", path, `{"data_quota_gb":0.5}`)
+		must("lower quota to usage", 200, code, raw)
+		if out["status"] != "suspended" || out["suspend_reason"] != "quota_exceeded" {
+			t.Fatalf("lowering the quota to the usage: %s", raw)
+		}
+
+		// Enabling it would be undone by the next sample, so it is refused, not faked.
+		code, raw, out = signed(bot, "POST", path+"/enable", "")
+		if code != 409 || ecode(out) != "quota_exhausted" {
+			t.Fatalf("enable over the cap: %d %s, want 409 quota_exhausted", code, raw)
+		}
+		code, raw, out = signed(bot, "GET", path, "")
+		must("get", 200, code, raw)
+		if out["status"] != "suspended" || out["suspend_reason"] != "quota_exceeded" {
+			t.Fatalf("a refused enable must change nothing: %s", raw)
+		}
+
+		// Raising the cap above the usage reactivates it by itself.
+		code, raw, out = signed(bot, "PATCH", path, `{"data_quota_gb":1}`)
+		must("raise quota", 200, code, raw)
+		if out["status"] != "active" || out["suspend_reason"] != nil {
+			t.Fatalf("raising the quota above the usage: %s", raw)
+		}
+
+		// A manual suspension over the cap: enable refused until the cap moves, then fine.
+		sql(`UPDATE accounts SET status = 'suspended', suspend_reason = 'manual', data_used_bytes = 2000000000 WHERE id = $1`, id)
+		if code, raw, out = signed(bot, "POST", path+"/enable", ""); code != 409 || ecode(out) != "quota_exhausted" {
+			t.Fatalf("enable a manual suspension over the cap: %d %s", code, raw)
+		}
+		code, raw, out = signed(bot, "PATCH", path, `{"data_quota_gb":5}`)
+		must("raise quota again", 200, code, raw)
+		if out["status"] != "suspended" || out["suspend_reason"] != "manual" {
+			t.Fatalf("a raise must not lift a manual suspension: %s", raw)
+		}
+		code, raw, out = signed(bot, "POST", path+"/enable", "")
+		must("enable after the raise", 200, code, raw)
+		if out["status"] != "active" {
+			t.Fatalf("%s", raw)
+		}
+
+		// Read-time: an active account found over its cap reads as suspended.
+		sql(`UPDATE accounts SET data_used_bytes = 9000000000 WHERE id = $1`, id)
+		code, raw, out = signed(bot, "GET", path, "")
+		must("get over the cap", 200, code, raw)
+		if out["status"] != "suspended" || out["suspend_reason"] != "quota_exceeded" {
+			t.Fatalf("an account over its cap must read as suspended: %s", raw)
+		}
+		// ...and an unlimited one never does.
+		code, raw, out = signed(bot, "PATCH", path, `{"clear_data_quota":true}`)
+		must("clear quota", 200, code, raw)
+		if out["status"] != "active" || out["data_quota_bytes"] != nil {
+			t.Fatalf("clear lifts: %s", raw)
+		}
+		code, raw, out = signed(bot, "GET", path, "")
+		must("get unlimited", 200, code, raw)
+		if out["status"] != "active" {
+			t.Fatalf("unlimited account suspended: %s", raw)
+		}
+	})
+
 	t.Run("last_handshake_at on every account response", func(t *testing.T) {
 		// A fresh account that has never connected: null, but the key is always present.
 		fresh := create(bot, `{"label":"hs"}`)

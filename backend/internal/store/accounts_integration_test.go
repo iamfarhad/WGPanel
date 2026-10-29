@@ -421,13 +421,15 @@ func TestAccountAPIAdditionsIntegration(t *testing.T) {
 			}
 		})
 
-		t.Run("raising a quota still does not lift a suspension (unchanged behaviour)", func(t *testing.T) {
+		// Used to pin "a raise does not lift"; data-cap enforcement (limits.go) changed
+		// that rule - the full matrix lives in TestQuotaEnforcementIntegration.
+		t.Run("raising a quota above usage lifts a quota_exceeded suspension", func(t *testing.T) {
 			ns := newNS()
 			a := mk(t, ns, nil, &quota, nil)
 			setState(t, a.ID, "suspended", strp("quota_exceeded"), nil, 9000)
 			bigger := int64(50_000)
 			got, err := s.UpdateAccount(ctx, a.ID, ns, UpdateAccountParams{DataQuotaBytes: &bigger})
-			if err != nil || got.Status != "suspended" || got.DataQuotaBytes == nil || *got.DataQuotaBytes != bigger {
+			if err != nil || got.Status != "active" || got.SuspendReason != nil || got.DataQuotaBytes == nil || *got.DataQuotaBytes != bigger {
 				t.Fatalf("raise: %v %+v", err, got)
 			}
 		})

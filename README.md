@@ -129,6 +129,16 @@ X-Signature: hex(HMAC_SHA256(secret, METHOD + "\n" + PATH + "\n" + TIMESTAMP + "
 
 `PATH` is the URL path without the query string. `BODY` is the exact raw request body (empty for `GET`). The full reference is in [`docs/openapi.yaml`](docs/openapi.yaml) and is also served by every panel at `/api-docs.html`.
 
+What a sales bot typically uses:
+
+- **Idempotent creates.** Send an `external_ref` that is unique per order (for example `tg:<user id>:<order id>`). If a create's answer is lost, the retry gets `409 external_ref_taken`. `GET /api/v1/accounts?external_ref=<ref>` then returns that account, including a deleted one, because a ref stays taken after a delete.
+- **Paging.** `GET /api/v1/accounts?limit=200&offset=<n>` lists the key's own accounts, oldest first, 200 per page.
+- **A fresh period.** `POST /api/v1/accounts/{id}/reset-usage` sets the usage back to zero and brings back an account that was suspended for running out of data. A reseller key whose reseller has a traffic credit gets `403 reseller_reset_not_allowed`; it renews with `add_quota_gb` instead, which spends credit.
+- **Removing a limit.** In `PATCH /api/v1/accounts/{id}`, `null` means "unchanged". To remove a cap, send `"clear_data_quota": true` or `"clear_device_limit": true`.
+- **Who is online.** Every account carries `last_handshake_at`, the newest handshake across its nodes.
+
+**Data caps are enforced.** An account whose usage reaches its quota is suspended with `suspend_reason: quota_exceeded` on the next traffic sample (it can go over by up to one heartbeat of traffic), and every node drops it. Raising the quota above the usage, a renewal, `reset-usage` or `clear_data_quota` brings it back. `POST …/enable` refuses an account still over its cap with `409 quota_exhausted`. If an account is both expired and over its cap, `expired` wins: adding data does not bring back an expired account. A quota of `0` is a zero-byte cap, not unlimited; omit the quota (or send `null`) for unlimited.
+
 ## Managing the stack
 
 The installer places a `wgpanel` CLI on the panel server:

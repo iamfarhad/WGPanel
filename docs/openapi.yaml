@@ -97,7 +97,23 @@ tags:
   - name: Nodes
     description: WireGuard server (node) directory and lifecycle.
   - name: Accounts
-    description: WireGuard peer provisioning and lifecycle.
+    description: >-
+      WireGuard peer provisioning and lifecycle. **Limits are enforced by the
+      panel.** An `active` account is suspended automatically when it expires
+      (`suspend_reason: expired`) or when `data_used_bytes` reaches
+      `data_quota_bytes` (`suspend_reason: quota_exceeded`; an account with a
+      null quota is unlimited and never suspended for data - note that a quota
+      of `0` is a cap of zero bytes, not "unlimited", so such an account is
+      suspended the first time it is read). The traffic path
+      does this within the heartbeat that brings the usage to the cap, and every
+      read does it too (so a quota lowered below the usage reads as suspended at
+      once); node agents then drop the peer within one heartbeat. Only `active`
+      accounts are touched - any other suspension reason is kept - and when an
+      account is both expired and over its cap, `expired` wins, so adding data
+      never revives an expired account. It is lifted again by moving the cap
+      above the usage (`PATCH` a higher `data_quota_gb` or `clear_data_quota`,
+      `renew` with `add_quota_gb`) or by `reset-usage`, provided the account has
+      not expired.
   - name: Subscription
     description: >-
       Unauthenticated capability-URL surface for client apps: the per-account
@@ -649,6 +665,19 @@ paths:
         `null`) `data_quota_gb`/`device_limit` means "leave unchanged", so
         removing a limit - making the account unlimited - takes the explicit
         `clear_data_quota` / `clear_device_limit` flags.
+
+
+        **Moving the data cap takes effect at once** (see the Accounts tag for
+        the rule). Setting `data_quota_gb` above the account's current
+        `data_used_bytes` on an account suspended for `quota_exceeded`
+        reactivates it (`status: active`, `suspend_reason: null`) unless it has
+        expired (an `expiry_at` sent in the same request counts); setting it to
+        the usage or below on an active account suspends it as
+        `quota_exceeded` (`expired` instead if it is past its expiry). The
+        returned account already reflects this. A PATCH that does not touch the
+        quota never lifts a suspension, and `manual` / `abuse_flag` /
+        `device_limit` / `expired` / `reseller_suspended` suspensions are never
+        lifted by a quota change.
       security:
         - BearerAuth: []
         - ApiKeyAuth: []
@@ -660,7 +689,13 @@ paths:
               type: object
               properties:
                 label: { type: string }
-                data_quota_gb: { type: number, nullable: true }
+                data_quota_gb:
+                  type: number
+                  nullable: true
+                  description: >-
+                    New data quota in GB (decimal, 1 GB = 10^9 bytes). Null/omitted = unchanged. A value at or
+                    below the current usage suspends an active account; a value above it reactivates a
+                    `quota_exceeded` one (see the operation description).
                 clear_data_quota:
                   type: boolean
                   description: >-
@@ -784,7 +819,19 @@ paths:
     post:
       tags: [Accounts]
       summary: Re-enable a suspended account
-      description: Admin session (role >= `operator`) or API key with `suspend` permission (enable shares the suspend permission, not a separate one).
+      description: >-
+        Admin session (role >= `operator`) or API key with `suspend` permission
+        (enable shares the suspend permission, not a separate one).
+
+
+        An account that has used its whole data quota (`data_used_bytes >=
+        data_quota_bytes`) cannot be enabled, whatever its suspension reason:
+        the next traffic sample would suspend it again as `quota_exceeded`, so
+        the call answers `409 quota_exhausted` and changes nothing. Raise the
+        quota (`PATCH`), renew with `add_quota_gb` or `reset-usage` first (the
+        first and last reactivate a `quota_exceeded` account by themselves);
+        enabling works as before once the quota is above the usage, and always
+        for an unlimited account.
       parameters:
         - name: id
           in: path
@@ -802,13 +849,32 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: >-
+            `quota_exhausted` - the account is at or over its data quota, so
+            enabling it would be undone by the next sample (see the operation
+            description).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/accounts/{id}/renew:
     post:
       tags: [Accounts]
       summary: Extend an account's quota and/or expiry
-      description: Admin session (role >= `operator`) or API key with `update` permission.
+      description: >-
+        Admin session (role >= `operator`) or API key with `update` permission.
+        Reactivates the account if it was suspended solely for `quota_exceeded`
+        or `expired` and the new numbers resolve that: for `quota_exceeded` the
+        quota must now be above the usage **and** the account must not be
+        expired (`add_quota_gb` alone never revives an expired account); for
+        `expired` the new expiry must be in the future. A renewal that leaves
+        the account at or over its data cap (a validity-only renewal of an
+        expired account that has also used all its data, or a negative
+        `add_quota_gb` that takes the quota to the usage or below) leaves or
+        puts it in `suspended` / `quota_exceeded`. `manual` / `abuse_flag`
+        suspensions are never lifted.
       parameters:
         - name: id
           in: path
@@ -2283,7 +2349,19 @@ components:
         suspend_reason:
           type: string
           nullable: true
-          enum: [manual, abuse_flag, expired, quota_exceeded, device_limit]
+          enum: [manual, abuse_flag, expired, quota_exceeded, device_limit, reseller_suspended]
+          description: >-
+            Why a `suspended` account is suspended; null otherwise.
+            `quota_exceeded` is set **automatically** when an active account's
+            `data_used_bytes` reaches its non-null `data_quota_bytes`, and is
+            lifted automatically when the quota moves above the usage (PATCH,
+            renew) or the usage is reset - never while the account is expired.
+            `expired` is set automatically past `expiry_at` and wins over
+            `quota_exceeded` when both apply. `manual` / `abuse_flag` are set by
+            `POST .../suspend`, `device_limit` by device-limit hard enforcement,
+            and `reseller_suspended` by the super-admin bulk suspension of a
+            reseller's accounts; none of these is ever overwritten or lifted by
+            data-cap enforcement.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         last_handshake_at:

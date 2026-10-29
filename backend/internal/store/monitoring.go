@@ -245,6 +245,15 @@ func ingestPeerTraffic(ctx context.Context, tx pgx.Tx, nodeID string, traffic []
 		`, accountIDs, deltas); err != nil {
 			return nil, err
 		}
+
+		// Data-cap enforcement (limits.go), in the same transaction as the usage it
+		// reacts to: an active account that has just reached its quota is suspended
+		// here, so the desired-peer list this heartbeat's response is built from (and
+		// every other node's next one) no longer includes it. Only the accounts that
+		// received traffic can have newly crossed their cap.
+		if _, err := suspendQuotaReachedTx(ctx, tx, accountIDs); err != nil {
+			return nil, err
+		}
 	}
 
 	accountByKey := make(map[string]string, len(byPublicKey))

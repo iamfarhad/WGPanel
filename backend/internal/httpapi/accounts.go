@@ -561,6 +561,13 @@ func (s *Server) handleEnableAccount(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "account_not_found", "no account with that id")
 		return
 	}
+	if errors.Is(err, store.ErrAccountQuotaExhausted) {
+		// Enabling would be undone by the next traffic sample; say so instead of
+		// answering 200 for an account that is about to be suspended again.
+		writeJSONError(w, http.StatusConflict, "quota_exhausted",
+			"this account has used its whole data quota and would be suspended again at once: raise the quota, renew with add_quota_gb or reset its usage first")
+		return
+	}
 	if writeResellerError(w, err) {
 		return
 	}
