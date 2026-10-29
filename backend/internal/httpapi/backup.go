@@ -15,6 +15,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,30 +72,9 @@ func (s *Server) handleDownloadBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	migrations, err := s.Store.AppliedMigrations(ctx)
+	payload, err := s.buildBackupPayload(ctx)
 	if err != nil {
-		s.Logger.Error("backup_migrations_failed", "error", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not read schema version")
-		return
-	}
-	tables, err := s.Store.DumpTables(ctx)
-	if err != nil {
-		s.Logger.Error("backup_dump_failed", "error", err)
-		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not dump tables")
-		return
-	}
-
-	payload, err := json.Marshal(backupPayload{
-		Migrations: migrations,
-		Secrets: backupSecrets{
-			AccountKeyEncryptionKey: s.AccountKeyEncryptionKey,
-			APIHMACMasterKey:        s.APIHMACMasterKey,
-		},
-		CA:     s.readCAForBackup(),
-		Tables: tables,
-	})
-	if err != nil {
-		s.Logger.Error("backup_marshal_failed", "error", err)
+		s.Logger.Error("backup_build_failed", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not build backup")
 		return
 	}
@@ -120,6 +100,29 @@ func (s *Server) handleDownloadBackup(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(envelope); err != nil {
 		s.Logger.Error("backup_write_failed", "error", err)
 	}
+}
+
+// buildBackupPayload dumps every backup table plus CA and embedded keys into the
+// plaintext JSON that backupcrypto seals. Shared by the manual download and the
+// scheduled off-box backups, so both produce files restorable through the same path.
+func (s *Server) buildBackupPayload(ctx context.Context) ([]byte, error) {
+	migrations, err := s.Store.AppliedMigrations(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read schema version: %w", err)
+	}
+	tables, err := s.Store.DumpTables(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("dump tables: %w", err)
+	}
+	return json.Marshal(backupPayload{
+		Migrations: migrations,
+		Secrets: backupSecrets{
+			AccountKeyEncryptionKey: s.AccountKeyEncryptionKey,
+			APIHMACMasterKey:        s.APIHMACMasterKey,
+		},
+		CA:     s.readCAForBackup(),
+		Tables: tables,
+	})
 }
 
 // readCAForBackup best-effort reads the CA keypair off disk. A deployment without

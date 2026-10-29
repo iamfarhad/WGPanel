@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"wgpanel-api/internal/caddyadmin"
+	"wgpanel-api/internal/events"
 	"wgpanel-api/internal/nodeca"
 	"wgpanel-api/internal/store"
 )
@@ -47,6 +48,10 @@ type Server struct {
 	// ResellerLimitsLookup overrides the per-request reseller limits lookup in tests;
 	// nil means Store.GetResellerLimits (see reseller_gate.go).
 	ResellerLimitsLookup func(ctx context.Context, adminID string) (store.ResellerLimits, error)
+	// Events is the internal domain-event bus (nil disables emission) and NotifyRT the
+	// overridable runtime of notifications/webhooks/backups - see eventsys.go.
+	Events   *events.Bus
+	NotifyRT NotifyRuntime
 }
 
 // Routes builds the full handler tree: public routes (proxied by Caddy), the
@@ -163,6 +168,8 @@ func (s *Server) Routes() http.Handler {
 	// password rides in the request body.
 	mux.Handle("POST /api/v1/backup", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleDownloadBackup))))
 	mux.Handle("POST /api/v1/backup/restore", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleRestoreBackup))))
+
+	s.registerNotificationRoutes(mux)
 
 	return s.loggingMiddleware(mux)
 }
