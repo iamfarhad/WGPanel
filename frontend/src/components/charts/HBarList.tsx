@@ -32,9 +32,9 @@ export function HBarList({ items, max, empty }: { items: BarItem[]; max?: number
         return (
           <li key={item.key} title={`${item.label}: ${item.display ?? item.value}`}>
             <div className="mb-1.5 flex items-baseline justify-between gap-3 text-sm">
-              <span className="min-w-0 truncate text-fg">
-                {item.label}
-                {item.sub && <span className="ms-1.5 text-xs text-faint">{item.sub}</span>}
+              <span className="flex min-w-0 items-baseline gap-1.5">
+                <span className="truncate text-fg">{item.label}</span>
+                {item.sub && <span className="shrink-0 text-xs text-faint">· {item.sub}</span>}
               </span>
               <span className="shrink-0 text-xs font-medium text-muted tabular-nums">{item.display ?? item.value}</span>
             </div>

@@ -102,8 +102,8 @@ type DetailTab = 'overview' | 'devices' | 'usage' | 'edit'
 function formatBytes(bytes: number): string {
   if (bytes === 0) return ltr('0 B')
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  return ltr(`${(bytes / 1024 ** i).toFixed(1)} ${units[i]}`)
+  const i = Math.floor(Math.log(bytes) / Math.log(1000))
+  return ltr(`${(bytes / 1000 ** i).toFixed(1)} ${units[i]}`)
 }
 
 // Mirrors the backend's confFilename (subscription.go): WireGuard clients derive
@@ -1037,7 +1037,7 @@ function EditAccountForm({
   const initial = useMemo(
     () => ({
       label: account.label,
-      quotaGb: account.data_quota_bytes != null ? String(Number((account.data_quota_bytes / 1024 ** 3).toFixed(2))) : '',
+      quotaGb: account.data_quota_bytes != null ? String(Number((account.data_quota_bytes / 1e9).toFixed(2))) /* the API's GB is decimal (1e9) */ : '',
       deviceLimit: account.device_limit?.toString() ?? '',
       bandwidth: account.bandwidth_limit_mbps?.toString() ?? '',
       expiry: account.expiry_at ? toDateInputValue(account.expiry_at) : '',

@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react'
+import { createElement, type CSSProperties } from 'react'
 
 /** Shared Recharts styling, all from the theme tokens so charts follow light/dark:
  * brand green first, blue second, near-invisible grid, quiet axes, minimal tooltip. */
@@ -33,4 +33,9 @@ export const chartTooltip: { contentStyle: CSSProperties; labelStyle: CSSPropert
   cursor: { stroke: 'var(--ui-edge-strong)' },
 }
 
-export const chartLegend = { wrapperStyle: { fontSize: 12, color: 'var(--ui-muted)' } }
+/** Legend text stays in text ink - recharts paints it in the series color by default,
+ * which makes light hues illegible; the line/rect key beside it carries identity. */
+export const chartLegend = {
+  wrapperStyle: { fontSize: 12 },
+  formatter: (value: string) => createElement('span', { style: { color: 'var(--ui-muted)' } }, value),
+}

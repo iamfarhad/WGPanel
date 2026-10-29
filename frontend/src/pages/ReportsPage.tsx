@@ -80,11 +80,13 @@ interface Report {
   }[] | null
 }
 
+// Decimal units throughout the panel: quotas and credits are entered in GB = 1e9
+// bytes, so showing binary GiB would render a 10 GB quota as 9.3 GB.
 function formatBytes(bytes: number): string {
   if (!bytes) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
-  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)))
-  const v = bytes / 1024 ** i
+  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1000)))
+  const v = bytes / 1000 ** i
   return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
 }
 
@@ -305,7 +307,12 @@ export function ReportsPage() {
                     cursor={{ stroke: 'var(--ui-edge-strong)', strokeWidth: 1 }}
                     content={<ChartTooltip formatValue={formatBytes} formatLabel={fullTime} />}
                   />
-                  <Legend wrapperStyle={{ fontSize: 12, color: 'var(--ui-muted)', paddingTop: 8 }} iconType="plainline" />
+                  <Legend
+                    wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
+                    iconType="plainline"
+                    // Legend text stays in text ink; the line key beside it carries the series color.
+                    formatter={(value) => <span style={{ color: 'var(--ui-muted)' }}>{value}</span>}
+                  />
                   <Area type="monotone" dataKey="download" name={t('Download')} stackId="t" stroke={chartColors.primary} strokeWidth={2}
                     fill={chartColors.primary} fillOpacity={AREA_FILL_OPACITY} isAnimationActive={false} />
                   <Area type="monotone" dataKey="upload" name={t('Upload')} stackId="t" stroke={chartColors.secondary} strokeWidth={2}
