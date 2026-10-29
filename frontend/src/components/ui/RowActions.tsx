@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { MoreHorizontal, type LucideIcon } from 'lucide-react'
+import { useI18n } from '../../lib/i18n'
 
 export interface RowAction {
   label: string
@@ -15,7 +16,9 @@ export interface RowAction {
  * clip an absolutely positioned dropdown. It opens toward the inline end of the
  * trigger (right in LTR, left in RTL), flips upward near the viewport bottom, and
  * closes on outside click, Escape, scroll or resize. */
-export function RowActions({ actions, label = 'Actions' }: { actions: RowAction[]; label?: string }) {
+export function RowActions({ actions, label }: { actions: RowAction[]; label?: string }) {
+  const { t } = useI18n()
+  label = t(label ?? 'Actions')
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -122,7 +125,7 @@ export function RowActions({ actions, label = 'Actions' }: { actions: RowAction[
                 }`}
               >
                 {a.icon && <a.icon className={`h-4 w-4 shrink-0 ${a.danger ? '' : 'text-faint'}`} strokeWidth={1.75} />}
-                {a.label}
+                {t(a.label)}
               </button>
             ))}
           </div>,

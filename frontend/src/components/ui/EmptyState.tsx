@@ -1,6 +1,7 @@
 import type { LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Illustration, Mascot, type IllustrationName } from '../brand/Brand'
+import { useI18n } from '../../lib/i18n'
 
 /** Empty list/search state. `illustration` shows the mascot pose for the moment (see
  * Illustration); `mascot` is the original shield artwork. Either replaces the icon. */
@@ -19,6 +20,7 @@ export function EmptyState({
   description?: string
   action?: ReactNode
 }) {
+  const { t } = useI18n()
   return (
     <div className={`flex flex-col items-center justify-center px-6 text-center ${mascot || illustration ? 'py-12' : 'py-16'}`}>
       {illustration ? (
@@ -32,8 +34,8 @@ export function EmptyState({
           </div>
         )
       )}
-      <p className="text-[15px] font-semibold text-fg">{title}</p>
-      {description && <p className="mt-1 max-w-sm text-sm leading-relaxed text-muted">{description}</p>}
+      <p className="text-[15px] font-semibold text-fg">{t(title)}</p>
+      {description && <p className="mt-1 max-w-sm text-sm leading-relaxed text-muted">{t(description)}</p>}
       {action && <div className="mt-5">{action}</div>}
     </div>
   )

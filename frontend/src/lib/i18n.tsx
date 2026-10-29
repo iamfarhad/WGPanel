@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, Fragment, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
 import { fa } from '../locales/fa'
 
 export type Lang = 'en' | 'fa'
@@ -37,8 +37,28 @@ interface I18nValue {
   setLang: (lang: Lang) => void
   /** Translate English source text; `{name}` placeholders are filled from vars. */
   t: (text: string, vars?: Vars) => string
+  /** Translate a whole sentence that contains markup, e.g.
+   * tx('Restore replaces <b>all</b> data', { b: (c) => <strong>{c}</strong> }). The
+   * translator writes the full sentence in natural word order, tags included -
+   * splitting it into t() fragments forces English word order onto Persian. */
+  tx: (text: string, tags: Record<string, (children: string) => ReactNode>) => ReactNode
   /** Locale-aware date/time: Persian (Jalali calendar) or English. */
   formatDate: (value: string | number | Date, options?: Intl.DateTimeFormatOptions) => string
+}
+
+function renderTags(text: string, tags: Record<string, (children: string) => ReactNode>): ReactNode {
+  const parts: ReactNode[] = []
+  const re = /<(\w+)>(.*?)<\/\1>/g
+  let last = 0
+  let match: RegExpExecArray | null
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > last) parts.push(text.slice(last, match.index))
+    const render = tags[match[1]]
+    parts.push(<Fragment key={match.index}>{render ? render(match[2]) : match[2]}</Fragment>)
+    last = re.lastIndex
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return parts
 }
 
 const I18nContext = createContext<I18nValue | undefined>(undefined)
@@ -67,6 +87,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       lang,
       setLang,
       t: (text, vars) => interpolate(dict[text] ?? text, vars),
+      tx: (text, tags) => renderTags(dict[text] ?? text, tags),
       formatDate: (v, options = { dateStyle: 'medium', timeStyle: 'short' }) =>
         new Intl.DateTimeFormat(locale, options).format(new Date(v)),
     }

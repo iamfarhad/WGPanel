@@ -196,3 +196,8 @@ input[type="radio"] {
   scrollbar-width: thin;
   scrollbar-color: var(--ui-edge-strong) transparent;
 }
+
+/* Letter-spacing breaks Arabic-script joining - never track Persian text. */
+[dir="rtl"] * {
+  letter-spacing: normal !important;
+}

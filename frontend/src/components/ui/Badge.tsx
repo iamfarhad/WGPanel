@@ -1,4 +1,5 @@
 import type { HTMLAttributes } from 'react'
+import { useI18n } from '../../lib/i18n'
 
 type Tone = 'green' | 'red' | 'amber' | 'slate' | 'blue'
 
@@ -25,13 +26,14 @@ export function Badge({
   className = '',
   ...props
 }: HTMLAttributes<HTMLSpanElement> & { tone?: Tone; dot?: boolean }) {
+  const { t } = useI18n()
   return (
     <span
       className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${tones[tone]} ${className}`}
       {...props}
     >
       {dot && <span className={`h-1.5 w-1.5 rounded-full ${dots[tone]}`} />}
-      {children}
+      {typeof children === 'string' ? t(children) : children}
     </span>
   )
 }

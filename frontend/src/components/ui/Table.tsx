@@ -1,3 +1,4 @@
+import { useI18n } from '../../lib/i18n'
 import type { HTMLAttributes, ReactNode, TdHTMLAttributes, ThHTMLAttributes } from 'react'
 
 /** Data-table primitives shared by every list page. Wraps the table in a
@@ -14,8 +15,13 @@ export function THead({ children }: { children: ReactNode }) {
   return <thead className="border-b border-edge bg-inset/50 text-xs text-muted">{children}</thead>
 }
 
-export function Th({ className = '', ...props }: ThHTMLAttributes<HTMLTableCellElement>) {
-  return <th className={`px-5 py-2.5 text-start font-medium ${className}`} {...props} />
+export function Th({ className = '', children, ...props }: ThHTMLAttributes<HTMLTableCellElement>) {
+  const { t } = useI18n()
+  return (
+    <th className={`px-5 py-2.5 text-start font-medium ${className}`} {...props}>
+      {typeof children === 'string' ? t(children) : children}
+    </th>
+  )
 }
 
 export function Tr({

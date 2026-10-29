@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from 'react'
 import { X } from 'lucide-react'
+import { useI18n } from '../../lib/i18n'
 
 // Body-scroll lock is ref-counted at module scope so stacked dialogs (e.g. the delete
 // ConfirmDialog opened on top of an account detail Dialog) don't race on
@@ -37,6 +38,7 @@ interface DialogProps {
 }
 
 export function Dialog({ open, onClose, title, children, maxWidthClassName = 'max-w-md' }: DialogProps) {
+  const { t } = useI18n()
   // Escape closes; page behind the overlay stays put instead of scrolling.
   useEffect(() => {
     if (!open) return
@@ -66,17 +68,17 @@ export function Dialog({ open, onClose, title, children, maxWidthClassName = 'ma
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={title}
+        aria-label={t(title)}
         className={`animate-dialog-in flex max-h-[85vh] w-full flex-col rounded-modal border border-edge bg-surface shadow-pop ${maxWidthClassName}`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-edge px-6 py-4">
-          <h2 className="text-base font-semibold text-fg">{title}</h2>
+          <h2 className="text-base font-semibold text-fg">{t(title)}</h2>
           <button
             type="button"
             onClick={onClose}
             className="-me-1.5 cursor-pointer rounded-lg p-1.5 text-faint transition-colors hover:bg-inset hover:text-fg focus-visible:ring-[3px] focus-visible:ring-ring focus-visible:outline-none"
-            aria-label="Close"
+            aria-label={t('Close')}
           >
             <X className="h-4.5 w-4.5" />
           </button>

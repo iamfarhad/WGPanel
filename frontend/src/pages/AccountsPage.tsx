@@ -7,6 +7,8 @@ import { chartAxis, chartColors, chartGrid, chartTooltip } from '../lib/chartThe
 import { apiFetch, ApiError } from '../lib/api'
 import { getAccessToken } from '../lib/tokenStore'
 import { useToast } from '../lib/toast'
+import { useI18n } from '../lib/i18n'
+import { ltr } from '../lib/bidi'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
@@ -83,10 +85,10 @@ interface DevicesResponse {
 type DetailTab = 'overview' | 'devices' | 'usage' | 'edit'
 
 function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
+  if (bytes === 0) return ltr('0 B')
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  return `${(bytes / 1024 ** i).toFixed(1)} ${units[i]}`
+  return ltr(`${(bytes / 1024 ** i).toFixed(1)} ${units[i]}`)
 }
 
 // Mirrors the backend's confFilename (subscription.go): WireGuard clients derive
@@ -105,16 +107,17 @@ function confFilename(label: string): string {
 // Mirrors the backend's peerOnlineWindow (180s) purely for display wording - the
 // authoritative online/offline bit itself always comes from the server's `online`
 // field, never recomputed here from last_handshake_at.
-function formatLastSeen(lastHandshakeAt: string | null): string {
-  if (!lastHandshakeAt) return 'never connected'
+function formatLastSeen(lastHandshakeAt: string | null, t: (text: string, vars?: Record<string, string | number>) => string): string {
+  if (!lastHandshakeAt) return t('never connected')
   const seconds = Math.max(0, Math.floor((Date.now() - new Date(lastHandshakeAt).getTime()) / 1000))
-  if (seconds < 60) return 'just now'
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`
-  return `${Math.floor(seconds / 86400)}d ago`
+  if (seconds < 60) return t('just now')
+  if (seconds < 3600) return t('{n}m ago', { n: Math.floor(seconds / 60) })
+  if (seconds < 86400) return t('{n}h ago', { n: Math.floor(seconds / 3600) })
+  return t('{n}d ago', { n: Math.floor(seconds / 86400) })
 }
 
 export function AccountsPage() {
+  const { t } = useI18n()
   const queryClient = useQueryClient()
   const { push } = useToast()
 
@@ -157,21 +160,21 @@ export function AccountsPage() {
   const suspendMutation = useMutation({
     mutationFn: (id: string) => apiFetch<Account>(`/api/v1/accounts/${id}/suspend`, { method: 'POST', body: JSON.stringify({}) }),
     onSuccess: (account) => {
-      push('success', `${account.label} suspended`)
+      push('success', t('{name} suspended', { name: account.label }))
       invalidate()
       setDetailAccount(account)
     },
-    onError: (err) => push('error', err instanceof ApiError ? err.message : 'Failed to suspend account'),
+    onError: (err) => push('error', err instanceof ApiError ? err.message : t('Failed to suspend account')),
   })
 
   const enableMutation = useMutation({
     mutationFn: (id: string) => apiFetch<Account>(`/api/v1/accounts/${id}/enable`, { method: 'POST' }),
     onSuccess: (account) => {
-      push('success', `${account.label} enabled`)
+      push('success', t('{name} enabled', { name: account.label }))
       invalidate()
       setDetailAccount(account)
     },
-    onError: (err) => push('error', err instanceof ApiError ? err.message : 'Failed to enable account'),
+    onError: (err) => push('error', err instanceof ApiError ? err.message : t('Failed to enable account')),
   })
 
   const renewMutation = useMutation({
@@ -181,33 +184,33 @@ export function AccountsPage() {
         body: JSON.stringify({ extend_days: extendDays }),
       }),
     onSuccess: (account) => {
-      push('success', `${account.label} renewed`)
+      push('success', t('{name} renewed', { name: account.label }))
       invalidate()
       setDetailAccount(account)
     },
-    onError: (err) => push('error', err instanceof ApiError ? err.message : 'Failed to renew account'),
+    onError: (err) => push('error', err instanceof ApiError ? err.message : t('Failed to renew account')),
   })
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiFetch<Account>(`/api/v1/accounts/${id}`, { method: 'DELETE' }),
     onSuccess: (account) => {
-      push('success', `${account.label} deleted`)
+      push('success', t('{name} deleted', { name: account.label }))
       invalidate()
       setDeleteTarget(null)
       setDetailAccount(null)
     },
-    onError: (err) => push('error', err instanceof ApiError ? err.message : 'Failed to delete account'),
+    onError: (err) => push('error', err instanceof ApiError ? err.message : t('Failed to delete account')),
   })
 
   const patchMutation = useMutation({
     mutationFn: ({ id, body }: { id: string; body: Record<string, unknown> }) =>
       apiFetch<Account>(`/api/v1/accounts/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     onSuccess: (account) => {
-      push('success', `${account.label} updated`)
+      push('success', t('{name} updated', { name: account.label }))
       invalidate()
       setDetailAccount(account)
     },
-    onError: (err) => push('error', err instanceof ApiError ? err.message : 'Failed to update account'),
+    onError: (err) => push('error', err instanceof ApiError ? err.message : t('Failed to update account')),
   })
 
   const rotateSubscriptionMutation = useMutation({
@@ -217,7 +220,7 @@ export function AccountsPage() {
       invalidate()
       setDetailAccount(account)
     },
-    onError: (err) => push('error', err instanceof ApiError ? err.message : 'Failed to rotate subscription URL'),
+    onError: (err) => push('error', err instanceof ApiError ? err.message : t('Failed to rotate subscription URL')),
   })
 
   return (
@@ -239,9 +242,9 @@ export function AccountsPage() {
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search accounts…"
+            placeholder={t('Search accounts…')}
             className="ps-9"
-            aria-label="Search accounts"
+            aria-label={t('Search accounts')}
           />
         </div>
       )}
@@ -265,7 +268,7 @@ export function AccountsPage() {
           />
         )}
         {!accountsQuery.isLoading && !accountsQuery.isError && accounts.length > 0 && filteredAccounts.length === 0 && (
-          <EmptyState icon={Search} title="No matching accounts" description={`Nothing matches "${search.trim()}".`} />
+          <EmptyState icon={Search} title="No matching accounts" description={t('Nothing matches "{query}".', { query: search.trim() })} />
         )}
         {!accountsQuery.isLoading && !accountsQuery.isError && filteredAccounts.length > 0 && (
           <Table>
@@ -290,21 +293,21 @@ export function AccountsPage() {
                 return (
                   <Tr key={a.id} interactive onClick={() => openDetail(a)}>
                     <Td className="font-medium text-fg">{a.label}</Td>
-                    <Td className="text-muted">
+                    <Td className="whitespace-nowrap text-muted">
                       <span className="inline-flex items-center gap-1.5">
                         <Server className="h-3.5 w-3.5 text-faint" />
-                        {a.peers.length === 0 ? 'none yet' : `${a.peers.length} node${a.peers.length === 1 ? '' : 's'}`}
+                        {a.peers.length === 0 ? t('none yet') : t('{n} nodes', { n: a.peers.length })}
                       </span>
                     </Td>
-                    <Td className="text-muted">
+                    <Td className="whitespace-nowrap text-muted">
                       {a.peers.length === 0 ? (
                         '—'
                       ) : (
                         <span className="inline-flex items-center gap-1.5">
                           <span className={`h-2 w-2 rounded-full ${onlineCount > 0 ? 'bg-success' : 'bg-edge-strong'}`} />
                           {onlineCount > 0
-                            ? `Online on ${onlineCount}/${a.peers.length} nodes`
-                            : `Offline · ${formatLastSeen(mostRecentHandshake)}`}
+                            ? t('Online on {n}/{total} nodes', { n: onlineCount, total: a.peers.length })
+                            : t('Offline · {when}', { when: formatLastSeen(mostRecentHandshake, t) })}
                         </span>
                       )}
                     </Td>
@@ -320,7 +323,7 @@ export function AccountsPage() {
                     <Td>
                       <span className="inline-flex flex-wrap items-center gap-1">
                         <Badge dot tone={statusTone(a.status)}>{a.status}</Badge>
-                        {a.device_limit_exceeded && <Badge tone="amber">over device limit</Badge>}
+                        {a.device_limit_exceeded && <Badge tone="amber">{t('over device limit')}</Badge>}
                       </span>
                     </Td>
                     <Td className="text-end">
@@ -380,7 +383,9 @@ export function AccountsPage() {
           onClose={() => setDeleteTarget(null)}
           onConfirm={() => deleteMutation.mutate(deleteTarget.id)}
           title="Delete account"
-          description={`This will permanently delete "${deleteTarget.label}" and release its assigned IPs. This cannot be undone.`}
+          description={t('This will permanently delete "{name}" and release its assigned IPs. This cannot be undone.', {
+            name: deleteTarget.label,
+          })}
           confirmLabel="Delete"
           danger
           submitting={deleteMutation.isPending}
@@ -405,6 +410,7 @@ function CreateAccountDialog({
   defaultDeviceLimit: number | null
   onCreated: () => void
 }) {
+  const { t } = useI18n()
   const { push } = useToast()
   const [label, setLabel] = useState('')
   const [nodeId, setNodeId] = useState('')
@@ -453,7 +459,7 @@ function CreateAccountDialog({
         }),
       }),
     onSuccess: () => {
-      push('success', `Account "${label}" created`)
+      push('success', t('Account "{name}" created', { name: label }))
       setLabel('')
       setNodeId('')
       setQuotaGb('')
@@ -463,7 +469,7 @@ function CreateAccountDialog({
       setCustomExpiry('')
       onCreated()
     },
-    onError: (err) => setError(err instanceof ApiError ? err.message : 'Failed to create account'),
+    onError: (err) => setError(err instanceof ApiError ? err.message : t('Failed to create account')),
   })
 
   function handleSubmit(e: FormEvent) {
@@ -476,44 +482,44 @@ function CreateAccountDialog({
     <Dialog open={open} onClose={onClose} title="New account">
       <form onSubmit={handleSubmit} className="space-y-4">
         <Field label="Label">
-          <Input value={label} onChange={(e) => setLabel(e.target.value)} required placeholder="e.g. alice-laptop" />
+          <Input value={label} onChange={(e) => setLabel(e.target.value)} required placeholder={t('e.g. alice-laptop')} />
         </Field>
         <Field
           label="Nodes"
           hint="By default this account gets a peer on every registered node, and stays synced as nodes are added later."
         >
           <Select value={nodeId} onChange={(e) => setNodeId(e.target.value)}>
-            <option value="">All eligible nodes (recommended)</option>
+            <option value="">{t('All eligible nodes (recommended)')}</option>
             {nodes.map((n) => (
               <option key={n.id} value={n.id}>
-                Pin to just: {n.name} ({n.node_group})
+                {t('Pin to just: {name}', { name: `${n.name} (${n.node_group})` })}
               </option>
             ))}
           </Select>
         </Field>
         <div className="grid grid-cols-2 gap-4">
           <Field label="Data quota (GB)">
-            <Input type="number" min="0" step="0.1" value={quotaGb} onChange={(e) => setQuotaGb(e.target.value)} placeholder="Unlimited" />
+            <Input type="number" min="0" step="0.1" value={quotaGb} onChange={(e) => setQuotaGb(e.target.value)} placeholder={t('Unlimited')} />
           </Field>
           <Field label="Device limit">
-            <Input type="number" min="1" value={deviceLimit} onChange={(e) => setDeviceLimit(e.target.value)} placeholder="Unlimited" />
+            <Input type="number" min="1" value={deviceLimit} onChange={(e) => setDeviceLimit(e.target.value)} placeholder={t('Unlimited')} />
           </Field>
           <Field
             label="Bandwidth (Mbps)"
             hint="Rate limit enforced on every node this account connects through."
           >
-            <Input type="number" min="1" value={bandwidthMbps} onChange={(e) => setBandwidthMbps(e.target.value)} placeholder="Unlimited" />
+            <Input type="number" min="1" value={bandwidthMbps} onChange={(e) => setBandwidthMbps(e.target.value)} placeholder={t('Unlimited')} />
           </Field>
         </div>
         <Field label="Expires">
           <Select value={duration} onChange={(e) => setDuration(e.target.value)}>
-            <option value="none">Never</option>
-            <option value="7">In 7 days</option>
-            <option value="30">In 30 days</option>
-            <option value="90">In 90 days</option>
-            <option value="180">In 180 days</option>
-            <option value="365">In 1 year</option>
-            <option value="custom">Custom date…</option>
+            <option value="none">{t('Never')}</option>
+            <option value="7">{t('In {n} days', { n: 7 })}</option>
+            <option value="30">{t('In {n} days', { n: 30 })}</option>
+            <option value="90">{t('In {n} days', { n: 90 })}</option>
+            <option value="180">{t('In {n} days', { n: 180 })}</option>
+            <option value="365">{t('In 1 year')}</option>
+            <option value="custom">{t('Custom date…')}</option>
           </Select>
           {duration === 'custom' && (
             <Input
@@ -541,7 +547,12 @@ function CreateAccountDialog({
 }
 
 function SectionTitle({ children }: { children: ReactNode }) {
-  return <p className="mb-3 text-xs font-semibold tracking-wider text-faint uppercase">{children}</p>
+  const { t } = useI18n()
+  return (
+    <p className="mb-3 text-xs font-semibold tracking-wider text-faint uppercase">
+      {typeof children === 'string' ? t(children) : children}
+    </p>
+  )
 }
 
 function toDateInputValue(iso: string): string {
@@ -573,6 +584,7 @@ function AccountDetailDialog({
   onRotateSubscription: () => void
   busy: boolean
 }) {
+  const { t, formatDate } = useI18n()
   const { push } = useToast()
   const [tab, setTab] = useState<DetailTab>(initialTab)
   const [configText, setConfigText] = useState<string | null>(null)
@@ -596,16 +608,16 @@ function AccountDetailDialog({
   const devices = devicesQuery.data?.devices ?? []
   const usageSamples = usageQuery.data?.samples ?? []
   const chartData = usageSamples.map((s) => ({
-    time: new Date(s.bucket).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit' }),
+    time: formatDate(s.bucket, { month: 'short', day: 'numeric', hour: '2-digit' }),
     'Downloaded (RX)': s.rx_bytes,
     'Uploaded (TX)': s.tx_bytes,
   }))
 
   const tabs: { id: DetailTab; label: string }[] = [
-    { id: 'overview', label: 'Overview' },
-    { id: 'devices', label: devicesQuery.data ? `Devices (${devicesQuery.data.active_devices})` : 'Devices' },
-    { id: 'usage', label: 'Usage' },
-    { id: 'edit', label: 'Edit' },
+    { id: 'overview', label: t('Overview') },
+    { id: 'devices', label: devicesQuery.data ? t('Devices ({n})', { n: devicesQuery.data.active_devices }) : t('Devices') },
+    { id: 'usage', label: t('Usage') },
+    { id: 'edit', label: t('Edit') },
   ]
 
   async function loadConfig(nodeId: string, nodeName: string) {
@@ -621,7 +633,7 @@ function AccountDetailDialog({
         // key set yet") instead of a generic message - a node without a reported
         // WireGuard public key (agent never got a real wg interface up) is a common,
         // specific, actionable case, not a mystery failure.
-        let message = 'Failed to load config'
+        let message = t('Failed to load config')
         try {
           const body = (await res.json()) as { error?: { message?: string } }
           message = body?.error?.message ?? message
@@ -637,7 +649,7 @@ function AccountDetailDialog({
       // code for scanning into a mobile WireGuard app.
       setQrDataUrl(await QRCode.toDataURL(text, { width: 240, margin: 1 }))
     } catch (err) {
-      push('error', err instanceof Error ? err.message : 'Could not load WireGuard config')
+      push('error', err instanceof Error ? err.message : t('Could not load WireGuard config'))
     } finally {
       setConfigLoading(null)
     }
@@ -648,27 +660,31 @@ function AccountDetailDialog({
       {/* Status strip - always visible regardless of tab */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <Badge dot tone={statusTone(account.status)}>{account.status}</Badge>
-        {account.device_limit_exceeded && <Badge tone="amber">over device limit</Badge>}
-        {account.suspend_reason && <span className="text-xs text-muted">reason: {account.suspend_reason}</span>}
-        <span className="ms-auto text-xs text-faint">created {new Date(account.created_at).toLocaleDateString()}</span>
+        {account.device_limit_exceeded && <Badge tone="amber">{t('over device limit')}</Badge>}
+        {account.suspend_reason && (
+          <span className="text-xs text-muted">{t('reason: {reason}', { reason: account.suspend_reason })}</span>
+        )}
+        <span className="ms-auto text-xs text-faint">
+          {t('created {date}', { date: formatDate(account.created_at, { dateStyle: 'medium' }) })}
+        </span>
       </div>
 
       {/* Tab bar */}
       <div className="mb-5 flex gap-1 border-b border-edge" role="tablist">
-        {tabs.map((t) => (
+        {tabs.map((tb) => (
           <button
-            key={t.id}
+            key={tb.id}
             type="button"
             role="tab"
-            aria-selected={tab === t.id}
-            onClick={() => setTab(t.id)}
+            aria-selected={tab === tb.id}
+            onClick={() => setTab(tb.id)}
             className={`-mb-px cursor-pointer border-b-2 px-3 py-2 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none ${
-              tab === t.id
+              tab === tb.id
                 ? 'border-accent text-accent-fg'
                 : 'border-transparent text-muted hover:border-edge-strong hover:text-fg'
             }`}
           >
-            {t.label}
+            {tb.label}
           </button>
         ))}
       </div>
@@ -679,20 +695,20 @@ function AccountDetailDialog({
             <Row label="Usage">
               <span className="tabular-nums">
                 {formatBytes(account.data_used_bytes)}
-                {account.data_quota_bytes ? ` / ${formatBytes(account.data_quota_bytes)}` : ' / unlimited'}
+                {account.data_quota_bytes ? ` / ${formatBytes(account.data_quota_bytes)}` : ` / ${t('unlimited')}`}
               </span>
             </Row>
-            <Row label="Expires">{account.expiry_at ? new Date(account.expiry_at).toLocaleString() : 'Never'}</Row>
-            <Row label="Device limit">{account.device_limit ?? 'Unlimited'}</Row>
+            <Row label="Expires">{account.expiry_at ? formatDate(account.expiry_at) : t('Never')}</Row>
+            <Row label="Device limit">{account.device_limit ?? t('Unlimited')}</Row>
             <Row label="Bandwidth limit">
-              {account.bandwidth_limit_mbps != null ? `${account.bandwidth_limit_mbps} Mbps` : 'Unlimited'}
+              {account.bandwidth_limit_mbps != null ? `${account.bandwidth_limit_mbps} Mbps` : t('Unlimited')}
             </Row>
           </div>
           {account.data_quota_bytes != null && account.data_quota_bytes > 0 && (
             <Progress value={account.data_used_bytes} max={account.data_quota_bytes} className="mt-3" />
           )}
           <p className="mt-3 flex items-baseline justify-between gap-4 text-sm">
-            <span className="shrink-0 text-muted">Public key</span>
+            <span className="shrink-0 text-muted">{t('Public key')}</span>
             <span className="min-w-0 text-end font-mono text-xs break-all text-fg">{account.public_key}</span>
           </p>
 
@@ -705,7 +721,7 @@ function AccountDetailDialog({
               <Button
                 variant="secondary"
                 size="icon"
-                title="Copy subscription URL"
+                title={t('Copy subscription URL')}
                 onClick={() => {
                   navigator.clipboard.writeText(subscriptionUrl)
                   push('success', 'Subscription URL copied')
@@ -713,22 +729,22 @@ function AccountDetailDialog({
               >
                 <Copy className="h-3.5 w-3.5" />
               </Button>
-              <Button variant="secondary" size="icon" onClick={onRotateSubscription} disabled={busy} title="Rotate (invalidates the current URL)">
+              <Button variant="secondary" size="icon" onClick={onRotateSubscription} disabled={busy} title={t('Rotate (invalidates the current URL)')}>
                 <RefreshCw className="h-3.5 w-3.5" />
               </Button>
             </div>
             <p className="mt-2 text-xs leading-relaxed text-muted">
               <Link2 className="me-1 inline h-3 w-3" />
-              Always serves this account's latest config, picking the best node automatically (append{' '}
-              <code>?region=</code> to prefer a region, or <code>/nodes</code> to list choices). Rotate if the link leaks —
-              the old URL stops working immediately.
+              {t("Always serves this account's latest config, picking the best node automatically (append")}{' '}
+              <code>?region=</code> {t('to prefer a region, or')} <code>/nodes</code>{' '}
+              {t('to list choices). Rotate if the link leaks — the old URL stops working immediately.')}
             </p>
           </div>
 
           <div className="mt-5 border-t border-edge pt-5">
-            <SectionTitle>Node peers ({account.peers.length})</SectionTitle>
+            <SectionTitle>{t('Node peers ({n})', { n: account.peers.length })}</SectionTitle>
             {account.peers.length === 0 ? (
-              <p className="text-sm text-muted">No node peers yet - no eligible node was available when this account was created.</p>
+              <p className="text-sm text-muted">{t('No node peers yet - no eligible node was available when this account was created.')}</p>
             ) : (
               <div className="space-y-2">
                 {account.peers.map((p) => (
@@ -737,11 +753,11 @@ function AccountDetailDialog({
                       <p className="flex items-center gap-1.5 text-sm font-medium text-fg">
                         <span
                           className={`h-2 w-2 shrink-0 rounded-full ${p.online ? 'bg-success' : 'bg-edge-strong'}`}
-                          title={p.online ? 'Online' : 'Offline'}
+                          title={p.online ? t('Online') : t('Offline')}
                         />
                         <span className="truncate">{p.node_name}</span>
                         <span className={`shrink-0 text-xs font-normal ${p.online ? 'text-success-fg' : 'text-faint'}`}>
-                          {p.online ? 'online' : `offline · ${formatLastSeen(p.last_handshake_at)}`}
+                          {p.online ? t('online') : t('offline · {when}', { when: formatLastSeen(p.last_handshake_at, t) })}
                         </span>
                       </p>
                       <p className="mt-0.5 font-mono text-xs text-muted">{p.assigned_ip}</p>
@@ -758,12 +774,14 @@ function AccountDetailDialog({
 
           {configText !== null && (
             <div className="mt-5 space-y-3 border-t border-edge pt-5">
-              <SectionTitle>WireGuard config{configNodeName ? ` — ${configNodeName}` : ''}</SectionTitle>
+              <SectionTitle>
+                {configNodeName ? t('WireGuard config — {name}', { name: configNodeName }) : t('WireGuard config')}
+              </SectionTitle>
               <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-start">
                 {qrDataUrl && (
                   <img
                     src={qrDataUrl}
-                    alt="WireGuard config QR code - scan with the WireGuard mobile app"
+                    alt={t('WireGuard config QR code - scan with the WireGuard mobile app')}
                     className="h-40 w-40 shrink-0 rounded-lg border border-edge bg-white p-2"
                   />
                 )}
@@ -776,7 +794,7 @@ function AccountDetailDialog({
                   variant="secondary"
                   onClick={() => {
                     navigator.clipboard.writeText(configText)
-                    push('success', 'Config copied to clipboard')
+                    push('success', t('Config copied to clipboard'))
                   }}
                 >
                   <Copy className="h-4 w-4" />
@@ -810,11 +828,14 @@ function AccountDetailDialog({
       {tab === 'devices' && (
         <div>
           <SectionTitle>
-            Devices
+            {t('Devices')}
             {devicesQuery.data && (
               <span className="ms-2 font-normal normal-case tracking-normal">
-                ({devicesQuery.data.active_devices} active
-                {account.device_limit != null ? ` / limit ${account.device_limit}` : ''})
+                (
+                {account.device_limit != null
+                  ? t('{n} active / limit {limit}', { n: devicesQuery.data.active_devices, limit: account.device_limit })
+                  : t('{n} active', { n: devicesQuery.data.active_devices })}
+                )
               </span>
             )}
           </SectionTitle>
@@ -822,7 +843,7 @@ function AccountDetailDialog({
           {!devicesQuery.isLoading && devices.length === 0 && (
             <p className="text-sm text-muted">
               <MonitorSmartphone className="me-1 inline h-3.5 w-3.5" />
-              No devices observed yet — client endpoints appear here once they connect.
+              {t('No devices observed yet — client endpoints appear here once they connect.')}
             </p>
           )}
           {devices.length > 0 && (
@@ -834,7 +855,7 @@ function AccountDetailDialog({
                     <span className="truncate font-mono text-fg">{d.source_endpoint}</span>
                   </span>
                   <span className="shrink-0 text-muted">
-                    via {d.node_name} · {d.active ? 'active now' : formatLastSeen(d.last_seen_at)}
+                    {t('via {name}', { name: d.node_name })} · {d.active ? t('active now') : formatLastSeen(d.last_seen_at, t)}
                   </span>
                 </div>
               ))}
@@ -849,10 +870,11 @@ function AccountDetailDialog({
               onChange={(e) => onPatch({ device_limit_hard_enforce: e.target.checked })}
             />
             <span>
-              <span className="font-medium">Auto-suspend when over the device limit</span>
+              <span className="font-medium">{t('Auto-suspend when over the device limit')}</span>
               <p className="mt-0.5 text-xs leading-relaxed text-muted">
-                Off = detection only (the account is flagged but keeps working). NAT and roaming can look like extra
-                devices, so enable this only when you're sure.
+                {t(
+                  "Off = detection only (the account is flagged but keeps working). NAT and roaming can look like extra devices, so enable this only when you're sure.",
+                )}
               </p>
             </span>
           </label>
@@ -861,10 +883,10 @@ function AccountDetailDialog({
 
       {tab === 'usage' && (
         <div>
-          <SectionTitle>Usage (last 7 days)</SectionTitle>
+          <SectionTitle>{t('Usage (last 7 days)')}</SectionTitle>
           {usageQuery.isLoading && <p className="text-sm text-muted">Loading…</p>}
           {!usageQuery.isLoading && chartData.length === 0 && (
-            <p className="text-sm text-muted">No traffic recorded yet.</p>
+            <p className="text-sm text-muted">{t('No traffic recorded yet.')}</p>
           )}
           {chartData.length > 0 && (
             <div className="h-64 w-full">
@@ -884,8 +906,8 @@ function AccountDetailDialog({
                   <XAxis dataKey="time" {...chartAxis} minTickGap={30} />
                   <YAxis {...chartAxis} tickFormatter={(v) => formatBytes(v)} width={60} />
                   <Tooltip {...chartTooltip} formatter={(v) => formatBytes(Number(v ?? 0))} />
-                  <Area type="monotone" dataKey="Downloaded (RX)" stroke={chartColors.primary} fill="url(#rxGradient)" strokeWidth={1.75} />
-                  <Area type="monotone" dataKey="Uploaded (TX)" stroke={chartColors.secondary} fill="url(#txGradient)" strokeWidth={1.75} />
+                  <Area type="monotone" dataKey="Downloaded (RX)" name={t('Downloaded (RX)')} stroke={chartColors.primary} fill="url(#rxGradient)" strokeWidth={1.75} />
+                  <Area type="monotone" dataKey="Uploaded (TX)" name={t('Uploaded (TX)')} stroke={chartColors.secondary} fill="url(#txGradient)" strokeWidth={1.75} />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -899,17 +921,17 @@ function AccountDetailDialog({
       <div className="mt-6 flex flex-wrap gap-2 border-t border-edge pt-4">
         <Button variant="secondary" onClick={() => onRenew(30)} disabled={busy}>
           <RotateCcw className="h-4 w-4" />
-          Renew 30d
+          {t('Renew 30d')}
         </Button>
         {account.status === 'suspended' ? (
           <Button variant="secondary" onClick={onEnable} disabled={busy}>
             <CheckCircle2 className="h-4 w-4" />
-            Enable
+            {t('Enable')}
           </Button>
         ) : (
           <Button variant="secondary" onClick={onSuspend} disabled={busy}>
             <Ban className="h-4 w-4" />
-            Suspend
+            {t('Suspend')}
           </Button>
         )}
         <Button variant="danger" onClick={onDelete} disabled={busy} className="ms-auto">
@@ -930,6 +952,7 @@ function EditAccountForm({
   busy: boolean
   onPatch: (body: Record<string, unknown>) => void
 }) {
+  const { t } = useI18n()
   // Initial form values derived from the account - recomputed when the server
   // confirms an update (updated_at changes) so the form resyncs to saved state.
   const initial = useMemo(
@@ -983,28 +1006,28 @@ function EditAccountForm({
       <div className="grid grid-cols-2 gap-4">
         <Field
           label="Data quota (GB)"
-          hint={account.data_quota_bytes != null ? 'Raising or lowering replaces the quota. Cannot be cleared back to unlimited.' : 'Currently unlimited - set a number to add a quota.'}
+          hint={account.data_quota_bytes != null ? t('Raising or lowering replaces the quota. Cannot be cleared back to unlimited.') : t('Currently unlimited - set a number to add a quota.')}
         >
-          <Input type="number" min="0.1" step="0.1" value={quotaGb} onChange={(e) => setQuotaGb(e.target.value)} placeholder={account.data_quota_bytes == null ? 'Unlimited' : undefined} />
+          <Input type="number" min="0.1" step="0.1" value={quotaGb} onChange={(e) => setQuotaGb(e.target.value)} placeholder={account.data_quota_bytes == null ? t('Unlimited') : undefined} />
         </Field>
         <Field
           label="Device limit"
-          hint={account.device_limit != null ? 'Cannot be cleared back to unlimited.' : 'Currently unlimited - set a number to add a limit.'}
+          hint={account.device_limit != null ? t('Cannot be cleared back to unlimited.') : t('Currently unlimited - set a number to add a limit.')}
         >
-          <Input type="number" min="1" value={deviceLimit} onChange={(e) => setDeviceLimit(e.target.value)} placeholder={account.device_limit == null ? 'Unlimited' : undefined} />
+          <Input type="number" min="1" value={deviceLimit} onChange={(e) => setDeviceLimit(e.target.value)} placeholder={account.device_limit == null ? t('Unlimited') : undefined} />
         </Field>
         <Field label="Bandwidth (Mbps)" hint="Blank removes the limit (unshaped).">
-          <Input type="number" min="0" value={bandwidth} onChange={(e) => setBandwidth(e.target.value)} placeholder="Unlimited" />
+          <Input type="number" min="0" value={bandwidth} onChange={(e) => setBandwidth(e.target.value)} placeholder={t('Unlimited')} />
         </Field>
         <Field
           label="Expires"
-          hint={account.expiry_at ? 'Pick a new date to move the expiry. Cannot be cleared back to never - use Renew to extend.' : 'Currently never expires - pick a date to add an expiry.'}
+          hint={account.expiry_at ? t('Pick a new date to move the expiry. Cannot be cleared back to never - use Renew to extend.') : t('Currently never expires - pick a date to add an expiry.')}
         >
           <Input type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} min={new Date().toISOString().slice(0, 10)} />
         </Field>
       </div>
       <div className="flex items-center justify-end gap-3 border-t border-edge pt-4">
-        {hasChanges && <span className="text-xs text-muted">{Object.keys(changes).length} change{Object.keys(changes).length === 1 ? '' : 's'} pending</span>}
+        {hasChanges && <span className="text-xs text-muted">{t('{n} changes pending', { n: Object.keys(changes).length })}</span>}
         <Button type="submit" disabled={busy || !hasChanges}>
           {busy ? 'Saving…' : 'Save changes'}
         </Button>
@@ -1014,9 +1037,10 @@ function EditAccountForm({
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
+  const { t } = useI18n()
   return (
     <div className="flex items-center justify-between gap-4">
-      <span className="shrink-0 text-muted">{label}</span>
+      <span className="shrink-0 text-muted">{t(label)}</span>
       <span className="min-w-0 text-end text-fg">{children}</span>
     </div>
   )

@@ -6,6 +6,7 @@ import { apiFetch, ApiError } from '../lib/api'
 import { getAccessToken } from '../lib/tokenStore'
 import { useAuth } from '../lib/auth'
 import { useToast } from '../lib/toast'
+import { useI18n } from '../lib/i18n'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
@@ -39,6 +40,7 @@ interface RestoreResult {
 }
 
 function BackupCard() {
+  const { t, tx } = useI18n()
   const { push } = useToast()
   const { logout } = useAuth()
   const queryClient = useQueryClient()
@@ -78,7 +80,7 @@ function BackupCard() {
         body: JSON.stringify({ password: downloadPassword }),
       })
       if (!res.ok) {
-        let message = 'Failed to create backup'
+        let message = t('Failed to create backup')
         try {
           const body = (await res.json()) as { error?: { message?: string } }
           message = body?.error?.message ?? message
@@ -96,9 +98,9 @@ function BackupCard() {
       a.click()
       URL.revokeObjectURL(url)
       closeDownload()
-      push('success', 'Backup downloaded - keep the file AND its password safe; the password cannot be recovered')
+      push('success', t('Backup downloaded - keep the file AND its password safe; the password cannot be recovered'))
     } catch (err) {
-      push('error', err instanceof Error ? err.message : 'Failed to create backup')
+      push('error', err instanceof Error ? err.message : t('Failed to create backup'))
     } finally {
       setDownloading(false)
     }
@@ -122,7 +124,7 @@ function BackupCard() {
       if (err instanceof SyntaxError) {
         push('error', 'That file is not a Jirjirak WireGuard backup')
       } else {
-        push('error', err instanceof ApiError ? err.message : 'Restore failed')
+        push('error', err instanceof ApiError ? err.message : t('Restore failed'))
       }
     } finally {
       setRestoring(false)
@@ -133,14 +135,17 @@ function BackupCard() {
     <Card className="overflow-hidden">
       <SectionHeader
         icon={DatabaseBackup}
-        title="Backup & restore"
-        description="One password-encrypted file with everything: admins, nodes, accounts and their keys, API keys, settings, audit log, the node CA, and the encryption keys from deploy/.env. Restoring needs only this file and its password - even on a brand-new server."
+        title={t('Backup & restore')}
+        description={t(
+          'One password-encrypted file with everything: admins, nodes, accounts and their keys, API keys, settings, audit log, the node CA, and the encryption keys from deploy/.env. Restoring needs only this file and its password - even on a brand-new server.',
+        )}
       />
       <div className="space-y-4 p-6">
         <div className="flex items-center justify-between gap-4">
           <p className="text-sm leading-relaxed text-muted">
-            The file is useless without the password you choose - and the password cannot be recovered, so store both
-            safely. Metrics history (usage charts) is not included; account usage totals are.
+            {t(
+              'The file is useless without the password you choose - and the password cannot be recovered, so store both safely. Metrics history (usage charts) is not included; account usage totals are.',
+            )}
           </p>
           <Button variant="secondary" onClick={() => setDownloadOpen(true)}>
             <Download className="h-4 w-4" />
@@ -150,9 +155,13 @@ function BackupCard() {
 
         <div className="flex items-center justify-between gap-4 border-t border-edge pt-4">
           <p className="text-sm leading-relaxed text-muted">
-            Restore replaces <span className="font-semibold text-fg">all</span> current panel data with the file's
-            contents - including admin users, so your own login may change. Works on a fresh install with new{' '}
-            <code>.env</code> keys: account keys are re-encrypted automatically.
+            {tx(
+              "Restore replaces <b>all</b> current panel data with the file's contents - including admin users, so your own login may change. Works on a fresh install with new <code>.env</code> keys: account keys are re-encrypted automatically.",
+              {
+                b: (c) => <span className="font-semibold text-fg">{c}</span>,
+                code: (c) => <code className="ltr inline">{c}</code>,
+              },
+            )}
           </p>
           <input
             ref={fileInputRef}
@@ -170,11 +179,15 @@ function BackupCard() {
         {restoreResult && (
           <div className="rounded-control border border-success/25 bg-success-soft px-3 py-2.5 text-sm leading-relaxed text-success-fg">
             <p>
-              Restored {restoreResult.restored.accounts ?? 0} accounts, {restoreResult.restored.nodes ?? 0} nodes,{' '}
-              {restoreResult.restored.admins ?? 0} admins and {restoreResult.restored.api_keys ?? 0} API keys.
+              {t('Restored {accounts} accounts, {nodes} nodes, {admins} admins and {keys} API keys.', {
+                accounts: restoreResult.restored.accounts ?? 0,
+                nodes: restoreResult.restored.nodes ?? 0,
+                admins: restoreResult.restored.admins ?? 0,
+                keys: restoreResult.restored.api_keys ?? 0,
+              })}
               {restoreResult.restart_required &&
-                ' The node CA changed - restart the api container (wgpanel restart) so agents can reconnect.'}{' '}
-              Log in again with the restored credentials.
+                ' ' + t('The node CA changed - restart the api container (wgpanel restart) so agents can reconnect.')}{' '}
+              {t('Log in again with the restored credentials.')}
             </p>
             <Button variant="secondary" size="sm" className="mt-2" onClick={logout}>
               Log out now
@@ -183,7 +196,7 @@ function BackupCard() {
         )}
       </div>
 
-      <Dialog open={downloadOpen} onClose={closeDownload} title="Encrypt backup">
+      <Dialog open={downloadOpen} onClose={closeDownload} title={t('Encrypt backup')}>
         <form
           onSubmit={(e) => {
             e.preventDefault()
@@ -192,8 +205,9 @@ function BackupCard() {
           className="space-y-4"
         >
           <p className="text-sm leading-relaxed text-muted">
-            Choose a password for this backup. Restoring it - here or on a new server - requires exactly this
-            password; it is not stored anywhere and cannot be recovered.
+            {t(
+              'Choose a password for this backup. Restoring it - here or on a new server - requires exactly this password; it is not stored anywhere and cannot be recovered.',
+            )}
           </p>
           <Field label="Backup password">
             <Input
@@ -201,7 +215,7 @@ function BackupCard() {
               value={downloadPassword}
               onChange={(e) => setDownloadPassword(e.target.value)}
               minLength={8}
-              placeholder="At least 8 characters"
+              placeholder={t('At least 8 characters')}
               autoFocus
               required
             />
@@ -215,7 +229,7 @@ function BackupCard() {
             />
           </Field>
           {downloadPasswordConfirm.length > 0 && downloadPassword !== downloadPasswordConfirm && (
-            <p className="text-sm text-danger-fg">Passwords do not match.</p>
+            <p className="text-sm text-danger-fg">{t('Passwords do not match.')}</p>
           )}
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="secondary" type="button" onClick={closeDownload} disabled={downloading}>
@@ -232,7 +246,7 @@ function BackupCard() {
         </form>
       </Dialog>
 
-      <Dialog open={restoreFile !== null} onClose={closeRestore} title="Replace all panel data?">
+      <Dialog open={restoreFile !== null} onClose={closeRestore} title={t('Replace all panel data?')}>
         <form
           onSubmit={(e) => {
             e.preventDefault()
@@ -241,16 +255,16 @@ function BackupCard() {
           className="space-y-4"
         >
           <p className="text-sm leading-relaxed text-muted">
-            Everything currently in this panel - accounts, nodes, admins, API keys, settings, audit log - will be
-            replaced by <span className="font-medium text-fg">{restoreFile?.name}</span>. This cannot be undone.
-            Download a backup of the current state first if you might need it.
+            {t('Everything currently in this panel - accounts, nodes, admins, API keys, settings, audit log - will be replaced by')}{' '}
+            <span className="font-medium text-fg ltr">{restoreFile?.name}</span>.{' '}
+            {t('This cannot be undone. Download a backup of the current state first if you might need it.')}
           </p>
           <Field label="Backup password">
             <Input
               type="password"
               value={restorePassword}
               onChange={(e) => setRestorePassword(e.target.value)}
-              placeholder="The password this backup was encrypted with"
+              placeholder={t('The password this backup was encrypted with')}
               autoFocus
               required
             />
@@ -270,20 +284,22 @@ function BackupCard() {
 }
 
 function SectionHeader({ icon: Icon, title, description }: { icon: LucideIcon; title: string; description: string }) {
+  const { t } = useI18n()
   return (
     <div className="flex items-start gap-3 border-b border-edge px-6 py-4">
       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-accent-fg">
         <Icon className="h-4 w-4" />
       </div>
       <div>
-        <h2 className="text-sm font-semibold tracking-tight text-fg">{title}</h2>
-        <p className="mt-0.5 text-xs leading-relaxed text-muted">{description}</p>
+        <h2 className="text-sm font-semibold tracking-tight text-fg">{t(title)}</h2>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted">{t(description)}</p>
       </div>
     </div>
   )
 }
 
 export function SettingsPage() {
+  const { t } = useI18n()
   const queryClient = useQueryClient()
   const { push } = useToast()
 
@@ -336,10 +352,10 @@ export function SettingsPage() {
         }),
       }),
     onSuccess: (settings) => {
-      push('success', 'Settings saved')
+      push('success', t('Settings saved'))
       queryClient.setQueryData(['settings'], settings)
     },
-    onError: (err) => push('error', err instanceof ApiError ? err.message : 'Failed to save settings'),
+    onError: (err) => push('error', err instanceof ApiError ? err.message : t('Failed to save settings')),
   })
 
   const domainMutation = useMutation({
@@ -358,14 +374,14 @@ export function SettingsPage() {
       setDomainLiveApplied(settings.domain_live_applied)
       setDomainApplyError(settings.domain_apply_error)
       if (settings.domain_live_applied) {
-        const domains = settings.sub_domain ? `${panelDomain} and ${settings.sub_domain}` : panelDomain
-        push('success', `Domains updated - Caddy is provisioning certificates for ${domains}`)
+        const domains = settings.sub_domain ? t('{a} and {b}', { a: panelDomain, b: settings.sub_domain }) : panelDomain
+        push('success', t('Domains updated - Caddy is provisioning certificates for {domains}', { domains }))
       } else {
-        push('error', settings.domain_apply_error ?? 'Domains saved, but could not push them to Caddy live')
+        push('error', settings.domain_apply_error ?? t('Domains saved, but could not push them to Caddy live'))
       }
       queryClient.setQueryData(['settings'], settings)
     },
-    onError: (err) => push('error', err instanceof ApiError ? err.message : 'Failed to update domains'),
+    onError: (err) => push('error', err instanceof ApiError ? err.message : t('Failed to update domains')),
   })
 
   function handleSubmit(e: FormEvent) {
@@ -397,14 +413,14 @@ export function SettingsPage() {
           ) : (
             <form onSubmit={handleDomainSubmit} className="space-y-4 p-6">
               <Field label="Panel domain">
-                <Input value={panelDomain} onChange={(e) => setPanelDomain(e.target.value)} placeholder="panel.example.com" required />
+                <Input value={panelDomain} onChange={(e) => setPanelDomain(e.target.value)} placeholder="panel.example.com" className="ltr" required />
               </Field>
               <div className="grid grid-cols-[1fr_8rem] gap-4">
                 <Field
                   label="Subscription domain"
                   hint="Optional separate domain for the subscription links handed to end users. It serves only the subscription endpoints - the admin panel is never reachable through it - with its own automatic certificate. Leave empty to keep subscription links on the panel domain."
                 >
-                  <Input value={subDomain} onChange={(e) => setSubDomain(e.target.value)} placeholder="sub.example.com" />
+                  <Input value={subDomain} onChange={(e) => setSubDomain(e.target.value)} placeholder="sub.example.com" className="ltr" />
                 </Field>
                 <Field
                   label="Subscription port"
@@ -417,16 +433,17 @@ export function SettingsPage() {
                     value={subPort}
                     onChange={(e) => setSubPort(e.target.value)}
                     placeholder="443"
+                    className="ltr"
                   />
                 </Field>
               </div>
               {domainLiveApplied && !domainApplyError && (
-                <p className="text-sm text-success-fg">Applied live - Caddy is now serving with this configuration.</p>
+                <p className="text-sm text-success-fg">{t('Applied live - Caddy is now serving with this configuration.')}</p>
               )}
               {domainApplyError && (
                 <p className="rounded-control border border-warning/25 bg-warning-soft px-3 py-2.5 text-sm leading-relaxed text-warning-fg">
-                  Saved, but the live push to Caddy failed: {domainApplyError}. The API retries it automatically on its
-                  next restart.
+                  {t('Saved, but the live push to Caddy failed:')} <span className="ltr inline-block">{domainApplyError}</span>.{' '}
+                  {t('The API retries it automatically on its next restart.')}
                 </p>
               )}
               <div className="flex justify-end border-t border-edge pt-4">
@@ -452,7 +469,7 @@ export function SettingsPage() {
               ))}
             </div>
           ) : settingsQuery.isError ? (
-            <p className="p-6 text-sm text-danger-fg">Could not load settings.</p>
+            <p className="p-6 text-sm text-danger-fg">{t('Could not load settings.')}</p>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-6 p-6">
               <Field
@@ -463,6 +480,7 @@ export function SettingsPage() {
                   value={publicBaseUrl}
                   onChange={(e) => setPublicBaseUrl(e.target.value)}
                   placeholder="https://panel.example.com"
+                  className="ltr"
                 />
               </Field>
 
@@ -474,7 +492,7 @@ export function SettingsPage() {
                     step="0.1"
                     value={defaultQuotaGb}
                     onChange={(e) => setDefaultQuotaGb(e.target.value)}
-                    placeholder="Unlimited"
+                    placeholder={t('Unlimited')}
                   />
                 </Field>
                 <Field label="Default account device limit">
@@ -483,7 +501,7 @@ export function SettingsPage() {
                     min="1"
                     value={defaultDeviceLimit}
                     onChange={(e) => setDefaultDeviceLimit(e.target.value)}
-                    placeholder="Unlimited"
+                    placeholder={t('Unlimited')}
                   />
                 </Field>
               </div>
@@ -502,11 +520,14 @@ export function SettingsPage() {
                 label="Client DNS"
                 hint={
                   <>
-                    The <code>DNS =</code> line of every generated WireGuard config. Clients full-tunnel, so they can only
-                    resolve names through it - a resolver unreachable from where a node egresses means clients connect but
-                    have "no internet". <span className="font-medium text-fg">Each node</span> avoids that: clients ask the
-                    node itself, which resolves through whatever its server uses (nodes running an older agent fall back to
-                    1.1.1.1). Takes effect on the next config download or subscription refresh.
+                    {t('The')} <code>DNS =</code>{' '}
+                    {t(
+                      'line of every generated WireGuard config. Clients full-tunnel, so they can only resolve names through it - a resolver unreachable from where a node egresses means clients connect but have "no internet".',
+                    )}{' '}
+                    <span className="font-medium text-fg">{t('Each node')}</span>{' '}
+                    {t(
+                      'avoids that: clients ask the node itself, which resolves through whatever its server uses (nodes running an older agent fall back to 1.1.1.1). Takes effect on the next config download or subscription refresh.',
+                    )}
                   </>
                 }
               >
@@ -514,12 +535,12 @@ export function SettingsPage() {
                   value={clientDnsMode}
                   onChange={(e) => setClientDnsMode(e.target.value as 'node' | 'custom')}
                 >
-                  <option value="node">Each node resolves for its clients (recommended)</option>
-                  <option value="custom">Custom resolvers…</option>
+                  <option value="node">{t('Each node resolves for its clients (recommended)')}</option>
+                  <option value="custom">{t('Custom resolvers…')}</option>
                 </Select>
                 {clientDnsMode === 'custom' && (
                   <Input
-                    className="mt-2"
+                    className="mt-2 ltr"
                     value={clientDnsCustom}
                     onChange={(e) => setClientDnsCustom(e.target.value)}
                     placeholder="1.1.1.1, 1.0.0.1"
@@ -536,6 +557,7 @@ export function SettingsPage() {
                   value={supportContact}
                   onChange={(e) => setSupportContact(e.target.value)}
                   placeholder="ops@example.com"
+                  className="ltr"
                 />
               </Field>
 
