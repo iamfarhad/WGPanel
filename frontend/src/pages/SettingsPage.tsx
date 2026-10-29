@@ -411,14 +411,14 @@ export function SettingsPage() {
           ) : (
             <form onSubmit={handleDomainSubmit} className="space-y-4 p-6">
               <Field label="Panel domain">
-                <Input value={panelDomain} onChange={(e) => setPanelDomain(e.target.value)} placeholder="panel.example.com" required />
+                <Input value={panelDomain} onChange={(e) => setPanelDomain(e.target.value)} placeholder="panel.example.com" className="ltr" required />
               </Field>
               <div className="grid grid-cols-[1fr_8rem] gap-4">
                 <Field
                   label="Subscription domain"
                   hint="Optional separate domain for the subscription links handed to end users. It serves only the subscription endpoints - the admin panel is never reachable through it - with its own automatic certificate. Leave empty to keep subscription links on the panel domain."
                 >
-                  <Input value={subDomain} onChange={(e) => setSubDomain(e.target.value)} placeholder="sub.example.com" />
+                  <Input value={subDomain} onChange={(e) => setSubDomain(e.target.value)} placeholder="sub.example.com" className="ltr" />
                 </Field>
                 <Field
                   label="Subscription port"
@@ -431,6 +431,7 @@ export function SettingsPage() {
                     value={subPort}
                     onChange={(e) => setSubPort(e.target.value)}
                     placeholder="443"
+                    className="ltr"
                   />
                 </Field>
               </div>
@@ -477,6 +478,7 @@ export function SettingsPage() {
                   value={publicBaseUrl}
                   onChange={(e) => setPublicBaseUrl(e.target.value)}
                   placeholder="https://panel.example.com"
+                  className="ltr"
                 />
               </Field>
 
@@ -536,7 +538,7 @@ export function SettingsPage() {
                 </Select>
                 {clientDnsMode === 'custom' && (
                   <Input
-                    className="mt-2"
+                    className="mt-2 ltr"
                     value={clientDnsCustom}
                     onChange={(e) => setClientDnsCustom(e.target.value)}
                     placeholder="1.1.1.1, 1.0.0.1"
@@ -553,6 +555,7 @@ export function SettingsPage() {
                   value={supportContact}
                   onChange={(e) => setSupportContact(e.target.value)}
                   placeholder="ops@example.com"
+                  className="ltr"
                 />
               </Field>
 
