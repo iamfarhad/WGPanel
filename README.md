@@ -1,5 +1,7 @@
 # Jirjirak WireGuard (WGPanel)
 
+**English** | [فارسی](README.fa.md)
+
 <p align="center"><img src="docs/screenshots/jirjirak/login.png" alt="Jirjirak WireGuard sign-in screen" width="720"></p>
 
 Jirjirak WireGuard is a self-hosted panel for running your own WireGuard VPN service. It manages accounts (peers) and servers (nodes), lets resellers sell accounts under their own limits, and shows usage, connectivity and node health in one web dashboard. The panel is fully available in **English and Persian (RTL)**, in light and dark themes.
