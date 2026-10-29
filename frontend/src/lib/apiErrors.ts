@@ -28,3 +28,10 @@ export function apiErrorMessage(err: unknown, t: (text: string) => string, fallb
   }
   return t(fallback)
 }
+
+/** Same lookup for a code/message pair that did not arrive as a thrown ApiError (a bulk
+ * response reports one error per item). */
+export function apiCodeMessage(code: string | undefined, message: string, t: (text: string) => string): string {
+  const known = code ? codeMessages[code] : undefined
+  return known ? t(known) : message
+}
