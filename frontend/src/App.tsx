@@ -15,6 +15,8 @@ import { AuditLogPage } from './pages/AuditLogPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { ResellersPage } from './pages/ResellersPage'
 import { ReportsPage } from './pages/ReportsPage'
+import { WebhooksPage } from './pages/WebhooksPage'
+import { NotificationsPage } from './pages/NotificationsPage'
 
 const queryClient = new QueryClient()
 
@@ -43,6 +45,8 @@ function App() {
                   <Route path="/settings" element={<SettingsPage />} />
                   <Route path="/resellers" element={<ResellersPage />} />
                   <Route path="/reports" element={<ReportsPage />} />
+                  <Route path="/webhooks" element={<WebhooksPage />} />
+                  <Route path="/notifications" element={<NotificationsPage />} />
                 </Route>
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
               </Routes>
