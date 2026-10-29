@@ -279,7 +279,9 @@ func TestAdminSecurityEndToEnd(t *testing.T) {
 
 	// --- progressive lockout ---
 	lockUser := "sec-lock-" + sfx
-	ip := "198.51.100.77"
+	// Fresh addresses per run: IP lockouts live in Redis and would carry over between runs.
+	ipBase := "198.51." + strconv.Itoa(int(time.Now().UnixNano()%200)+10) + "."
+	ip := ipBase + "77"
 	for i := 1; i <= 4; i++ {
 		if code, out, _ := login(lockUser, "bad", ip); code != 401 || errCode(out) != "invalid_credentials" {
 			t.Fatalf("attempt %d: %d %v", i, code, out)
@@ -293,14 +295,14 @@ func TestAdminSecurityEndToEnd(t *testing.T) {
 		t.Fatalf("Retry-After = %d, want about 900", secs)
 	}
 	// Still locked even for a correct password on a real account from another IP using the locked name.
-	if code, _, _ := login(lockUser, "bad", "198.51.100.78"); code != 429 {
+	if code, _, _ := login(lockUser, "bad", ipBase+"78"); code != 429 {
 		t.Fatalf("locked username from another IP: %d", code)
 	}
 	// A real account locks the same way, and the right password is refused while locked.
 	for i := 0; i < 5; i++ {
-		login(user.Username, "bad", "198.51.100.79")
+		login(user.Username, "bad", ipBase+"79")
 	}
-	if code, _, _ := login(user.Username, "correct-horse-1", "198.51.100.80"); code != 429 {
+	if code, _, _ := login(user.Username, "correct-horse-1", ipBase+"80"); code != 429 {
 		t.Fatalf("valid password while locked: %d, want 429", code)
 	}
 	rdb.Del(ctx, loginSubject{"user", strings.ToLower(user.Username)}.lockKey())
