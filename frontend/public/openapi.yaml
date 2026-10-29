@@ -1049,8 +1049,13 @@ paths:
       tags: [API Keys]
       summary: Create a bot/reseller API key
       description: >-
-        Requires an admin session with role = `super_admin`. The response's
-        `secret` field is shown **exactly once** - it cannot be retrieved again,
+        Requires an admin session with role = `super_admin`, or a `reseller` session.
+        A key created by a reseller is owned by it (`reseller_id` set): it acts inside
+        the reseller's namespace, is subject to the reseller's quotas, and its
+        `node_groups` must be a subset of the reseller's (else 422
+        `reseller_node_group_not_allowed`; empty = inherit the reseller's). Resellers
+        list/revoke/rotate only their own keys (404 otherwise); super_admin sees all.
+        The response's `secret` field is shown **exactly once** - it cannot be retrieved again,
         only rotated (which invalidates it after a 24h grace period).
       security:
         - BearerAuth: []
@@ -1302,7 +1307,7 @@ paths:
                 max_accounts: { type: integer, nullable: true, minimum: 0 }
                 data_limit_gb: { type: number, nullable: true, minimum: 0 }
                 node_groups: { type: array, items: { type: string } }
-                max_expiry_days: { type: integer, nullable: true, minimum: 1 }
+                expires_at: { type: string, format: date-time, nullable: true, description: "Plan end date; must be in the future. Omit or null = never expires." }
       responses:
         "201":
           description: Created.
@@ -1335,7 +1340,7 @@ paths:
       summary: Update limits, notes, disabled flag or password
       description: >-
         Requires role `super_admin`. Omitted fields are unchanged; an explicit `null`
-        on `max_accounts`/`data_limit_gb`/`max_expiry_days` means unlimited. Lowering a
+        on `max_accounts`/`data_limit_gb` means unlimited and on `expires_at` means never expires. Lowering a
         limit below current usage is allowed (blocks growth only). Disabling takes
         effect on the reseller's next request.
       security:
@@ -1353,7 +1358,7 @@ paths:
                 max_accounts: { type: integer, nullable: true }
                 data_limit_gb: { type: number, nullable: true }
                 node_groups: { type: array, items: { type: string } }
-                max_expiry_days: { type: integer, nullable: true }
+                expires_at: { type: string, format: date-time, nullable: true, description: "Explicit null = never expires; omitted = unchanged." }
       responses:
         "200":
           description: Updated.
@@ -1800,7 +1805,8 @@ components:
         codes `reseller_account_limit_reached` (409), `reseller_data_credit_exceeded` (409),
         `reseller_unlimited_not_allowed` (422), `reseller_expiry_too_long` (422),
         `reseller_expiry_required` (422), `reseller_node_group_not_allowed` (422),
-        `reseller_disabled` (403), `account_suspended_by_admin` (403).
+        `reseller_disabled` (403), `account_suspended_by_admin` (403). Sessions of a
+        disabled / expired reseller get 401 `account_disabled` / `reseller_expired`.
       properties:
         id: { type: string, format: uuid }
         username: { type: string }
@@ -1810,7 +1816,7 @@ components:
         max_accounts: { type: integer, nullable: true }
         data_limit_bytes: { type: integer, format: int64, nullable: true }
         node_groups: { type: array, items: { type: string } }
-        max_expiry_days: { type: integer, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true, description: "Reseller plan end date; null = never. After it the reseller is blocked (401 reseller_expired); its accounts keep working and none may expire after it." }
         usage:
           type: object
           properties:
@@ -2032,6 +2038,11 @@ components:
             type: string
             enum: [read, create, update, suspend, delete]
         revoked: { type: boolean }
+        reseller_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Owning reseller; null for a staff-created key. Requests with a reseller-owned key get 401 `reseller_disabled` / `reseller_expired` when the reseller is disabled / past its plan end date.
         created_at: { type: string, format: date-time }
       required: [id, key_id, label, node_groups, permissions, revoked, created_at]
 
