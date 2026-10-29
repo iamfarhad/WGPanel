@@ -66,9 +66,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// A disabled reseller is refused only after the password checked out, so the
 	// response never reveals which usernames are resellers to someone guessing.
-	if admin.Role == "reseller" && !s.resellerCanSignIn(ctx, admin.ID) {
-		writeJSONError(w, http.StatusUnauthorized, "account_disabled", "this reseller account is disabled")
-		return
+	if admin.Role == "reseller" {
+		if code := s.resellerBlockCode(ctx, admin.ID); code != "" {
+			writeJSONError(w, http.StatusUnauthorized, code, "this reseller account is disabled or its plan has expired")
+			return
+		}
 	}
 
 	accessToken, err := authcrypto.IssueAccessToken(s.JWTSecret, admin.ID, admin.Username, admin.Role)
@@ -141,9 +143,11 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if admin.Role == "reseller" && !s.resellerCanSignIn(ctx, admin.ID) {
-		writeJSONError(w, http.StatusUnauthorized, "account_disabled", "this reseller account is disabled")
-		return
+	if admin.Role == "reseller" {
+		if code := s.resellerBlockCode(ctx, admin.ID); code != "" {
+			writeJSONError(w, http.StatusUnauthorized, code, "this reseller account is disabled or its plan has expired")
+			return
+		}
 	}
 
 	accessToken, err := authcrypto.IssueAccessToken(s.JWTSecret, admin.ID, admin.Username, admin.Role)

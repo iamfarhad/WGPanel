@@ -69,6 +69,21 @@ func (s *Server) requireRole(minRole string, next http.Handler) http.Handler {
 	})
 }
 
+// requireRoleOrReseller is requireRole for routes a reseller session may also use on
+// its own resources (API keys): resellers pass (the handler scopes to their rows, and
+// the allowlist in reseller_gate.go already limited which routes they reach), staff
+// need minRole.
+func (s *Server) requireRoleOrReseller(minRole string, next http.Handler) http.Handler {
+	gated := s.requireRole(minRole, next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if identity, ok := callerIdentityFromContext(r.Context()); ok && identity.ResellerID != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		gated.ServeHTTP(w, r)
+	})
+}
+
 var roleRanks = map[string]int{
 	"support":     1,
 	"operator":    2,

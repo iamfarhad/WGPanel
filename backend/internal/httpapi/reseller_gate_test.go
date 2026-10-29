@@ -99,7 +99,7 @@ func TestResellerDeniedMutatingRoutesAre403(t *testing.T) {
 	for _, c := range []struct{ m, p string }{
 		{"POST", "/api/v1/nodes"}, {"PATCH", "/api/v1/nodes/x"}, {"POST", "/api/v1/nodes/x/join-token"},
 		{"GET", "/api/v1/nodes/x/metrics"}, {"GET", "/api/v1/settings"}, {"PATCH", "/api/v1/settings"},
-		{"GET", "/api/v1/admins"}, {"GET", "/api/v1/api-keys"}, {"GET", "/api/v1/audit-log"},
+		{"GET", "/api/v1/admins"}, {"GET", "/api/v1/audit-log"},
 		{"POST", "/api/v1/backup"}, {"GET", "/api/v1/resellers"}, {"POST", "/api/v1/resellers/x/suspend-accounts"},
 	} {
 		if code, _ := doAs(s, token, c.m, c.p); code != http.StatusForbidden {

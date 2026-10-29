@@ -146,7 +146,15 @@ func (s *Store) CreateAccount(ctx context.Context, p CreateAccountParams) (Accou
 	}
 	if lim != nil {
 		groupErr = ErrResellerNodeGroupNotAllowed
-		p.AllowedNodeGroups = lim.NodeGroups // authoritative: from the locked row, not the caller
+		// The reseller's groups come from the locked row (authoritative). A
+		// reseller-owned API key may narrow them further via p.AllowedNodeGroups; the
+		// effective set is the intersection, and a disjoint one refuses outright (an
+		// empty result must not fall through to "no restriction").
+		eff, ok := intersectGroups(lim.NodeGroups, p.AllowedNodeGroups)
+		if !ok {
+			return Account{}, ErrResellerNodeGroupNotAllowed
+		}
+		p.AllowedNodeGroups = eff
 		if p.DataQuotaBytes != nil && *p.DataQuotaBytes < 0 {
 			return Account{}, ErrInvalidQuota
 		}
@@ -785,4 +793,22 @@ func (s *Store) GetAccountPrivateKey(ctx context.Context, id string, callerNames
 		return "", ErrAccountNotFound
 	}
 	return encrypted, err
+}
+
+// intersectGroups combines a reseller's groups with a key's narrower set; empty on
+// either side means "no restriction from that side". ok=false = both restrict and
+// share nothing.
+func intersectGroups(reseller, key []string) (out []string, ok bool) {
+	switch {
+	case len(reseller) == 0:
+		return key, true
+	case len(key) == 0:
+		return reseller, true
+	}
+	for _, g := range key {
+		if contains(reseller, g) {
+			out = append(out, g)
+		}
+	}
+	return out, len(out) > 0
 }

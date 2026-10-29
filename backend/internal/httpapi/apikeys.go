@@ -33,7 +33,10 @@ type apiKeyResponse struct {
 	NodeGroups  []string `json:"node_groups"`
 	Permissions []string `json:"permissions"`
 	Revoked     bool     `json:"revoked"`
-	CreatedAt   string   `json:"created_at"`
+	// ResellerID is the owning reseller (null for a staff-created key); such a key
+	// acts inside that reseller's namespace.
+	ResellerID *string `json:"reseller_id"`
+	CreatedAt  string  `json:"created_at"`
 }
 
 // apiKeyCreatedResponse additionally carries the raw secret - only ever returned
@@ -51,6 +54,7 @@ func toAPIKeyResponse(k store.APIKey) apiKeyResponse {
 		NodeGroups:  k.NodeGroups,
 		Permissions: k.Permissions,
 		Revoked:     k.RevokedAt != nil,
+		ResellerID:  k.ResellerID,
 		CreatedAt:   k.CreatedAt.Format(time.RFC3339),
 	}
 }
@@ -72,7 +76,19 @@ func generateHexSecret(nBytes int) (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-// handleCreateAPIKey is admin-only. Returns the raw secret exactly once - only its
+// ownerScope is the reseller whose keys the caller may see/modify: nil for staff
+// (every key), the reseller's id for a reseller session.
+func ownerScope(r *http.Request) *string {
+	identity, ok := callerIdentityFromContext(r.Context())
+	if ok && identity.ResellerID != "" {
+		id := identity.ResellerID
+		return &id
+	}
+	return nil
+}
+
+// handleCreateAPIKey is for super admins (platform keys) and resellers (keys owned by
+// and acting as that reseller). Returns the raw secret exactly once - only its
 // encrypted form is ever stored (docs/STORY-05-bot-api-key-auth.md).
 func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	var req createAPIKeyRequest
@@ -87,6 +103,35 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !validatePermissions(req.Permissions) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "unknown permission - allowed: read, create, update, suspend, delete")
 		return
+	}
+
+	// Omitted arrays arrive as nil, which the NOT NULL columns reject; [] is the intended
+	// meaning (a reseller's key with no node_groups inherits the reseller's).
+	if req.NodeGroups == nil {
+		req.NodeGroups = []string{}
+	}
+	if req.Permissions == nil {
+		req.Permissions = []string{}
+	}
+	owner := ownerScope(r)
+	if owner != nil {
+		// A reseller's key may only use groups the reseller itself may use; an empty
+		// list inherits the reseller's groups at request time. A reseller with no group
+		// restriction may name any group.
+		limits, err := s.resellerLimits(r.Context(), *owner)
+		if err != nil {
+			s.Logger.Error("reseller_limits_lookup_failed", "error", err)
+			writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not create API key")
+			return
+		}
+		if len(limits.NodeGroups) > 0 {
+			for _, g := range req.NodeGroups {
+				if !stringSliceContains(limits.NodeGroups, g) {
+					writeResellerError(w, store.ErrResellerNodeGroupNotAllowed)
+					return
+				}
+			}
+		}
 	}
 
 	keyID, err := generateHexSecret(16)
@@ -109,7 +154,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	key, err := s.Store.CreateAPIKey(ctx, keyID, secretEncrypted, req.Label, req.NodeGroups, req.Permissions)
+	key, err := s.Store.CreateAPIKey(ctx, keyID, secretEncrypted, req.Label, req.NodeGroups, req.Permissions, owner)
 	if errors.Is(err, store.ErrKeyIDTaken) {
 		// Astronomically unlikely (16 random bytes) but handled rather than ignored.
 		writeJSONError(w, http.StatusConflict, "key_id_collision", "please retry")
@@ -131,7 +176,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
-	keys, err := s.Store.ListAPIKeys(r.Context())
+	keys, err := s.Store.ListAPIKeys(r.Context(), ownerScope(r))
 	if err != nil {
 		s.Logger.Error("list_api_keys_failed", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not list API keys")
@@ -148,7 +193,7 @@ func (s *Server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	ctx := r.Context()
 
-	if err := s.Store.RevokeAPIKey(ctx, id); errors.Is(err, store.ErrAPIKeyNotFound) {
+	if err := s.Store.RevokeAPIKey(ctx, id, ownerScope(r)); errors.Is(err, store.ErrAPIKeyNotFound) {
 		writeJSONError(w, http.StatusNotFound, "api_key_not_found", "no API key with that id")
 		return
 	} else if err != nil {
@@ -184,7 +229,7 @@ func (s *Server) handleRotateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, err := s.Store.RotateAPIKeySecret(ctx, id, newSecretEncrypted, time.Now().Add(rotationGracePeriod))
+	key, err := s.Store.RotateAPIKeySecret(ctx, id, newSecretEncrypted, time.Now().Add(rotationGracePeriod), ownerScope(r))
 	if errors.Is(err, store.ErrAPIKeyNotFound) {
 		writeJSONError(w, http.StatusNotFound, "api_key_not_found", "no API key with that id")
 		return

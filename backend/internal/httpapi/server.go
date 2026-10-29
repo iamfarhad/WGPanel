@@ -111,11 +111,12 @@ func (s *Server) Routes() http.Handler {
 	// Rotating the subscription URL is an account mutation, same tier as PATCH.
 	mux.Handle("POST /api/v1/accounts/{id}/subscription/rotate", s.requireAdminOrAPIKey(s.requirePermission("update", http.HandlerFunc(s.handleRotateSubscriptionToken))))
 
-	// API key issuance is super-admin-only, same reasoning as join-token generation above.
-	mux.Handle("POST /api/v1/api-keys", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleCreateAPIKey))))
-	mux.Handle("GET /api/v1/api-keys", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleListAPIKeys))))
-	mux.Handle("POST /api/v1/api-keys/{id}/revoke", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleRevokeAPIKey))))
-	mux.Handle("POST /api/v1/api-keys/{id}/rotate", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleRotateAPIKey))))
+	// API key issuance is super-admin-only, same reasoning as join-token generation above -
+	// except that a reseller may manage the keys it owns (requireRoleOrReseller).
+	mux.Handle("POST /api/v1/api-keys", s.requireAdmin(s.requireRoleOrReseller("super_admin", http.HandlerFunc(s.handleCreateAPIKey))))
+	mux.Handle("GET /api/v1/api-keys", s.requireAdmin(s.requireRoleOrReseller("super_admin", http.HandlerFunc(s.handleListAPIKeys))))
+	mux.Handle("POST /api/v1/api-keys/{id}/revoke", s.requireAdmin(s.requireRoleOrReseller("super_admin", http.HandlerFunc(s.handleRevokeAPIKey))))
+	mux.Handle("POST /api/v1/api-keys/{id}/rotate", s.requireAdmin(s.requireRoleOrReseller("super_admin", http.HandlerFunc(s.handleRotateAPIKey))))
 
 	// Admin user management (PRD-admin-panel-ux.md §3.6) - super-admin-only, same tier
 	// as API keys and join tokens: all three mint new trust into the system.

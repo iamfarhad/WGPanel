@@ -23,25 +23,28 @@ type APIKey struct {
 	NodeGroups              []string
 	Permissions             []string
 	RevokedAt               *time.Time
-	CreatedAt               time.Time
+	// ResellerID is the owning reseller (admins.id); nil for a staff-created key. A
+	// reseller-owned key authenticates as the reseller's namespace, not its own key id.
+	ResellerID *string
+	CreatedAt  time.Time
 }
 
-const apiKeyColumns = `id, key_id, secret_encrypted, previous_secret_encrypted, previous_secret_expires_at, label, node_groups, permissions, revoked_at, created_at`
+const apiKeyColumns = `id, key_id, secret_encrypted, previous_secret_encrypted, previous_secret_expires_at, label, node_groups, permissions, revoked_at, reseller_id, created_at`
 
 func scanAPIKey(row pgx.Row, k *APIKey) error {
 	return row.Scan(
 		&k.ID, &k.KeyID, &k.SecretEncrypted, &k.PreviousSecretEncrypted, &k.PreviousSecretExpiresAt,
-		&k.Label, &k.NodeGroups, &k.Permissions, &k.RevokedAt, &k.CreatedAt,
+		&k.Label, &k.NodeGroups, &k.Permissions, &k.RevokedAt, &k.ResellerID, &k.CreatedAt,
 	)
 }
 
-func (s *Store) CreateAPIKey(ctx context.Context, keyID, secretEncrypted, label string, nodeGroups, permissions []string) (APIKey, error) {
+func (s *Store) CreateAPIKey(ctx context.Context, keyID, secretEncrypted, label string, nodeGroups, permissions []string, resellerID *string) (APIKey, error) {
 	var k APIKey
 	err := scanAPIKey(s.pool.QueryRow(ctx, `
-		INSERT INTO api_keys (key_id, secret_encrypted, label, node_groups, permissions)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO api_keys (key_id, secret_encrypted, label, node_groups, permissions, reseller_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING `+apiKeyColumns,
-		keyID, secretEncrypted, label, nodeGroups, permissions,
+		keyID, secretEncrypted, label, nodeGroups, permissions, resellerID,
 	), &k)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -61,8 +64,11 @@ func (s *Store) GetAPIKeyByKeyID(ctx context.Context, keyID string) (APIKey, err
 	return k, err
 }
 
-func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+apiKeyColumns+` FROM api_keys ORDER BY created_at`)
+// ListAPIKeys: owner nil = every key (staff view); otherwise only keys that reseller
+// owns. The same owner argument scopes revoke and rotate below, so a reseller probing
+// another's key id gets ErrAPIKeyNotFound (404), never a distinguishable 403.
+func (s *Store) ListAPIKeys(ctx context.Context, owner *string) ([]APIKey, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+apiKeyColumns+` FROM api_keys WHERE ($1::uuid IS NULL OR reseller_id = $1) ORDER BY created_at`, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -79,8 +85,8 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 	return keys, rows.Err()
 }
 
-func (s *Store) RevokeAPIKey(ctx context.Context, id string) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`, id)
+func (s *Store) RevokeAPIKey(ctx context.Context, id string, owner *string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL AND ($2::uuid IS NULL OR reseller_id = $2)`, id, owner)
 	if err != nil {
 		return err
 	}
@@ -93,16 +99,16 @@ func (s *Store) RevokeAPIKey(ctx context.Context, id string) error {
 // RotateAPIKeySecret moves the current secret to "previous" (valid until graceUntil,
 // per PRD-telegram-bot-api.md §5.2's 24h rotation grace period) and installs
 // newSecretEncrypted as current.
-func (s *Store) RotateAPIKeySecret(ctx context.Context, id, newSecretEncrypted string, graceUntil time.Time) (APIKey, error) {
+func (s *Store) RotateAPIKeySecret(ctx context.Context, id, newSecretEncrypted string, graceUntil time.Time, owner *string) (APIKey, error) {
 	var k APIKey
 	err := scanAPIKey(s.pool.QueryRow(ctx, `
 		UPDATE api_keys SET
 			previous_secret_encrypted = secret_encrypted,
 			previous_secret_expires_at = $2,
 			secret_encrypted = $3
-		WHERE id = $1
+		WHERE id = $1 AND ($4::uuid IS NULL OR reseller_id = $4)
 		RETURNING `+apiKeyColumns,
-		id, graceUntil, newSecretEncrypted,
+		id, graceUntil, newSecretEncrypted, owner,
 	), &k)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return APIKey{}, ErrAPIKeyNotFound

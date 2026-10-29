@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"wgpanel-api/internal/authcrypto"
 	"wgpanel-api/internal/store"
@@ -19,6 +20,11 @@ import (
 var resellerRoutes = map[string]bool{
 	"GET /api/v1/me":          true,
 	"GET /api/v1/reseller/me": true,
+	// A reseller manages only the API keys it owns (store-scoped, 404 otherwise).
+	"GET /api/v1/api-keys":              true,
+	"POST /api/v1/api-keys":             true,
+	"POST /api/v1/api-keys/{id}/revoke": true,
+	"POST /api/v1/api-keys/{id}/rotate": true,
 	// Read-only node visibility, filtered to the reseller's node groups, so it can
 	// pick a node when creating an account.
 	"GET /api/v1/nodes":                              true,
@@ -73,6 +79,10 @@ func (s *Server) admitAdminClaims(w http.ResponseWriter, r *http.Request, claims
 	}
 	if limits.Disabled {
 		writeJSONError(w, http.StatusUnauthorized, "account_disabled", "this reseller account is disabled")
+		return nil, false
+	}
+	if limits.ExpiresAt != nil && !limits.ExpiresAt.After(time.Now()) {
+		writeJSONError(w, http.StatusUnauthorized, "reseller_expired", "this reseller plan has expired")
 		return nil, false
 	}
 	identity.ResellerID = claims.AdminID
