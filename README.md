@@ -1,6 +1,6 @@
 # Jirjirak WireGuard (WGPanel)
 
-<p align="center"><img src="docs/screenshots/login.png" alt="Jirjirak WireGuard sign-in screen" width="720"></p>
+<p align="center"><img src="docs/screenshots/jirjirak/login.png" alt="Jirjirak WireGuard sign-in screen" width="720"></p>
 
 Jirjirak WireGuard is a self-hosted panel for running your own WireGuard VPN service. It manages accounts (peers) and servers (nodes), lets resellers sell accounts under their own limits, and shows usage, connectivity and node health in one web dashboard. The panel is fully available in **English and Persian (RTL)**, in light and dark themes.
 
@@ -21,37 +21,37 @@ Jirjirak WireGuard is a self-hosted panel for running your own WireGuard VPN ser
 
 | Light | Dark |
 | --- | --- |
-| ![Dashboard, light theme](docs/screenshots/dashboard.png) | ![Dashboard, dark theme](docs/screenshots/dashboard-dark.png) |
+| ![Dashboard, light theme](docs/screenshots/jirjirak/dashboard.png) | ![Dashboard, dark theme](docs/screenshots/jirjirak/dashboard-dark.png) |
 
 **Persian (RTL).** Every page is translated. Switch with the language toggle in the sidebar. Dates use the Jalali calendar in Persian:
 
 | Dashboard | Reports |
 | --- | --- |
-| ![Dashboard in Persian](docs/screenshots/dashboard-fa.png) | ![Reports in Persian](docs/screenshots/reports-fa.png) |
+| ![Dashboard in Persian](docs/screenshots/jirjirak/dashboard-fa.png) | ![Reports in Persian](docs/screenshots/jirjirak/reports-fa.png) |
 
 **Reports.** Pick a range, scope to all accounts, admin-owned accounts or one reseller, and export CSV:
 
 | Light | Dark |
 | --- | --- |
-| ![Reports, light theme](docs/screenshots/reports.png) | ![Reports, dark theme](docs/screenshots/reports-dark.png) |
+| ![Reports, light theme](docs/screenshots/jirjirak/reports.png) | ![Reports, dark theme](docs/screenshots/jirjirak/reports-dark.png) |
 
 **Accounts.** The list shows usage against quota, expiry, owner and live status. The detail view has overview, devices, usage charts and inline editing, plus the subscription URL and per-node config/QR:
 
 | Accounts | Account detail |
 | --- | --- |
-| ![Accounts list](docs/screenshots/accounts.png) | ![Account detail](docs/screenshots/account-detail.png) |
+| ![Accounts list](docs/screenshots/jirjirak/accounts.png) | ![Account detail](docs/screenshots/jirjirak/account-detail.png) |
 
 **Nodes.** Every WireGuard server with status, endpoint and capacity. When you add a node, the subnet picker disables ranges that are already used:
 
 | Nodes | New node |
 | --- | --- |
-| ![Nodes list](docs/screenshots/nodes.png) | ![New node dialog with subnet picker](docs/screenshots/new-node.png) |
+| ![Nodes list](docs/screenshots/jirjirak/nodes.png) | ![New node dialog with subnet picker](docs/screenshots/jirjirak/new-node.png) |
 
 **Resellers.** Admins manage plans; resellers sign in to the same panel and see only their own accounts, plan usage and reports:
 
 | Resellers (admin) | Reseller's dashboard |
 | --- | --- |
-| ![Resellers page](docs/screenshots/resellers.png) | ![Reseller dashboard with plan card](docs/screenshots/reseller-dashboard.png) |
+| ![Resellers page](docs/screenshots/jirjirak/resellers.png) | ![Reseller dashboard with plan card](docs/screenshots/jirjirak/reseller-dashboard.png) |
 
 ## Requirements
 
