@@ -9,6 +9,7 @@ import {
   ScrollText,
   LogOut,
   Settings,
+  Store,
   Menu,
   X,
   Sun,
@@ -29,6 +30,9 @@ interface NavItem {
   label: string
   icon: typeof LayoutDashboard
   minRole?: AdminRole
+  // Shown to reseller sessions. Resellers get a deliberately small panel (their own
+  // dashboard and accounts); everything else is staff tooling the API denies them.
+  reseller?: boolean
   // External items are plain links opened in a new tab (e.g. the static Swagger
   // page), not SPA routes - they render as <a>, never match as "active".
   external?: boolean
@@ -39,23 +43,26 @@ interface NavGroup {
   items: NavItem[]
 }
 
-const roleRank: Record<AdminRole, number> = { support: 1, operator: 2, super_admin: 3 }
+// Resellers rank below every staff role, so no minRole item ever matches them; what
+// they see is decided by NavItem.reseller instead.
+const roleRank: Record<AdminRole, number> = { reseller: 0, support: 1, operator: 2, super_admin: 3 }
 
 const navGroups: NavGroup[] = [
   {
     label: null,
-    items: [{ to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard }],
+    items: [{ to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, reseller: true }],
   },
   {
     label: 'Infrastructure',
     items: [
       { to: '/nodes', label: 'Nodes', icon: Server },
-      { to: '/accounts', label: 'Accounts', icon: Users },
+      { to: '/accounts', label: 'Accounts', icon: Users, reseller: true },
     ],
   },
   {
     label: 'Administration',
     items: [
+      { to: '/resellers', label: 'Resellers', icon: Store, minRole: 'super_admin' },
       { to: '/api-keys', label: 'API Keys', icon: KeyRound, minRole: 'super_admin' },
       { to: '/admins', label: 'Admin Users', icon: ShieldCheck, minRole: 'super_admin' },
       { to: '/audit-log', label: 'Audit Log', icon: ScrollText, minRole: 'super_admin' },
@@ -118,7 +125,10 @@ export function DashboardLayout() {
     .map((group) => ({
       ...group,
       items: group.items.filter(
-        (item) => !item.minRole || (user && roleRank[user.role] >= roleRank[item.minRole]),
+        (item) =>
+          user?.role === 'reseller'
+            ? item.reseller === true
+            : !item.minRole || (user && roleRank[user.role] >= roleRank[item.minRole]),
       ),
     }))
     .filter((group) => group.items.length > 0)
