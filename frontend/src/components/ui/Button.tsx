@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes } from 'react'
+import { Children, type ButtonHTMLAttributes } from 'react'
 import { useI18n } from '../../lib/i18n'
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -26,7 +26,7 @@ export function Button({ variant = 'primary', size = 'md', className = '', child
       className={`inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-control font-medium transition-[background-color,border-color,color,box-shadow] duration-150 outline-none focus-visible:ring-[3px] focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 ${variants[variant]} ${sizes[size]} ${className}`}
       {...props}
     >
-      {typeof children === 'string' ? t(children) : children}
+      {Children.map(children, (c) => (typeof c === 'string' ? t(c) : c))}
     </button>
   )
 }

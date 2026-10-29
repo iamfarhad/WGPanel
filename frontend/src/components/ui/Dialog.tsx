@@ -68,12 +68,12 @@ export function Dialog({ open, onClose, title, children, maxWidthClassName = 'ma
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={title}
+        aria-label={t(title)}
         className={`animate-dialog-in flex max-h-[85vh] w-full flex-col rounded-modal border border-edge bg-surface shadow-pop ${maxWidthClassName}`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-edge px-6 py-4">
-          <h2 className="text-base font-semibold text-fg">{title}</h2>
+          <h2 className="text-base font-semibold text-fg">{t(title)}</h2>
           <button
             type="button"
             onClick={onClose}
