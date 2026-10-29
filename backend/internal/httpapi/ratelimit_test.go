@@ -53,7 +53,7 @@ func TestRateHeadersAnd429(t *testing.T) {
 	}
 }
 
-func TestClientIP(t *testing.T) {
+func TestClientIPBehindProxy(t *testing.T) {
 	mk := func(remote, xff string) *http.Request {
 		r := httptest.NewRequest("GET", "/", nil)
 		r.RemoteAddr = remote

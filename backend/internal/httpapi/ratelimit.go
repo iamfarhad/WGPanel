@@ -3,10 +3,8 @@ package httpapi
 import (
 	"context"
 	"math"
-	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -219,27 +217,6 @@ func (s *Server) allowAPIKey(w http.ResponseWriter, r *http.Request, keyID strin
 }
 
 // ---- Public subscription endpoints: per-IP bucket ----
-
-// clientIP is the caller's address for rate limiting. Behind the reverse proxy
-// (loopback/private peer) the rightmost X-Forwarded-For entry is the address Caddy
-// saw; a public peer connected directly, so its own address is used and the header
-// (client-controlled) is ignored.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	ip := net.ParseIP(host)
-	if ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.Split(xff, ",")
-			if cand := strings.TrimSpace(parts[len(parts)-1]); net.ParseIP(cand) != nil {
-				return cand
-			}
-		}
-	}
-	return host
-}
 
 // subRateGate wraps a public subscription handler: every request costs one token from
 // the caller's IP bucket, and an IP that already burned its unknown-token allowance is
