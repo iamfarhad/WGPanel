@@ -183,6 +183,12 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /api/v1/settings", s.requireAdmin(http.HandlerFunc(s.handleGetSettings)))
 	mux.Handle("PATCH /api/v1/settings", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleUpdateSettings))))
 
+	// Marzban-compat on/off switch (marzbancompat_api.go): any admin or reseller may read
+	// it, only super_admin may flip it. The facade's own bot-facing routes are
+	// registered by registerMarzbanCompatRoutes below.
+	mux.Handle("GET /api/v1/marzban-compat", s.requireAdmin(http.HandlerFunc(s.handleGetMarzbanCompat)))
+	mux.Handle("PUT /api/v1/marzban-compat", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleSetMarzbanCompat))))
+
 	// Backup & restore (see backup.go's doc comment) - both directions are
 	// super_admin-only: the decrypted file contains admin password hashes, the CA
 	// private key, the .env encryption keys and every subscription token, and
@@ -193,6 +199,7 @@ func (s *Server) Routes() http.Handler {
 
 	s.registerSecurityRoutes(mux)
 	s.registerNotificationRoutes(mux)
+	s.registerMarzbanCompatRoutes(mux)
 
 	return s.loggingMiddleware(mux)
 }
