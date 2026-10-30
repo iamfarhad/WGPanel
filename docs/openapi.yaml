@@ -111,6 +111,8 @@ tags:
     description: Traffic, account-status, quota and expiry reporting for staff and resellers.
   - name: Resellers
     description: Reseller logins with account/traffic/expiry/node-group limits (super_admin manages; reseller self-service is limited to its own accounts).
+  - name: Branding
+    description: Brand name, logo, support link, announcement and accent colour of the public subscription page - a global default plus one profile per reseller.
   - name: Auth
     description: Admin login/session management.
   - name: Security
@@ -2080,7 +2082,10 @@ paths:
         only that one account's data (no ids, no token, no peer IPs, no device
         endpoints). Unlike the config endpoint it also answers for a suspended
         account, so the page can say why the link stopped working. Never cached.
-        Rate limited per client IP.
+        Rate limited per client IP. `brand` is the branding of the account's owner:
+        the owning reseller's profile, else the nearest ancestor reseller's that has
+        any content, else the global default (null when none is configured); it never
+        carries ids or another reseller's data.
       parameters:
         - name: token
           in: path
@@ -2099,6 +2104,34 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/sub/{token}/logo:
+    get:
+      tags: [Subscription]
+      summary: Logo image of the account's brand
+      description: >-
+        Serves the uploaded logo (PNG, JPEG or WebP, at most 64 KB) of the brand
+        resolved for this account - the same one `brand.logo_url` in the info response
+        points at. 404 when the resolved brand has no uploaded logo. Sent with
+        `X-Content-Type-Options: nosniff` and a locked-down CSP. Rate limited per client IP.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The logo bytes.
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        "404":
+          description: Unknown token, or the brand has no uploaded logo.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /api/v1/sub/{token}/nodes:
     get:
@@ -2412,6 +2445,7 @@ paths:
                 data_limit_gb: { type: number, nullable: true, minimum: 0 }
                 node_groups: { type: array, items: { type: string } }
                 expires_at: { type: string, format: date-time, nullable: true, description: "Plan end date; must be in the future. Omit or null = never expires." }
+                parent_id: { type: string, format: uuid, nullable: true, description: "Create the reseller as a child (sub-reseller) of this reseller. The child's limits are carved out of the parent's - see the Reseller schema for the error codes." }
       responses:
         "201":
           description: Created.
@@ -2421,7 +2455,9 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { description: "`username_taken`." }
+        "404": { description: "`reseller_not_found` - no reseller with that `parent_id`." }
+        "409": { description: "`username_taken`, `parent_unavailable` (parent disabled or expired), `child_account_allocation_exceeded` or `child_credit_allocation_exceeded` (the parent has less left to give)." }
+        "422": { description: "`reseller_too_deep`, `child_limit_required`, `child_expiry_too_long`, `child_expiry_required` or `child_node_group_not_allowed`." }
 
   /api/v1/resellers/{id}:
     parameters:
@@ -2445,8 +2481,11 @@ paths:
       description: >-
         Requires role `super_admin`. Omitted fields are unchanged; an explicit `null`
         on `max_accounts`/`data_limit_gb` means unlimited and on `expires_at` means never expires. Lowering a
-        limit below current usage is allowed (blocks growth only). Disabling takes
-        effect on the reseller's next request.
+        limit below current usage is allowed (blocks growth only) for a reseller without
+        children; one with children cannot drop below what it handed to them (409
+        `reseller_carve_conflict`). A child's plan changes are re-checked against its
+        parent (the `child_*` codes of POST). Disabling takes effect on the reseller's next
+        request - and on that of every descendant.
       security:
         - BearerAuth: []
       requestBody:
@@ -2473,13 +2512,19 @@ paths:
     delete:
       tags: [Resellers]
       summary: Delete a reseller
-      description: Requires role `super_admin`. Refused with 409 `reseller_has_accounts` while it owns non-deleted accounts.
+      description: >-
+        Requires role `super_admin`. Refused with 409 `reseller_has_accounts` while it owns
+        non-deleted accounts, and with 409 `reseller_has_children` while it has child
+        resellers - unless `cascade=true`, which removes the whole subtree (and is still
+        refused while anything in it owns non-deleted accounts).
       security:
         - BearerAuth: []
+      parameters:
+        - { name: cascade, in: query, schema: { type: boolean, default: false }, description: "Also delete every descendant reseller." }
       responses:
         "204": { description: Deleted. }
         "404": { description: "`reseller_not_found`." }
-        "409": { description: "`reseller_has_accounts`." }
+        "409": { description: "`reseller_has_accounts` or `reseller_has_children`." }
 
   /api/v1/resellers/{id}/suspend-accounts:
     parameters:
@@ -2487,7 +2532,7 @@ paths:
     post:
       tags: [Resellers]
       summary: Suspend all of a reseller's active accounts
-      description: Requires role `super_admin`. Sets `suspend_reason = reseller_suspended`; the reseller cannot re-enable these.
+      description: Requires role `super_admin`. Sets `suspend_reason = reseller_suspended` on the reseller's accounts and on those of all its descendants; neither it nor its parents can re-enable these.
       security:
         - BearerAuth: []
       responses:
@@ -2526,6 +2571,277 @@ paths:
                   still_suspended: { type: integer }
         "404": { description: "`reseller_not_found`." }
 
+  /api/v1/reseller/children:
+    get:
+      tags: [Resellers]
+      summary: List the signed-in reseller's descendants
+      description: >-
+        Reseller sessions only (403 otherwise). Every descendant - children,
+        grandchildren, ... - flat, parents first; each row carries `parent_id` and
+        `depth` so the client builds the tree. `max_depth` is the hierarchy cap.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Descendants.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resellers:
+                    type: array
+                    items: { $ref: "#/components/schemas/Reseller" }
+                  max_depth: { type: integer, example: 3 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Resellers]
+      summary: Create a child reseller
+      description: >-
+        Reseller sessions only. The caller is always the parent (a `parent_id` in the
+        body is ignored). Same body as `POST /resellers`; the child's limits are carved
+        out of the caller's remaining allocation - see the Reseller schema for the
+        error codes. Audit-logged as `reseller.child_created`; emits the
+        `reseller.child_created` event into the caller's namespace.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password, minLength: 8 }
+                notes: { type: string }
+                disabled: { type: boolean }
+                max_accounts: { type: integer, nullable: true, minimum: 0 }
+                data_limit_gb: { type: number, nullable: true, minimum: 0 }
+                node_groups: { type: array, items: { type: string } }
+                expires_at: { type: string, format: date-time, nullable: true }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reseller" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: "`username_taken`, `child_account_allocation_exceeded` or `child_credit_allocation_exceeded`." }
+        "422": { description: "`reseller_too_deep`, `child_limit_required`, `child_expiry_too_long`, `child_expiry_required` or `child_node_group_not_allowed`." }
+
+  /api/v1/reseller/children/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [Resellers]
+      summary: Update a descendant's limits, notes or disabled flag
+      description: >-
+        Reseller sessions only, for any descendant (404 `reseller_not_found` for anyone
+        else - a sibling, an ancestor, an unknown id). Same fields as `PATCH /resellers/{id}`
+        except `password`, which only staff can reset (403). Limit changes are re-checked
+        against the descendant's direct parent. A parent cannot re-enable a reseller that
+        staff disabled (403 `reseller_locked_by_admin`). Disabling it blocks its whole subtree.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes: { type: string }
+                disabled: { type: boolean }
+                max_accounts: { type: integer, nullable: true }
+                data_limit_gb: { type: number, nullable: true }
+                node_groups: { type: array, items: { type: string } }
+                expires_at: { type: string, format: date-time, nullable: true }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reseller" }
+        "403": { description: "`forbidden` (password) or `reseller_locked_by_admin`." }
+        "404": { description: "`reseller_not_found`." }
+        "409": { description: "`child_account_allocation_exceeded`, `child_credit_allocation_exceeded` or `reseller_carve_conflict`." }
+        "422": { description: "`child_limit_required`, `child_expiry_too_long`, `child_expiry_required` or `child_node_group_not_allowed`." }
+    delete:
+      tags: [Resellers]
+      summary: Delete a descendant reseller
+      description: >-
+        Reseller sessions only. 409 `reseller_has_children` while it has children unless
+        `cascade=true`; 409 `reseller_has_accounts` while it (or, with cascade, anything
+        below it) owns non-deleted accounts.
+      security:
+        - BearerAuth: []
+      parameters:
+        - { name: cascade, in: query, schema: { type: boolean, default: false } }
+      responses:
+        "204": { description: Deleted. }
+        "404": { description: "`reseller_not_found`." }
+        "409": { description: "`reseller_has_children` or `reseller_has_accounts`." }
+
+  /api/v1/reseller/children/{id}/suspend-accounts:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [Resellers]
+      summary: Suspend a descendant's accounts (and its subtree's)
+      description: >-
+        Reseller sessions only. Sets `suspend_reason = parent_suspended` on every active
+        account of the descendant and of everything below it. The owning reseller cannot
+        re-enable these; any of its ancestors can.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Count suspended.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suspended: { type: integer }
+                  reason: { type: string, example: parent_suspended }
+        "404": { description: "`reseller_not_found`." }
+
+  /api/v1/reseller/children/{id}/reactivate-accounts:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [Resellers]
+      summary: Reactivate accounts suspended through the parent bulk action
+      description: Reseller sessions only. Touches only `parent_suspended` accounts of that subtree; one that has since expired or exhausted its quota stays suspended and is counted in `still_suspended`.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reactivated: { type: integer }
+                  still_suspended: { type: integer }
+        "404": { description: "`reseller_not_found`." }
+
+  /api/v1/branding:
+    get:
+      tags: [Branding]
+      summary: The global default branding
+      description: >-
+        Any staff role (403 for resellers). The brand shown on the public subscription
+        page of admin-owned accounts and of resellers without branding of their own.
+        An unsaved profile comes back empty. When the global profile has no support link
+        the legacy `support_contact` setting is used instead.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Branding profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Branding" }
+    put:
+      tags: [Branding]
+      summary: Replace the global default branding
+      description: Requires role `super_admin`. Text fields are replaced; the logo only changes with `logo_base64` or `remove_logo`. Audit-logged as `branding.updated`.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BrandingUpdate" }
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Branding" }
+        "400": { description: "`invalid_request` (text too long, bad colour or link) or `invalid_logo` (not a PNG/JPEG/WebP, or over 64 KB)." }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/reseller/branding:
+    get:
+      tags: [Branding]
+      summary: The signed-in reseller's own branding
+      description: Reseller sessions only. `inherited_from` says what customers see while this profile is empty (`parent` or `global`).
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Branding profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Branding" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [Branding]
+      summary: Replace the signed-in reseller's branding
+      description: >-
+        Reseller sessions only. Applies to the reseller's own accounts and to those of
+        every descendant without a branding of its own. Same body and validation as the
+        global profile. Audit-logged as `branding.updated`.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BrandingUpdate" }
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Branding" }
+        "400": { description: "`invalid_request` or `invalid_logo`." }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/resellers/{id}/branding:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Branding]
+      summary: A reseller's branding (staff)
+      description: Requires role `super_admin`.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Branding profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Branding" }
+        "404": { description: "`reseller_not_found`." }
+    put:
+      tags: [Branding]
+      summary: Replace a reseller's branding (staff)
+      description: Requires role `super_admin`.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BrandingUpdate" }
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Branding" }
+        "400": { description: "`invalid_request` or `invalid_logo`." }
+        "404": { description: "`reseller_not_found`." }
+
   /api/v1/reports:
     get:
       tags: [Reports]
@@ -2537,8 +2853,12 @@ paths:
         is the current, partial one. Resellers (session or reseller-owned key) and plain
         API keys are always scoped to their own namespace and `reseller_id`/`owner` are
         ignored for them. Staff may narrow with `reseller_id` or `owner`. `nodes[].cpu_avg`
-        and `mem_avg_percent` are null unless the caller is staff; `resellers` is present
-        only for a super_admin with no scope filter, otherwise null.
+        and `mem_avg_percent` are null unless the caller is staff; `resellers` is the
+        per-reseller breakdown as a depth-first tree (a parent directly above its
+        children, each row also carrying `subtree_*` roll-ups): the whole tree for a
+        super_admin with no scope filter, the caller and its descendants for a reseller
+        that has children, otherwise null. A reseller's own totals and lists already
+        include its descendants' accounts.
       security:
         - BearerAuth: []
         - ApiKeyAuth: []
@@ -3604,6 +3924,12 @@ components:
               data_limit_bytes: { type: integer, format: int64, nullable: true }
               rx_bytes: { type: integer, format: int64 }
               tx_bytes: { type: integer, format: int64 }
+              parent_id: { type: string, format: uuid, nullable: true }
+              depth: { type: integer, description: "1 = top-level reseller." }
+              children: { type: integer, description: Direct child resellers. }
+              subtree_accounts: { type: integer, description: This reseller's and all its descendants' accounts. }
+              subtree_rx_bytes: { type: integer, format: int64 }
+              subtree_tx_bytes: { type: integer, format: int64 }
 
     Reseller:
       type: object
@@ -3614,7 +3940,15 @@ components:
         `reseller_unlimited_not_allowed` (422), `reseller_expiry_too_long` (422),
         `reseller_expiry_required` (422), `reseller_node_group_not_allowed` (422),
         `reseller_disabled` (403), `account_suspended_by_admin` (403). Sessions of a
-        disabled / expired reseller get 401 `account_disabled` / `reseller_expired`.
+        disabled / expired reseller get 401 `account_disabled` / `reseller_expired` -
+        also when an ancestor is disabled or expired.
+
+        Sub-resellers: a child's `max_accounts` and `data_limit_bytes` are reserved out of
+        its parent's (the parent's own accounts get what is left); a limited parent
+        requires finite child limits (422 `child_limit_required`); `node_groups` must be a
+        subset of the parent's (an empty list under a restricted parent inherits them);
+        the plan end may not exceed the parent's. Allocation shortfalls are 409
+        (`child_account_allocation_exceeded`, `child_credit_allocation_exceeded`).
       properties:
         id: { type: string, format: uuid }
         username: { type: string }
@@ -3631,6 +3965,14 @@ components:
             accounts_used: { type: integer }
             data_allocated_bytes: { type: integer, format: int64 }
             data_used_bytes: { type: integer, format: int64 }
+        parent_id: { type: string, format: uuid, nullable: true, description: "Direct parent reseller; null for a top-level reseller." }
+        depth: { type: integer, description: "1 for a top-level reseller; at most 3." }
+        children: { type: integer, description: Direct child resellers. }
+        reserved_accounts: { type: integer, description: "Sum of the children's max_accounts - already handed down; own accounts + this must stay within max_accounts." }
+        reserved_data_bytes: { type: integer, format: int64, description: "Sum of the children's data_limit_bytes." }
+        effective_disabled: { type: boolean, description: "disabled, or any ancestor is disabled." }
+        effective_expires_at: { type: string, format: date-time, nullable: true, description: "Earliest plan end along the chain." }
+        disabled_by_staff: { type: boolean, description: "A staff admin disabled it; its parent cannot re-enable it." }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     ErrorEnvelope:
@@ -3702,6 +4044,47 @@ components:
         created_at: { type: string, format: date-time }
       required: [id, node_id, label, address, kind, priority, enabled, health_check, last_status, created_at]
 
+    PublicBrand:
+      type: object
+      nullable: true
+      description: >-
+        What the customer page may know about its brand. Resolution: the owning
+        reseller's profile, else the nearest ancestor reseller's with any content, else
+        the global default; null when none is configured. Whole profiles are never merged.
+      properties:
+        name: { type: string }
+        logo_url: { type: string, nullable: true, description: "Same-origin `/api/v1/sub/<token>/logo?v=...` for an uploaded logo, or the https URL the reseller chose." }
+        support_label: { type: string, description: "As typed: `@handle` or an https URL." }
+        support_url: { type: string, description: "Safe to use as an href: `https://t.me/handle` for a handle." }
+        announcement: { type: string }
+        accent_color: { type: string, description: "`#rrggbb` or empty." }
+    Branding:
+      type: object
+      properties:
+        brand_name: { type: string, maxLength: 40 }
+        support_link: { type: string, maxLength: 200, description: "`@handle` or an https URL." }
+        announcement: { type: string, maxLength: 280 }
+        accent_color: { type: string, example: "#1a73e8" }
+        logo_url: { type: string, description: "External https logo; empty when an upload is set." }
+        has_logo_upload: { type: boolean }
+        logo_preview: { type: string, nullable: true, description: "data: URL of the uploaded logo, for the editor." }
+        inherited_from: { type: string, enum: ["", parent, global], description: "Where customers' brand comes from while this profile is empty." }
+        updated_at: { type: string, format: date-time, nullable: true }
+    BrandingUpdate:
+      type: object
+      description: >-
+        Text fields are replaced (omit or send empty to clear). The logo changes only
+        with `logo_base64` (PNG/JPEG/WebP, at most 64 KB decoded, type sniffed from the
+        bytes; SVG is refused) or `remove_logo`; an external `logo_url` and an upload
+        are mutually exclusive - setting one clears the other.
+      properties:
+        brand_name: { type: string, maxLength: 40 }
+        support_link: { type: string, description: "`@handle`, `t.me/handle` or an https URL." }
+        announcement: { type: string, maxLength: 280 }
+        accent_color: { type: string, description: "`#rrggbb`." }
+        logo_url: { type: string, description: "https URL." }
+        logo_base64: { type: string, description: "Raw base64 or a data: URL." }
+        remove_logo: { type: boolean }
     SubscriptionInfo:
       type: object
       properties:
@@ -3715,7 +4098,8 @@ components:
         device_limit: { type: integer, nullable: true }
         devices_active: { type: integer }
         last_handshake_at: { type: string, format: date-time, nullable: true }
-        support_contact: { type: string, nullable: true }
+        support_contact: { type: string, nullable: true, description: "The brand's support link when it has one (a branded page never falls back to the owner's contact)." }
+        brand: { $ref: "#/components/schemas/PublicBrand" }
         config_path: { type: string, example: "/api/v1/sub/<token>?format=conf" }
         nodes:
           type: array
