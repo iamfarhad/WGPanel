@@ -22,6 +22,8 @@ import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 import { RowActions } from '../components/ui/RowActions'
 import { NodeEndpointsDialog } from '../components/NodeEndpointsDialog'
+import { NodeObfuscationField, ObfuscationBadge } from '../components/obfuscation/NodeObfuscation'
+import { canManageObfuscation, type NodeObfuscationInfo } from '../lib/obfuscation'
 
 interface Node {
   id: string
@@ -34,6 +36,7 @@ interface Node {
   capacity_max_peers: number
   public_key: string | null
   created_at: string
+  obfuscation?: NodeObfuscationInfo
 }
 
 interface JoinToken {
@@ -184,6 +187,9 @@ export function NodesPage() {
                   <Td className="font-mono text-xs text-muted">{node.public_endpoint}</Td>
                   <Td>
                     <Badge dot tone={statusTone(node.status)}>{node.status}</Badge>
+                    <span className="ms-1.5">
+                      <ObfuscationBadge info={node.obfuscation} />
+                    </span>
                   </Td>
                   <Td className="text-muted tabular-nums">{node.capacity_max_peers}</Td>
                   <Td className="text-end">
@@ -371,6 +377,8 @@ function EditNodeDialog({
 }) {
   const { t } = useI18n()
   const { push } = useToast()
+  const { user } = useAuth()
+  const [obfuscationProfile, setObfuscationProfile] = useState(node.obfuscation?.profile_id ?? '')
   const [name, setName] = useState(node.name)
   const [nodeGroup, setNodeGroup] = useState(node.node_group)
   const [region, setRegion] = useState(node.region)
@@ -384,12 +392,13 @@ function EditNodeDialog({
     setRegion(node.region)
     setPublicEndpoint(node.public_endpoint)
     setCapacity(node.capacity_max_peers.toString())
+    setObfuscationProfile(node.obfuscation?.profile_id ?? '')
     setError(null)
   }, [node])
 
   const saveMutation = useMutation({
-    mutationFn: () =>
-      apiFetch(`/api/v1/nodes/${node.id}`, {
+    mutationFn: async () => {
+      await apiFetch(`/api/v1/nodes/${node.id}`, {
         method: 'PATCH',
         body: JSON.stringify({
           name,
@@ -398,7 +407,14 @@ function EditNodeDialog({
           public_endpoint: publicEndpoint,
           capacity_max_peers: Number(capacity),
         }),
-      }),
+      })
+      if (obfuscationProfile !== (node.obfuscation?.profile_id ?? '')) {
+        await apiFetch(`/api/v1/nodes/${node.id}/obfuscation`, {
+          method: 'PUT',
+          body: JSON.stringify({ profile_id: obfuscationProfile || null }),
+        })
+      }
+    },
     onSuccess: () => {
       push('success', t('{name} updated', { name }))
       onSaved()
@@ -442,6 +458,9 @@ function EditNodeDialog({
         <Field label="WireGuard subnet" hint="Not editable once peers may already be allocated from it.">
           <Input value={node.wg_subnet} disabled />
         </Field>
+        {canManageObfuscation(user?.role) && (
+          <NodeObfuscationField info={node.obfuscation} value={obfuscationProfile} onChange={setObfuscationProfile} />
+        )}
         {error && <p className="text-sm text-danger-fg">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>

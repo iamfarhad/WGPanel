@@ -17,6 +17,7 @@ export const EVENT_CATALOG: { type: string; label: string; severity: 'info' | 'w
   { type: 'reseller.plan_expiring', label: 'Reseller plan expires soon', severity: 'warning' },
   { type: 'backup.succeeded', label: 'Backup completed', severity: 'info' },
   { type: 'backup.failed', label: 'Backup failed', severity: 'critical' },
+  { type: 'obfuscation.profile_rotated', label: 'Obfuscation profile rotated', severity: 'warning' },
 ]
 
 export function eventLabel(type: string): string {
@@ -98,6 +99,14 @@ export function notificationText(
       }
     case 'backup.failed':
       return { title, body: t('Backup to {dest} failed: {error}', { dest: s('destination'), error: s('error') }) }
+    case 'obfuscation.profile_rotated':
+      return {
+        title,
+        body: t('Profile "{name}" was rotated to revision {rev}. Clients of its nodes must re-import their configs.', {
+          name: s('profile_name'),
+          rev: Number(d.revision) || 0,
+        }),
+      }
     default:
       return { title: n.title, body: n.body }
   }
