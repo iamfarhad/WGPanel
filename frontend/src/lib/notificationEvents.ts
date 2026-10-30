@@ -20,6 +20,8 @@ export const EVENT_CATALOG: { type: string; label: string; severity: 'info' | 'w
   { type: 'node.maintenance_started', label: 'Node maintenance started', severity: 'info' },
   { type: 'node.maintenance_ended', label: 'Node maintenance ended', severity: 'info' },
   { type: 'security.refresh_reuse', label: 'Session token reuse detected', severity: 'critical' },
+  { type: 'account.sharing_suspected', label: 'Account may be shared', severity: 'warning' },
+  { type: 'account.torrent_detected', label: 'Torrent traffic blocked', severity: 'warning' },
 ]
 
 export function eventLabel(type: string): string {
@@ -110,6 +112,21 @@ export function notificationText(
       }
     case 'backup.failed':
       return { title, body: t('Backup to {dest} failed: {error}', { dest: s('destination'), error: s('error') }) }
+    case 'account.sharing_suspected':
+      return {
+        title,
+        body: t('Account "{label}" is active from {n} different networks at once, so it may be shared.', {
+          label: s('label'),
+          n: Number(d.networks) || 0,
+        }),
+      }
+    case 'account.torrent_detected':
+      return {
+        title,
+        body:
+          t('Account "{label}" tried to use BitTorrent ({n} blocked packets).', { label: s('label'), n: Number(d.hits) || 0 }) +
+          (d.suspended === true ? ` ${t('The account was suspended.')}` : ''),
+      }
     default:
       return { title: n.title, body: n.body }
   }

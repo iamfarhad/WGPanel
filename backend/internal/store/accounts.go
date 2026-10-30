@@ -593,11 +593,12 @@ func (s *Store) ListAccounts(ctx context.Context, limit, offset int, callerNames
 	if err := s.reconcileLimits(ctx); err != nil {
 		return nil, err
 	}
+	filterSQL, filterArgs := accountFilterClause(ctx, 5) // ?tag= / ?q= (account_meta.go)
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+accountColumns+` FROM accounts WHERE status != 'deleted' AND `+namespaceFilter+`
-		 AND ($3 = '' OR ($3 = 'admin' AND owner_key_namespace IS NULL) OR owner_key_namespace = $3)
+		 AND ($3 = '' OR ($3 = 'admin' AND owner_key_namespace IS NULL) OR owner_key_namespace = $3)`+filterSQL+`
 		 ORDER BY created_at, id LIMIT $2 OFFSET $4`,
-		callerNamespace, limit, ownerFilter, offset,
+		append([]any{callerNamespace, limit, ownerFilter, offset}, filterArgs...)...,
 	)
 	if err != nil {
 		return nil, err
@@ -1085,12 +1086,13 @@ func (s *Store) ListAccountsAfter(ctx context.Context, limit int, afterCreatedAt
 	if afterCreatedAt != nil {
 		afterIDArg = afterID
 	}
+	filterSQL, filterArgs := accountFilterClause(ctx, 6) // ?tag= / ?q= (account_meta.go)
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+accountColumns+` FROM accounts WHERE status != 'deleted' AND `+namespaceFilter+`
 		 AND ($3 = '' OR ($3 = 'admin' AND owner_key_namespace IS NULL) OR owner_key_namespace = $3)
-		 AND ($4::timestamptz IS NULL OR (created_at, id) > ($4::timestamptz, $5::uuid))
+		 AND ($4::timestamptz IS NULL OR (created_at, id) > ($4::timestamptz, $5::uuid))`+filterSQL+`
 		 ORDER BY created_at, id LIMIT $2`,
-		callerNamespace, limit, ownerFilter, afterCreatedAt, afterIDArg,
+		append([]any{callerNamespace, limit, ownerFilter, afterCreatedAt, afterIDArg}, filterArgs...)...,
 	)
 	if err != nil {
 		return nil, err

@@ -201,6 +201,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerNotificationRoutes(mux)
 	s.registerMarzbanCompatRoutes(mux)
 	s.registerOpsRoutes(mux)
+	s.registerAbuseRoutes(mux)
 
 	return s.loggingMiddleware(mux)
 }

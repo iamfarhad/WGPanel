@@ -32,6 +32,9 @@ const (
 	// RefreshReuse: an already-rotated refresh token was replayed and its session
 	// family was revoked (authcrypto/refresh.go).
 	RefreshReuse = "security.refresh_reuse"
+	// Abuse controls (migration 0033). Keep in sync with notificationEvents.ts.
+	AccountSharingSuspected = "account.sharing_suspected"
+	AccountTorrentDetected  = "account.torrent_detected"
 )
 
 // Test pings are not part of All - they are delivered only to the endpoint tested.
@@ -71,6 +74,8 @@ var catalog = []Meta{
 	{NodeMaintStarted, SeverityInfo, true},
 	{NodeMaintEnded, SeverityInfo, true},
 	{RefreshReuse, SeverityCritical, true},
+	{AccountSharingSuspected, SeverityWarning, true},
+	{AccountTorrentDetected, SeverityWarning, true},
 }
 
 // All returns every subscribable event type.

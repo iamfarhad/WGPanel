@@ -32,6 +32,10 @@ type createAccountRequest struct {
 	HoldDurationDays *int    `json:"hold_duration_days"`
 	HoldDeadlineDays *int    `json:"hold_deadline_days"`
 	ResetStrategy    *string `json:"reset_strategy"` // none|day|week|month|year
+	// Note is free text for the seller; Tags are normalized (lowercase, deduplicated)
+	// labels used for filtering (?tag=). Both are stored with migration 0033.
+	Note *string  `json:"note"`
+	Tags []string `json:"tags"`
 }
 
 // maxBandwidthLimitMbps rejects obviously-nonsense rates (100 Gbps) before they
@@ -106,6 +110,13 @@ type accountResponse struct {
 	ResetStrategy string  `json:"reset_strategy"`
 	NextResetAt   *string `json:"next_reset_at"`
 	LastResetAt   *string `json:"last_reset_at"`
+	// Note and Tags are the seller's free-text note and normalized tags; PossiblyShared
+	// is the sharing heuristic's standing flag and TorrentHits24h the blocked torrent
+	// packets of the last day (see abuse.go). Filled by decorateAccounts.
+	Note           string   `json:"note"`
+	Tags           []string `json:"tags"`
+	PossiblyShared bool     `json:"possibly_shared"`
+	TorrentHits24h int64    `json:"torrent_hits_24h"`
 }
 
 func rfc3339Ptr(t *time.Time) *string {
@@ -253,7 +264,7 @@ func (s *Server) respondWithAccount(w http.ResponseWriter, r *http.Request, stat
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not fetch account peers")
 		return
 	}
-	writeJSON(w, status, toAccountResponse(account, peers, s.subscriptionBaseURLFromStore(r.Context())))
+	writeJSON(w, status, s.decorateAccount(r.Context(), toAccountResponse(account, peers, s.subscriptionBaseURLFromStore(r.Context()))))
 }
 
 // handleCreateAccount serves both admin and API-key callers (requireAdminOrAPIKey).
@@ -307,6 +318,11 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	ns := callerNamespaceArg(identity)
 	q := r.URL.Query()
 
+	ctx, aerr := withAccountListFilter(ctx, q) // ?tag= (repeatable) and ?q= (abuse.go)
+	if aerr != nil {
+		writeAPIError(w, aerr)
+		return
+	}
 	var accounts []store.Account
 	var err error
 	var nextCursor *string
@@ -385,6 +401,7 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, toAccountResponse(a, peers, subBase))
 	}
+	s.decorateAccounts(ctx, out)
 	if cursorMode {
 		// next_cursor is null on the last page. Only present in cursor mode, so the
 		// limit/offset response shape is unchanged.
@@ -459,6 +476,10 @@ type updateAccountRequest struct {
 	// expiry_at on an on-hold account activates it with that fixed date instead.
 	ResetStrategy    *string `json:"reset_strategy"`
 	HoldDurationDays *int    `json:"hold_duration_days"`
+	// Note replaces the note ("" clears it); Tags replaces the tag list ([] clears it).
+	// Omitted = unchanged.
+	Note *string   `json:"note"`
+	Tags *[]string `json:"tags"`
 }
 
 func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
@@ -497,6 +518,11 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.HoldDurationDays != nil && (*req.HoldDurationDays < 1 || *req.HoldDurationDays > maxHoldDays) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "hold_duration_days must be between 1 and 3650")
+		return
+	}
+	note, tags, merr := validateAccountMeta(req.Note, req.Tags)
+	if merr != nil {
+		writeAPIError(w, merr)
 		return
 	}
 	clearQuota := req.ClearDataQuota != nil && *req.ClearDataQuota
@@ -538,6 +564,11 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.applyAccountMeta(ctx, account.ID, ns, note, tags); err != nil {
+		s.Logger.Error("apply_account_meta_failed", "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not save note/tags")
+		return
+	}
 	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.updated", account.ID, nil, r.RemoteAddr); err != nil {
 		s.Logger.Error("audit_log_failed", "error", err)
 	}

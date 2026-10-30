@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { Ban, CheckCircle2, FileDown, RotateCcw, RefreshCw, Trash2, X } from 'lucide-react'
+import { Ban, CheckCircle2, FileDown, RotateCcw, RefreshCw, Tag, Trash2, X } from 'lucide-react'
 import { apiFetch } from '../../lib/api'
 import { apiCodeMessage, apiErrorMessage } from '../../lib/apiErrors'
 import { useI18n } from '../../lib/i18n'
@@ -31,11 +31,14 @@ export function BulkActionBar({
   busy,
   onClear,
   onAction,
+  onTags,
 }: {
   count: number
   busy: boolean
   onClear: () => void
-  onAction: (action: Exclude<BulkAction, 'create'>) => void
+  onAction: (action: Exclude<BulkAction, 'create' | 'add_tags' | 'remove_tags'>) => void
+  /** Opens the add/remove tags dialog (see TagChips.tsx). */
+  onTags?: () => void
 }) {
   const { t } = useI18n()
   if (count === 0) return null
@@ -62,6 +65,12 @@ export function BulkActionBar({
         <RefreshCw className="h-3.5 w-3.5" />
         {t('Reset usage')}
       </Button>
+      {onTags && (
+        <Button size="sm" variant="secondary" disabled={busy} onClick={onTags}>
+          <Tag className="h-3.5 w-3.5" />
+          {t('Tags')}
+        </Button>
+      )}
       <Button size="sm" variant="danger" disabled={busy} onClick={() => onAction('delete')}>
         <Trash2 className="h-3.5 w-3.5" />
         {t('Delete')}
@@ -134,6 +143,8 @@ const actionTitle: Record<BulkAction, string> = {
   enable: 'Accounts enabled',
   delete: 'Accounts deleted',
   reset_usage: 'Usage reset',
+  add_tags: 'Tags added',
+  remove_tags: 'Tags removed',
 }
 
 /** Per-item outcome of a bulk call. Failures are listed with the reason; for a bulk

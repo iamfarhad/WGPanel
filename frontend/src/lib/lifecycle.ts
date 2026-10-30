@@ -59,7 +59,7 @@ export interface BulkResponse<A> {
   results: BulkItemResult<A>[]
 }
 
-export type BulkAction = 'create' | 'renew' | 'suspend' | 'enable' | 'delete' | 'reset_usage'
+export type BulkAction = 'create' | 'renew' | 'suspend' | 'enable' | 'delete' | 'reset_usage' | 'add_tags' | 'remove_tags'
 
 /** Hard cap enforced by the API (maxBulkItems). */
 export const MAX_BULK = 200
@@ -78,17 +78,19 @@ export interface CsvAccount {
   expiry_at: string | null
   on_hold: boolean
   hold_duration_days: number | null
+  note?: string
+  tags?: string[]
 }
 
-/** CSV of label, subscription URL and expiry for the freshly created accounts. An
+/** CSV of label, subscription URL, expiry, tags and note for the given accounts. An
  * on-hold account has no expiry yet, so its column says how long it will run once
- * first used. */
+ * first used. Tags are joined with ";" so the cell stays one field. */
 export function accountsCsv(accounts: CsvAccount[], origin: string): string {
-  const rows = [['label', 'subscription_url', 'expiry']]
+  const rows = [['label', 'subscription_url', 'expiry', 'tags', 'note']]
   for (const a of accounts) {
     const url = a.subscription_url ?? `${origin}${a.subscription_path}`
     const expiry = a.expiry_at ?? (a.on_hold && a.hold_duration_days ? `on hold: ${a.hold_duration_days} days from first use` : '')
-    rows.push([a.label, url, expiry])
+    rows.push([a.label, url, expiry, (a.tags ?? []).join(';'), a.note ?? ''])
   }
   return rows.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n'
 }

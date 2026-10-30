@@ -48,6 +48,9 @@ type accountSpec struct {
 	ResetStrategy    string
 	TemplateNodeGrp  *string
 	TemplateResolved bool
+	// Note/Tags are the normalized note and tags to store after creation (nil = none).
+	Note *string
+	Tags *[]string
 }
 
 // resolveAccountSpec applies the precedence "explicit request field > template value >
@@ -55,6 +58,14 @@ type accountSpec struct {
 func resolveAccountSpec(req createAccountRequest, tmpl *store.PlanTemplate, now time.Time) (accountSpec, *apiError) {
 	var sp accountSpec
 	sp.ExternalRef = req.ExternalRef
+	var tagsIn *[]string
+	if req.Tags != nil {
+		tagsIn = &req.Tags
+	}
+	var merr *apiError
+	if sp.Note, sp.Tags, merr = validateAccountMeta(req.Note, tagsIn); merr != nil {
+		return sp, merr
+	}
 	if req.NodeID != nil {
 		sp.NodeID = *req.NodeID
 	}
@@ -240,6 +251,10 @@ func (s *Server) createFromSpec(ctx context.Context, identity *CallerIdentity, s
 	if err != nil {
 		return store.Account{}, toAPIError(err, "create")
 	}
+	// The account exists even if annotating it fails, so a failure here only logs.
+	if err := s.applyAccountMeta(ctx, account.ID, owner, sp.Note, sp.Tags); err != nil {
+		s.Logger.Error("apply_account_meta_failed", "error", err)
+	}
 	return account, nil
 }
 
@@ -291,7 +306,7 @@ func toAPIError(err error, op string) *apiError {
 		return &apiError{Status: http.StatusConflict, Code: "external_ref_taken", Message: "an account with this external_ref already exists"}
 	case errors.Is(err, store.ErrAccountQuotaExhausted):
 		return &apiError{Status: http.StatusConflict, Code: "quota_exhausted", Message: "this account has used its whole data quota and would be suspended again at once: raise the quota, renew with add_quota_gb or reset its usage first"}
-	case errors.Is(err, store.ErrInvalidResetStrategy), errors.Is(err, store.ErrHoldWithExpiry):
+	case errors.Is(err, store.ErrInvalidResetStrategy), errors.Is(err, store.ErrHoldWithExpiry), errors.Is(err, store.ErrInvalidTag):
 		return badRequest(err.Error())
 	}
 	return &apiError{Status: http.StatusInternalServerError, Code: "internal_error", Message: "could not " + op + " account"}

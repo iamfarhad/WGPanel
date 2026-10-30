@@ -50,6 +50,9 @@ type heartbeatRequest struct {
 	// DNSForwarder tells the panel it may point this node's clients at the node's
 	// tunnel address for DNS (see dnsForwarder).
 	DNSForwarder bool `json:"dns_forwarder"`
+	// TorrentHits: matched BitTorrent-signature packets per tunnel IP not yet
+	// acknowledged by the panel (see torrent.go); omitted when there are none.
+	TorrentHits []torrentHitReport `json:"torrent_hits,omitempty"`
 }
 
 type heartbeatPeer struct {
@@ -67,6 +70,9 @@ type heartbeatResponse struct {
 	Network *nodeNetwork `json:"network"`
 	// ClientDNS is the DNS = value client configs carry - see checkClientDNS.
 	ClientDNS string `json:"client_dns"`
+	// TorrentBlock is whether this node should drop torrent-signature packets; nil from
+	// a control plane that predates the feature (see torrentState.sync).
+	TorrentBlock *bool `json:"torrent_block"`
 }
 
 // runHeartbeatLoop returns only on shutdown (nil) or on a fatal node-network
@@ -83,7 +89,7 @@ func runHeartbeatLoop(ctx context.Context, cfg config, id *identity, dnsForwarde
 		Timeout: 15 * time.Second,
 	}
 
-	state := &heartbeatState{checkedNetwork: id.Network, dnsForwarder: dnsForwarder}
+	state := &heartbeatState{checkedNetwork: id.Network, dnsForwarder: dnsForwarder, torrent: newTorrentState()}
 	// don't wait a full interval before the first one
 	if err := state.tick(ctx, cfg, client, logger); err != nil {
 		return err
@@ -125,6 +131,7 @@ type heartbeatState struct {
 	checkedNetwork           nodeNetwork
 	checkedDNS               string
 	dnsForwarder             bool
+	torrent                  torrentState
 }
 
 // tick returns an error only for a fatal node-network mismatch; every transient
@@ -163,10 +170,14 @@ func (s *heartbeatState) tick(ctx context.Context, cfg config, client *http.Clie
 		}
 	}
 
+	req.TorrentHits = s.torrent.collect()
+
 	resp, ok := sendHeartbeat(ctx, cfg, client, logger, req)
 	if !ok {
 		return nil
 	}
+	s.torrent.acked(req.TorrentHits)
+	s.torrent.sync(cfg.WGInterface, resp.TorrentBlock, resp.Peers, logger)
 	// Checked before heartbeat_ok is logged: the installers read that line as success,
 	// and report any client_dns_unreachable warning logged before it.
 	if err := s.checkNetwork(cfg, resp.Network, logger); err != nil {

@@ -30,8 +30,11 @@ import { ExpiryBadge } from '../components/ui/ExpiryBadge'
 import { BulkActionBar, BulkCreateDialog, BulkRenewDialog, BulkResultDialog, type BulkAccount } from '../components/accounts/BulkActions'
 import { LifecycleFields } from '../components/accounts/LifecycleFields'
 import { emptyLifecycle, lifecycleBody, lifecycleFromTemplate, type LifecycleState } from '../lib/lifecycleForm'
-import { resetStrategies, useTemplates, type BulkAction, type BulkResponse, type ResetStrategy } from '../lib/lifecycle'
+import { accountsCsv, downloadTextFile, resetStrategies, useTemplates, type BulkAction, type BulkResponse, type ResetStrategy } from '../lib/lifecycle'
 import { PeerEndpointSelect } from '../components/NodeEndpointsDialog'
+import { BulkTagDialog, TagChips, TagFilter, TagInput } from '../components/accounts/TagChips'
+import { AbuseBadges, AbuseDetails } from '../components/accounts/SharingBadge'
+import { sameTags, type AccountAbuseExtras } from '../lib/abuse'
 
 interface Node {
   id: string
@@ -85,6 +88,12 @@ interface Account {
   last_reset_at: string | null
   created_at: string
   updated_at: string
+  // Abuse controls: seller note, normalized tags, the sharing heuristic's flag and the
+  // blocked torrent packets of the last day.
+  note: string
+  tags: string[]
+  possibly_shared: boolean
+  torrent_hits_24h: number
 }
 
 type StatusFilter = 'all' | 'active' | 'on_hold' | 'suspended'
@@ -106,7 +115,7 @@ interface AccountDevice {
   active: boolean
 }
 
-interface DevicesResponse {
+interface DevicesResponse extends AccountAbuseExtras {
   devices: AccountDevice[] | null
   active_devices: number
   device_limit: number | null
@@ -162,6 +171,8 @@ export function AccountsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [tagFilter, setTagFilter] = useState<string[]>([])
+  const [bulkTagsOpen, setBulkTagsOpen] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [bulkCreateOpen, setBulkCreateOpen] = useState(false)
   const [bulkRenewOpen, setBulkRenewOpen] = useState(false)
@@ -198,12 +209,26 @@ export function AccountsPage() {
   const query = search.trim().toLowerCase()
   const filteredAccounts = accounts.filter((a) => {
     if (statusFilter === 'on_hold' ? !a.on_hold : statusFilter !== 'all' && a.status !== statusFilter) return false
-    if (query && !(a.label.toLowerCase().includes(query) || a.external_ref?.toLowerCase().includes(query))) return false
+    if (tagFilter.some((tag) => !a.tags.includes(tag))) return false
+    if (
+      query &&
+      !(
+        a.label.toLowerCase().includes(query) ||
+        a.external_ref?.toLowerCase().includes(query) ||
+        a.note.toLowerCase().includes(query) ||
+        a.tags.some((tag) => tag.includes(query))
+      )
+    )
+      return false
     if (ownerFilter === 'all') return true
     if (ownerFilter === 'admin' || ownerFilter === 'api') return ownerKind(a) === ownerFilter
     return a.owner === ownerFilter
   })
   const showOwner = !isReseller
+  const allTags = useMemo(
+    () => [...new Set((accountsQuery.data?.accounts ?? []).flatMap((a) => a.tags ?? []))].sort(),
+    [accountsQuery.data],
+  )
   // Drop selected ids that no longer exist (deleted, or another page refetch).
   const knownIds = new Set(accounts.map((a) => a.id))
   const liveSelected = [...selected].filter((id) => knownIds.has(id))
@@ -378,6 +403,16 @@ export function AccountsPage() {
               ))}
             </Select>
           )}
+          <TagFilter available={allTags} selected={tagFilter} onChange={setTagFilter} />
+          <Button
+            variant="secondary"
+            onClick={() =>
+              downloadTextFile(`accounts-${new Date().toISOString().slice(0, 10)}.csv`, accountsCsv(filteredAccounts, window.location.origin))
+            }
+          >
+            <FileDown className="h-4 w-4" />
+            {t('Export CSV')}
+          </Button>
         </div>
       )}
 
@@ -442,7 +477,14 @@ export function AccountsPage() {
                         className="cursor-pointer"
                       />
                     </Td>
-                    <Td className="font-medium text-fg">{a.label}</Td>
+                    <Td className="font-medium text-fg">
+                      {a.label}
+                      {a.tags.length > 0 && (
+                        <div className="mt-1 font-normal">
+                          <TagChips tags={a.tags} onTagClick={(tag) => setTagFilter((prev) => (prev.includes(tag) ? prev : [...prev, tag]))} />
+                        </div>
+                      )}
+                    </Td>
                     <Td className="whitespace-nowrap text-muted">
                       <span className="inline-flex items-center gap-1.5">
                         <Server className="h-3.5 w-3.5 text-faint" />
@@ -496,6 +538,7 @@ export function AccountsPage() {
                         <Badge dot tone={statusTone(a.status)}>{a.status}</Badge>
                         {a.on_hold && <Badge tone="blue">{t('On hold')}</Badge>}
                         {a.device_limit_exceeded && <Badge tone="amber">{t('over device limit')}</Badge>}
+                        <AbuseBadges possiblyShared={a.possibly_shared} torrentHits24h={a.torrent_hits_24h} />
                       </span>
                     </Td>
                     <Td className="text-end">
@@ -524,6 +567,18 @@ export function AccountsPage() {
           if (action === 'renew') setBulkRenewOpen(true)
           else if (action === 'enable') runBulk('enable')
           else setBulkConfirm(action)
+        }}
+        onTags={() => setBulkTagsOpen(true)}
+      />
+      <BulkTagDialog
+        open={bulkTagsOpen}
+        count={liveSelected.length}
+        submitting={bulkMutation.isPending}
+        suggestions={allTags}
+        onClose={() => setBulkTagsOpen(false)}
+        onSubmit={(mode, tags) => {
+          runBulk(mode, { tags })
+          setBulkTagsOpen(false)
         }}
       />
       <BulkRenewDialog
@@ -567,6 +622,7 @@ export function AccountsPage() {
         nodes={nodes}
         defaultQuotaGb={settingsQuery.data?.default_data_quota_gb ?? null}
         defaultDeviceLimit={settingsQuery.data?.default_device_limit ?? null}
+        suggestions={allTags}
         onCreated={() => {
           invalidate()
           setCreateOpen(false)
@@ -584,6 +640,7 @@ export function AccountsPage() {
           onDelete={() => setDeleteTarget(detailAccount)}
           onPatch={(body) => patchMutation.mutate({ id: detailAccount.id, body })}
           onRotateSubscription={() => rotateSubscriptionMutation.mutate(detailAccount.id)}
+          suggestions={allTags}
           busy={
             suspendMutation.isPending ||
             enableMutation.isPending ||
@@ -618,6 +675,7 @@ function CreateAccountDialog({
   nodes,
   defaultQuotaGb,
   defaultDeviceLimit,
+  suggestions,
   onCreated,
 }: {
   open: boolean
@@ -625,6 +683,7 @@ function CreateAccountDialog({
   nodes: Node[]
   defaultQuotaGb: number | null
   defaultDeviceLimit: number | null
+  suggestions: string[]
   onCreated: () => void
 }) {
   const { t } = useI18n()
@@ -638,6 +697,8 @@ function CreateAccountDialog({
   const [customExpiry, setCustomExpiry] = useState('')
   const [templateId, setTemplateId] = useState('')
   const [life, setLife] = useState<LifecycleState>(emptyLifecycle)
+  const [note, setNote] = useState('')
+  const [tags, setTags] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const templatesQuery = useTemplates()
   const templates = templatesQuery.data?.templates ?? []
@@ -668,6 +729,8 @@ function CreateAccountDialog({
     setCustomExpiry('')
     setTemplateId('')
     setLife(emptyLifecycle)
+    setNote('')
+    setTags([])
     setError(null)
   }, [open, defaultQuotaGb, defaultDeviceLimit])
 
@@ -692,6 +755,8 @@ function CreateAccountDialog({
           bandwidth_limit_mbps: bandwidthMbps ? Number(bandwidthMbps) : undefined,
           expiry_at: life.onHold ? undefined : resolveExpiryAt(),
           template_id: templateId || undefined,
+          note: note.trim() || undefined,
+          tags: tags.length > 0 ? tags : undefined,
           ...lifecycleBody(life),
         }),
       }),
@@ -786,6 +851,12 @@ function CreateAccountDialog({
           )}
         </Field>}
         <LifecycleFields value={life} onChange={setLife} />
+        <Field label="Tags" labelSuffix="(optional)" hint="Short labels to group and filter accounts, like vip or trial.">
+          <TagInput value={tags} onChange={setTags} suggestions={suggestions} id="new-account-tags" />
+        </Field>
+        <Field label="Note" labelSuffix="(optional)" hint="Only you see this - for example who paid and how.">
+          <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} />
+        </Field>
         {error && <p className="text-sm text-danger-fg">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
@@ -825,9 +896,11 @@ function AccountDetailDialog({
   onDelete,
   onPatch,
   onRotateSubscription,
+  suggestions,
   busy,
 }: {
   account: Account
+  suggestions: string[]
   initialTab: DetailTab
   onClose: () => void
   onSuspend: () => void
@@ -1157,6 +1230,7 @@ function AccountDetailDialog({
               ))}
             </div>
           )}
+          <AbuseDetails extras={devicesQuery.data} />
           <label className="mt-4 flex cursor-pointer items-start gap-2.5 rounded-lg border border-edge p-3 text-sm text-fg transition-colors hover:bg-inset/50">
             <input
               type="checkbox"
@@ -1211,7 +1285,7 @@ function AccountDetailDialog({
         </div>
       )}
 
-      {tab === 'edit' && <EditAccountForm account={account} busy={busy} onPatch={onPatch} />}
+      {tab === 'edit' && <EditAccountForm account={account} busy={busy} onPatch={onPatch} suggestions={suggestions} />}
 
       {/* Actions - always visible regardless of tab */}
       <div className="mt-6 flex flex-wrap gap-2 border-t border-edge pt-4">
@@ -1243,10 +1317,12 @@ function EditAccountForm({
   account,
   busy,
   onPatch,
+  suggestions,
 }: {
   account: Account
   busy: boolean
   onPatch: (body: Record<string, unknown>) => void
+  suggestions: string[]
 }) {
   const { t } = useI18n()
   // Initial form values derived from the account - recomputed when the server
@@ -1260,6 +1336,8 @@ function EditAccountForm({
       expiry: account.expiry_at ? toDateInputValue(account.expiry_at) : '',
       holdDays: account.hold_duration_days?.toString() ?? '',
       reset: account.reset_strategy,
+      note: account.note ?? '',
+      tags: account.tags ?? [],
     }),
     [account.id, account.updated_at], // eslint-disable-line react-hooks/exhaustive-deps
   )
@@ -1271,6 +1349,8 @@ function EditAccountForm({
   const [expiry, setExpiry] = useState(initial.expiry)
   const [holdDays, setHoldDays] = useState(initial.holdDays)
   const [reset, setReset] = useState<ResetStrategy>(initial.reset)
+  const [note, setNote] = useState(initial.note)
+  const [tags, setTags] = useState(initial.tags)
 
   useEffect(() => {
     setLabel(initial.label)
@@ -1280,6 +1360,8 @@ function EditAccountForm({
     setExpiry(initial.expiry)
     setHoldDays(initial.holdDays)
     setReset(initial.reset)
+    setNote(initial.note)
+    setTags(initial.tags)
   }, [initial])
 
   // Only changed fields are sent - the PATCH endpoint treats omitted fields as
@@ -1294,6 +1376,8 @@ function EditAccountForm({
   if (expiry !== initial.expiry && expiry !== '') changes.expiry_at = new Date(`${expiry}T23:59:59`).toISOString()
   if (account.on_hold && holdDays !== initial.holdDays && Number(holdDays) >= 1) changes.hold_duration_days = Number(holdDays)
   if (reset !== initial.reset) changes.reset_strategy = reset
+  if (note !== initial.note) changes.note = note
+  if (!sameTags(tags, initial.tags)) changes.tags = tags
   const hasChanges = Object.keys(changes).length > 0
 
   function handleSubmit(e: FormEvent) {
@@ -1344,6 +1428,12 @@ function EditAccountForm({
           </Select>
         </Field>
       </div>
+      <Field label="Tags" hint="Short labels to group and filter accounts.">
+        <TagInput value={tags} onChange={setTags} suggestions={suggestions} id="edit-account-tags" />
+      </Field>
+      <Field label="Note" hint="Only you see this.">
+        <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} />
+      </Field>
       <div className="flex items-center justify-end gap-3 border-t border-edge pt-4">
         {hasChanges && <span className="text-xs text-muted">{t('{n} changes pending', { n: Object.keys(changes).length })}</span>}
         <Button type="submit" disabled={busy || !hasChanges}>
