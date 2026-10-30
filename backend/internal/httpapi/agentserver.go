@@ -180,6 +180,9 @@ type agentHeartbeatRequest struct {
 	TorrentHits []agentTorrentHit `json:"torrent_hits"`
 	// psk_supported / ipv6_global / ipv6_ready (routing_agent.go).
 	routingAgentReport
+	// Obfuscation is what the agent actually runs (AmneziaWG profile and revision, or
+	// plain WireGuard); see obfuscation.go. Absent from older agents.
+	Obfuscation *agentObfuscationReport `json:"obfuscation"`
 }
 
 type agentHeartbeatPeer struct {
@@ -211,6 +214,9 @@ type agentHeartbeatResponse struct {
 	TorrentBlock *bool `json:"torrent_block,omitempty"`
 	// IPv6 is the node's IPv6 egress instruction (routing_agent.go).
 	IPv6 *agentIPv6 `json:"ipv6,omitempty"`
+	// Obfuscation tells the agent which AmneziaWG profile to run (profile null = plain
+	// WireGuard); absent only when the lookup failed, so the agent keeps its state.
+	Obfuscation *agentObfuscationDirective `json:"obfuscation,omitempty"`
 }
 
 // handleAgentHeartbeat requires a client certificate that both chains to our CA
@@ -299,6 +305,8 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := agentHeartbeatResponse{Status: "ok", Peers: peers}
+	s.recordAgentObfuscation(ctx, nodeID, req.Obfuscation)
+	resp.Obfuscation = s.agentObfuscationFor(ctx, nodeID)
 	// Best-effort like telemetry: a failed lookup only skips the agent's checks this tick.
 	if node, err := s.Store.GetNode(ctx, nodeID); err == nil {
 		network := nodeNetworkFor(node)

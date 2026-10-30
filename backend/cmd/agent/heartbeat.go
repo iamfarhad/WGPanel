@@ -61,6 +61,8 @@ type heartbeatRequest struct {
 	// IPv6 egress (see ipv6.go).
 	IPv6Global bool `json:"ipv6_global"`
 	IPv6Ready  bool `json:"ipv6_ready"`
+	// Obfuscation is the interface mode the agent really runs (see awg.go).
+	Obfuscation *obfuscationReport `json:"obfuscation,omitempty"`
 }
 
 type heartbeatPeer struct {
@@ -86,6 +88,8 @@ type heartbeatResponse struct {
 	TorrentBlock *bool `json:"torrent_block"`
 	// IPv6 is the node's IPv6 egress instruction; nil from an older control plane.
 	IPv6 *heartbeatIPv6 `json:"ipv6"`
+	// Obfuscation is the AmneziaWG profile to run; absent from older control planes.
+	Obfuscation *obfuscationDirective `json:"obfuscation"`
 }
 
 // runHeartbeatLoop returns only on shutdown (nil) or on a fatal node-network
@@ -146,6 +150,7 @@ type heartbeatState struct {
 	dnsForwarder             bool
 	torrent                  torrentState
 	ipv6                     ipv6State
+	awg                      awgAgent
 }
 
 // tick returns an error only for a fatal node-network mismatch; every transient
@@ -177,6 +182,7 @@ func (s *heartbeatState) tick(ctx context.Context, cfg config, client *http.Clie
 
 	req := heartbeatRequest{PeerCount: peerCount, LoadAvg: 0, Traffic: traffic, DNSForwarder: s.dnsForwarder,
 		PSKSupported: true, IPv6Global: s.ipv6.reportedGlobal, IPv6Ready: s.ipv6.ready}
+	req.Obfuscation = s.awg.report(cfg.WGInterface)
 	if s.tickCount%metricsEveryNTicks == 1 {
 		req.CPUPercent = s.readCPUPercent()
 		if used, total, ok := readMemInfo(); ok {
@@ -204,6 +210,17 @@ func (s *heartbeatState) tick(ctx context.Context, cfg config, client *http.Clie
 		s.checkedDNS = resp.ClientDNS
 	}
 	logger.Info("heartbeat_ok", "peer_count", peerCount, "desired_peers", len(resp.Peers))
+
+	// AmneziaWG mode switch / parameter change. A recreated interface starts without
+	// peers or tc shaping, so forget the applied signature to re-sync both below. It
+	// also loses the IPv6 gateway address ipv6.sync put on it above; forgetting that
+	// state re-adds it now (addr replace and the -C-guarded rules are idempotent). The
+	// torrent rules match the interface by name, so they survive the recreate as-is.
+	if s.awg.apply(cfg.WGInterface, resp.Obfuscation, logger) {
+		s.lastAppliedPeerSignature = ""
+		s.ipv6.applied = heartbeatIPv6{}
+		s.ipv6.sync(cfg.WGInterface, resp.IPv6, logger)
+	}
 
 	// Only actually touch the interface when the desired peer set changed since the
 	// last tick we successfully applied - see peerSignature's doc comment for why

@@ -39,6 +39,9 @@ const (
 	ResellerChildCreated = "reseller.child_created"
 	ResellerChildUpdated = "reseller.child_updated"
 	ResellerChildDeleted = "reseller.child_deleted"
+	// ObfuscationProfileRotated: an AmneziaWG profile's parameters were regenerated,
+	// so client configs for its nodes must be re-imported.
+	ObfuscationProfileRotated = "obfuscation.profile_rotated"
 )
 
 // Test pings are not part of All - they are delivered only to the endpoint tested.
@@ -83,6 +86,7 @@ var catalog = []Meta{
 	{RefreshReuse, SeverityCritical, true},
 	{AccountSharingSuspected, SeverityWarning, true},
 	{AccountTorrentDetected, SeverityWarning, true},
+	{ObfuscationProfileRotated, SeverityWarning, true},
 }
 
 // All returns every subscribable event type.

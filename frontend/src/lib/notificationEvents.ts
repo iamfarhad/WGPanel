@@ -30,6 +30,7 @@ export const EVENT_CATALOG: { type: string; label: string; severity: 'info' | 'w
   { type: 'payment.rejected', label: 'Payment rejected', severity: 'info' },
   { type: 'order.fulfilled', label: 'Order fulfilled', severity: 'info' },
   { type: 'wallet.credited', label: 'Wallet credited', severity: 'info' },
+  { type: 'obfuscation.profile_rotated', label: 'Obfuscation profile rotated', severity: 'warning' },
 ]
 
 export function eventLabel(type: string): string {
@@ -155,6 +156,14 @@ export function notificationText(
         body: t('{amount} Toman was added to the wallet. Balance: {balance} Toman.', {
           amount: tomanText(d.amount_toman),
           balance: tomanText(d.balance_toman),
+        }),
+      }
+    case 'obfuscation.profile_rotated':
+      return {
+        title,
+        body: t('Profile "{name}" was rotated to revision {rev}. Clients of its nodes must re-import their configs.', {
+          name: s('profile_name'),
+          rev: Number(d.revision) || 0,
         }),
       }
     default:

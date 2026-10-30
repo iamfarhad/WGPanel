@@ -16,6 +16,7 @@ import { Select } from '../components/ui/Select'
 import { expiryInfo } from '../lib/expiry'
 import { routingText } from '../lib/routing'
 import { SubscriptionShop } from '../components/sales/SubscriptionShop'
+import { AwgInstall, type AwgApp } from '../components/obfuscation/AwgInstall'
 
 interface SubNode {
   node_id: string
@@ -24,6 +25,7 @@ interface SubNode {
   online: boolean
   recommended: boolean
   config_path: string
+  awg?: boolean // this node's config is AmneziaWG
 }
 
 interface SubInfo {
@@ -41,6 +43,7 @@ interface SubInfo {
   config_path: string
   routing_mode?: 'full' | 'bypass_iran' | 'custom'
   nodes: SubNode[]
+  obfuscation?: { awg: boolean; compat?: 'awg1' | 'awg2'; apps: AwgApp[] }
 }
 
 class SubError extends Error {
@@ -123,6 +126,12 @@ export function SubscriptionPage() {
   const configPath = info
     ? (info.nodes.find((n) => n.node_id === nodeId)?.config_path ?? info.nodes.find((n) => n.recommended)?.config_path ?? info.config_path)
     : ''
+
+  // AmneziaWG configs can't be imported by the stock WireGuard app: swap the install
+  // steps for the AmneziaWG apps when the selected node (default: the recommended one,
+  // which is also what the plain subscription link serves) is AWG.
+  const selectedNode = info?.nodes.find((n) => n.node_id === nodeId) ?? info?.nodes.find((n) => n.recommended) ?? info?.nodes[0]
+  const awg = selectedNode ? !!selectedNode.awg : !!info?.obfuscation?.awg
 
   const [qr, setQr] = useState<string | null>(null)
   const [qrFailed, setQrFailed] = useState(false)
@@ -309,7 +318,9 @@ export function SubscriptionPage() {
                 )}
               </div>
               <p className="text-center text-xs leading-relaxed text-muted">
-                {t('On a phone, open the WireGuard app, tap + and choose Scan QR code. On a computer, download the file and import it.')}
+                {awg
+                  ? t('On a phone, open the AmneziaWG app and scan this QR code. On a computer, download the file and import it into the app.')
+                  : t('On a phone, open the WireGuard app, tap + and choose Scan QR code. On a computer, download the file and import it.')}
               </p>
               <div className="flex w-full flex-col gap-2 sm:flex-row">
                 <a
@@ -329,6 +340,9 @@ export function SubscriptionPage() {
           </Section>
         )}
 
+        {awg && <AwgInstall apps={info.obfuscation?.apps ?? []} compat={info.obfuscation?.compat} />}
+
+        {!awg && (<>
         <Section title="1. Install the WireGuard app">
           <div className="grid grid-cols-2 gap-2">
             {APPS.map((a) => (
@@ -359,6 +373,7 @@ export function SubscriptionPage() {
             {t('Keep this page private: anyone with this link can use your subscription.')}
           </p>
         </Section>
+        </>)}
 
         <BrandSupport brand={info.brand} contact={info.support_contact} />
         <p className="text-center text-[11px] text-faint" lang={lang}>

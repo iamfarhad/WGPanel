@@ -23,6 +23,7 @@ import {
   Webhook,
   Network,
   CreditCard,
+  Shuffle,
 } from 'lucide-react'
 import { useAuth } from '../lib/auth'
 import type { AdminRole } from '../lib/auth'
@@ -66,6 +67,7 @@ const navGroups: NavGroup[] = [
     label: 'Infrastructure',
     items: [
       { to: '/nodes', label: 'Nodes', icon: Server },
+      { to: '/obfuscation', label: 'Obfuscation', icon: Shuffle, minRole: 'support' },
       { to: '/accounts', label: 'Accounts', icon: Users, reseller: true },
       { to: '/templates', label: 'Templates', icon: Layers, reseller: true },
       { to: '/reports', label: 'Reports', icon: BarChart3, reseller: true },

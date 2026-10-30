@@ -131,6 +131,8 @@ tags:
     description: Admin sign-in security - TOTP two-factor, recovery codes, passkeys (WebAuthn), login lockout and the admin IP allowlist.
   - name: Nodes
     description: WireGuard server (node) directory and lifecycle.
+  - name: Obfuscation
+    description: AmneziaWG obfuscation profiles - parameter sets assigned to nodes (a node with a profile runs AmneziaWG instead of kernel WireGuard), one-click rotation and bulk assignment per node group.
   - name: Templates
     description: Plan templates - named bundles of quota, duration, limits, reset schedule and on-hold settings used to create accounts.
   - name: Accounts
@@ -1240,6 +1242,334 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: "`ipv6_prefix_locked` - disable IPv6 on the node before changing its prefix."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/obfuscation/presets:
+    get:
+      tags: [Obfuscation]
+      summary: List the built-in obfuscation presets
+      description: >-
+        Admin session, any role. Presets are templates: creating a profile from
+        one generates fresh random parameters. `stock_client_compatible` is true
+        for the junk-only preset - the node then still accepts plain WireGuard
+        clients (junk packets are only sent by the side that starts a handshake,
+        and padding/headers stay stock).
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Presets.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  presets:
+                    type: array
+                    items: { $ref: "#/components/schemas/ObfuscationPreset" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/obfuscation/profiles:
+    get:
+      tags: [Obfuscation]
+      summary: List obfuscation profiles
+      description: Admin session, any role (staff only; not available to resellers or API keys).
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Profiles with the number of nodes each is assigned to.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profiles:
+                    type: array
+                    items: { $ref: "#/components/schemas/ObfuscationProfile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [Obfuscation]
+      summary: Create an obfuscation profile
+      description: >-
+        Admin session with role >= `operator`. Give either `preset` (an id from
+        `/obfuscation/presets`; parameters are generated) or `compat` with
+        `params`. Parameters are validated against amneziawg-go's real limits:
+        `jc` 0-128; `jmin` <= `jmax` <= 1280 (both 0 when `jc` is 0); `s1` <= 1132,
+        `s2` <= 1188 and `s1 + 56` must not equal `s2`; `h1`-`h4` all set or all
+        empty, pairwise distinct (awg2: non-overlapping ranges) and >= 5;
+        awg2 only: `s3` <= 64, `s4` <= 32, `i1`-`i5` custom signature packets built
+        from `<b 0xHEX>`, `<r N>`, `<rc N>`, `<rd N>`, `<t>` totalling <= 1280 bytes.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 64, description: Unique. }
+                preset: { type: string, enum: [compatible, awg1, awg2-quic, awg2-dns] }
+                compat: { type: string, enum: [awg1, awg2] }
+                params: { $ref: "#/components/schemas/ObfuscationParams" }
+      responses:
+        "201":
+          description: Created (revision 1).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ObfuscationProfile" }
+        "400":
+          description: "`invalid_request` or `invalid_params` (the message names the offending field)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: "`profile_name_taken`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/obfuscation/profiles/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Obfuscation]
+      summary: Get an obfuscation profile
+      description: Admin session, any role.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: The profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ObfuscationProfile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`profile_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    patch:
+      tags: [Obfuscation]
+      summary: Update an obfuscation profile
+      description: >-
+        Admin session with role >= `operator`. `params`, when given, replaces the
+        whole parameter set; the merged result is re-validated. The `revision`
+        is bumped only when `compat` or the parameters change (not on a rename):
+        nodes then reconfigure on their next heartbeat and clients must re-import
+        their configs.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 64 }
+                compat: { type: string, enum: [awg1, awg2] }
+                params: { $ref: "#/components/schemas/ObfuscationParams" }
+      responses:
+        "200":
+          description: The updated profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ObfuscationProfile" }
+        "400":
+          description: "`invalid_request` or `invalid_params`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`profile_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`profile_name_taken`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [Obfuscation]
+      summary: Delete an obfuscation profile
+      description: Admin session with role >= `operator`. Refused while any node is assigned the profile.
+      security:
+        - BearerAuth: []
+      responses:
+        "204": { description: Deleted. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`profile_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: "`profile_in_use` - unassign it from its nodes first."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/obfuscation/profiles/{id}/rotate:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Obfuscation]
+      summary: Rotate a profile's parameters
+      description: >-
+        Admin session with role >= `operator`. Regenerates fresh random valid
+        parameters, keeping the profile's compat level (and its shape: a
+        junk-only profile stays junk-only) and bumps the revision. Nodes
+        reconfigure on their next heartbeat (live when only values change,
+        otherwise by recreating the interface); **every client config issued for
+        those nodes stops working until it is re-imported.** Until a node
+        reports the new revision its configs are served without AWG lines.
+        Emits the `obfuscation.profile_rotated` event and writes an audit entry.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cps:
+                  type: string
+                  enum: [keep, quic, dns, none]
+                  default: keep
+                  description: "awg2 only: keep the I1-I5 signature packets, replace I1 with a fresh QUIC-like or DNS-like one, or clear them."
+      responses:
+        "200":
+          description: The rotated profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ObfuscationProfile" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`profile_not_found`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/obfuscation/assign-group:
+    post:
+      tags: [Obfuscation]
+      summary: Assign a profile to every node of a node group
+      description: "Admin session with role >= `operator`. A null `profile_id` clears the group's nodes back to plain WireGuard."
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [node_group]
+              properties:
+                node_group: { type: string }
+                profile_id: { type: string, format: uuid, nullable: true }
+      responses:
+        "200":
+          description: Assigned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  node_group: { type: string }
+                  profile_id: { type: string, format: uuid, nullable: true }
+                  nodes_updated: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`profile_not_found` or `node_group_not_found` (no node has that group)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/nodes/{id}/obfuscation:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Obfuscation]
+      summary: Get a node's obfuscation state
+      description: Admin session, any role.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Assigned profile and what the agent reports running.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NodeObfuscation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    put:
+      tags: [Obfuscation]
+      summary: Assign an obfuscation profile to a node
+      description: >-
+        Admin session with role >= `operator`. The node's agent switches to
+        AmneziaWG on its next heartbeat; client configs only carry the AWG
+        parameters once the node reports the profile applied. `profile_id: null`
+        returns the node to plain WireGuard.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                profile_id: { type: string, format: uuid, nullable: true }
+      responses:
+        "200":
+          description: The node's new state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NodeObfuscation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: "`node_not_found` or `profile_not_found`"
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
@@ -4105,6 +4435,15 @@ paths:
                 dns_forwarder:
                   type: boolean
                   description: The agent serves DNS for its clients on the node's tunnel address (see client_dns = node).
+                obfuscation:
+                  type: object
+                  description: What the agent actually runs (mode + applied profile revision); the panel hands out AWG configs only when this matches the assigned profile.
+                  properties:
+                    mode: { type: string, enum: [wireguard, awg] }
+                    profile_id: { type: string, format: uuid }
+                    revision: { type: integer }
+                    supported: { type: boolean }
+                    error: { type: string }
               description: Informational only - malformed/absent bodies are tolerated, not rejected.
       responses:
         "200":
@@ -4123,6 +4462,21 @@ paths:
                     description: >-
                       The node's expected WireGuard settings, so agents registered before
                       `/agent/register` returned them can check their interface too.
+                  obfuscation:
+                    type: object
+                    description: >-
+                      The AmneziaWG profile to run (`profile` is null for plain WireGuard).
+                      Parameter changes apply live where AWG allows it, otherwise the
+                      agent recreates the interface.
+                    properties:
+                      profile:
+                        type: object
+                        nullable: true
+                        properties:
+                          id: { type: string, format: uuid }
+                          revision: { type: integer }
+                          compat: { type: string, enum: [awg1, awg2] }
+                          params: { $ref: "#/components/schemas/ObfuscationParams" }
         "401":
           description: "`client_certificate_required` (no client cert presented) or `certificate_superseded` (cert's fingerprint no longer matches this node's pinned identity)."
           content:
@@ -5142,6 +5496,9 @@ components:
             node-down alerts.
         maintenance_since: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
+        obfuscation:
+          $ref: "#/components/schemas/NodeObfuscation"
+          description: Present on node reads. `mode` is `awg` when the node really runs AmneziaWG.
       required: [id, name, node_group, public_endpoint, wg_subnet, capacity_max_peers, status, created_at]
 
     SshProvisionJob:
@@ -5161,6 +5518,72 @@ components:
             message: { type: string }
         created_at: { type: string, format: date-time }
         finished_at: { type: string, format: date-time, nullable: true }
+    ObfuscationParams:
+      type: object
+      description: >-
+        AmneziaWG parameters. 0 / "" means not set (the line is omitted from
+        configs). See `POST /obfuscation/profiles` for the validation rules.
+      properties:
+        jc: { type: integer, example: 6, description: Junk packets sent before each handshake (recommended 4-12). }
+        jmin: { type: integer, example: 50 }
+        jmax: { type: integer, example: 300 }
+        s1: { type: integer, example: 20, description: Handshake init padding. }
+        s2: { type: integer, example: 30, description: Handshake response padding. }
+        s3: { type: integer, example: 10, description: "awg2: cookie reply padding." }
+        s4: { type: integer, example: 8, description: "awg2: padding of every transport packet." }
+        h1: { type: string, example: "100-200", description: "Init header: a number (awg1) or a range (awg2). h1-h4 are all set or all empty." }
+        h2: { type: string, example: "300-400" }
+        h3: { type: string, example: "500-600" }
+        h4: { type: string, example: "700-800" }
+        i1: { type: string, example: "<b 0xc0><r 40>", description: "awg2: custom signature packet (CPS), sent before each handshake." }
+        i2: { type: string }
+        i3: { type: string }
+        i4: { type: string }
+        i5: { type: string }
+
+    ObfuscationProfile:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        compat: { type: string, enum: [awg1, awg2], description: "awg1 = 1.x parameters only (broadest client support); awg2 adds s3/s4, header ranges and i1-i5." }
+        params: { $ref: "#/components/schemas/ObfuscationParams" }
+        revision: { type: integer, description: Bumped on every parameter change or rotation. }
+        node_count: { type: integer, description: Nodes this profile is assigned to. }
+        stock_client_compatible: { type: boolean, description: Junk-only profile - stock WireGuard clients still connect to its nodes. }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+      required: [id, name, compat, params, revision, node_count, created_at, updated_at]
+
+    ObfuscationPreset:
+      type: object
+      properties:
+        id: { type: string, enum: [compatible, awg1, awg2-quic, awg2-dns] }
+        name: { type: string }
+        description: { type: string }
+        compat: { type: string, enum: [awg1, awg2] }
+        stock_client_compatible: { type: boolean }
+
+    NodeObfuscation:
+      type: object
+      description: >-
+        What a node runs and what the panel wants it to run. `mode` is what the
+        agent last REPORTED running; the panel hands out AWG client configs only
+        when `applied` is true (the node runs the assigned profile at its current
+        revision). Staff see the profile fields; resellers and API keys only
+        `mode`, `applied`, `pending` and `supported`.
+      properties:
+        mode: { type: string, enum: [wireguard, awg] }
+        profile_id: { type: string, format: uuid }
+        profile_name: { type: string }
+        profile_compat: { type: string, enum: [awg1, awg2] }
+        profile_revision: { type: integer }
+        applied_revision: { type: integer, description: Revision the agent reports running. }
+        applied: { type: boolean }
+        pending: { type: boolean, description: A profile is assigned but not (yet) applied. }
+        supported: { type: boolean, description: "The node image can run AWG (binaries and /dev/net/tun present). Old node containers need `devices: [/dev/net/tun:/dev/net/tun]` added to their docker-compose.yml." }
+        error: { type: string, description: The agent's last apply error. }
+      required: [mode, applied, pending, supported]
 
     NodeEndpoint:
       type: object
@@ -5415,6 +5838,24 @@ components:
               online: { type: boolean }
               recommended: { type: boolean }
               config_path: { type: string }
+              awg: { type: boolean, description: This node's configs are AmneziaWG and need an AWG client app. }
+        obfuscation:
+          type: object
+          description: >-
+            Whether the config the page downloads (the best node's) is AmneziaWG,
+            and the apps that can import it. Never carries the parameters.
+          properties:
+            awg: { type: boolean }
+            compat: { type: string, enum: [awg1, awg2], description: "awg2 configs need a recent app version." }
+            apps:
+              type: array
+              description: Filled when any of the account's nodes is AWG.
+              items:
+                type: object
+                properties:
+                  os: { type: string, enum: [android, ios, windows, macos, linux] }
+                  name: { type: string, example: AmneziaVPN }
+                  url: { type: string }
       required: [label, status, data_used_bytes, config_path, nodes]
 
     NodeNetwork:

@@ -205,6 +205,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerAbuseRoutes(mux)
 	s.registerRoutingRoutes(mux)
 	s.registerSalesRoutes(mux)
+	s.registerObfuscationRoutes(mux)
 
 	return s.loggingMiddleware(mux)
 }

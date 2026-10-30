@@ -23,6 +23,7 @@ import { WebhooksPage } from './pages/WebhooksPage'
 import { NotificationsPage } from './pages/NotificationsPage'
 import { PaymentsPage } from './pages/PaymentsPage'
 import { BuyPage } from './pages/BuyPage'
+import { ObfuscationPage } from './pages/ObfuscationPage'
 
 const queryClient = new QueryClient()
 
@@ -61,6 +62,7 @@ function App() {
                   <Route path="/webhooks" element={<WebhooksPage />} />
                   <Route path="/notifications" element={<NotificationsPage />} />
                   <Route path="/payments" element={<PaymentsPage />} />
+                  <Route path="/obfuscation" element={<ObfuscationPage />} />
                 </Route>
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
               </Routes>
