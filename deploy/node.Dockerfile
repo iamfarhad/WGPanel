@@ -28,8 +28,18 @@ FROM debian:bookworm-slim AS awg-tools
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates build-essential && \
     rm -rf /var/lib/apt/lists/*
 ARG AWG_TOOLS_COMMIT=4cdc357c68b39a0d1e19417b7f03d604c1e1b4cf
+# One upstream bug is patched out before building: in src/config.c the config-file
+# parser flags H1 and H2 as set only when strdup() FAILS (`== NULL`; H3/H4 have the
+# right `!= NULL`), so `awg setconf` / `awg-quick up` silently drop H1 and H2 and the
+# interface runs stock message headers there. A node and its clients would then
+# disagree on the headers and never handshake (found by the end-to-end smoke test; the
+# agent also verifies the running parameters and repairs them, see cmd/agent/awg.go).
+# The grep makes the build fail loudly if a version bump changes these lines.
 RUN git clone https://github.com/amnezia-vpn/amneziawg-tools.git /awg-tools && \
     cd /awg-tools && git checkout --detach "${AWG_TOOLS_COMMIT}" && \
+    sed -i -e 's/\(init_packet_magic_header = strdup(value))\) == NULL/\1 != NULL/' \
+           -e 's/\(response_packet_magic_header = strdup(value))\) == NULL/\1 != NULL/' src/config.c && \
+    [ "$(grep -c 'packet_magic_header = strdup(value)) != NULL' src/config.c)" = 4 ] && \
     make -C src -j"$(nproc)" && \
     install -D -m 0755 src/wg /out/awg && \
     install -D -m 0755 src/wg-quick/linux.bash /out/awg-quick

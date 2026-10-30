@@ -94,10 +94,10 @@ awg_up() {
   mkdir -p /etc/amnezia/amneziawg
   chmod 700 /etc/amnezia /etc/amnezia/amneziawg
   ( umask 077
-    { sed -n '1,/^\[Interface\]/p' "$WG_CONF"
-      grep -Ev '^[[:space:]]*(#|$)' "$AWG_PARAMS" || true
-      sed '1,/^\[Interface\]/d' "$WG_CONF"
-    } > "/etc/amnezia/amneziawg/${WG_IFACE}.conf" )
+    awk 'NR==FNR { if ($0 !~ /^[[:space:]]*(#|$)/) p[++n] = $0; next }
+         { print }
+         /^\[Interface\]/ && !done { for (i = 1; i <= n; i++) print p[i]; done = 1 }' \
+      "$AWG_PARAMS" "$WG_CONF" > "/etc/amnezia/amneziawg/${WG_IFACE}.conf" )
   if awg-quick up "$WG_IFACE"; then
     # wgctrl (the agent's peer sync) looks for userspace sockets in /var/run/wireguard.
     [[ -e /var/run/wireguard || -L /var/run/wireguard ]] || ln -s /var/run/amneziawg /var/run/wireguard

@@ -88,6 +88,8 @@ type awgAgent struct {
 	failedID  string
 	failedRev int
 	failedAt  time.Time
+	// verified: the running parameters were compared with the profile since the last start.
+	verified bool
 }
 
 func awgParamsPath(iface string) string { return filepath.Join(wgConfDir, iface+".awg") }
@@ -174,6 +176,16 @@ func (a *awgAgent) apply(iface string, dir *obfuscationDirective, logger *slog.L
 	}
 	if awgSameProfile(a.applied, want) {
 		a.lastErr = ""
+		if want != nil && !a.verified {
+			// First look after an agent start (the entrypoint may have brought the
+			// interface up): make sure what runs really is the profile.
+			a.verified = true
+			if err := awgEnsure(iface, want.Params); err != nil {
+				logger.Warn("awg_running_params_wrong_recreating", "error", err)
+				a.applied = nil
+				return a.recreate(iface, want, logger)
+			}
+		}
 		return false
 	}
 	if want != nil && a.failedID == want.ID && a.failedRev == want.Revision && awgNow().Sub(a.failedAt) < awgRetryAfter {
@@ -201,6 +213,8 @@ func (a *awgAgent) apply(iface string, dir *obfuscationDirective, logger *slog.L
 		args := append([]string{"set", iface}, want.Params.SetArgs()...)
 		if out, err := awgRun("awg", args...); err != nil {
 			logger.Warn("awg_live_update_failed_recreating", "error", err, "output", strings.TrimSpace(string(out)))
+		} else if err := awgVerify(iface, want.Params); err != nil {
+			logger.Warn("awg_live_update_not_effective_recreating", "error", err)
 		} else {
 			if err := a.record(iface, want); err != nil {
 				logger.Warn("awg_state_save_failed", "error", err)
@@ -274,7 +288,83 @@ func (a *awgAgent) bringUpAWG(iface string, want *obfuscationProfile) error {
 	if err := exposeAWGSocketDir(); err != nil {
 		return err
 	}
+	a.verified = true
+	return awgEnsure(iface, want.Params)
+}
+
+// awgRunningParams reads the parameters the AWG interface really runs (awg showconf).
+func awgRunningParams(iface string) (obfuscation.Params, error) {
+	out, err := awgRun("awg", "showconf", iface)
+	if err != nil {
+		return obfuscation.Params{}, fmt.Errorf("awg showconf: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	var lines []string
+	inInterface := false
+	for _, l := range strings.Split(string(out), "\n") {
+		t := strings.TrimSpace(l)
+		switch {
+		case strings.HasPrefix(t, "["):
+			inInterface = strings.EqualFold(t, "[Interface]")
+		case inInterface && awgParamKey(t):
+			lines = append(lines, t)
+		}
+	}
+	p, err := obfuscation.ParseLines(strings.Join(lines, "\n"))
+	if err != nil {
+		return obfuscation.Params{}, err
+	}
+	// With no headers configured the device reports its stock ones (1, 2, 3, 4), which
+	// is what "unset" means.
+	if p.H1 == "1" && p.H2 == "2" && p.H3 == "3" && p.H4 == "4" {
+		p.H1, p.H2, p.H3, p.H4 = "", "", "", ""
+	}
+	return p, nil
+}
+
+// awgParamKey is true for the "Key = value" lines that are AWG parameters (showconf
+// also prints PrivateKey/ListenPort, which ParseLines rejects).
+func awgParamKey(line string) bool {
+	k, _, ok := strings.Cut(line, "=")
+	if !ok {
+		return false
+	}
+	k = strings.ToLower(strings.TrimSpace(k))
+	if len(k) == 2 && strings.ContainsRune("hisj", rune(k[0])) && k[1] >= '1' && k[1] <= '5' {
+		return true
+	}
+	return k == "jc" || k == "jmin" || k == "jmax"
+}
+
+// awgVerify returns nil when the running parameters equal want.
+func awgVerify(iface string, want obfuscation.Params) error {
+	got, err := awgRunningParams(iface)
+	if err != nil {
+		return err
+	}
+	if got != want {
+		return fmt.Errorf("running parameters differ from the profile: running %q, want %q",
+			strings.Join(got.Lines(), "; "), strings.Join(want.Lines(), "; "))
+	}
 	return nil
+}
+
+// awgEnsure verifies the running parameters and, if they differ, pushes them with
+// `awg set` and checks again. This exists because the pinned amneziawg-tools
+// v1.0.20260618 has a bug in its config-file parser (src/config.c: H1/H2 are only
+// flagged as set when strdup FAILS), so setconf - and with it awg-quick - silently drops
+// H1/H2 and the node would run stock headers while clients use the profile's: no
+// handshake, with nothing logged. node.Dockerfile patches that line; this check is the
+// safety net should the patch ever stop applying, and it catches any other way the
+// interface could end up with different parameters than the panel believes.
+func awgEnsure(iface string, want obfuscation.Params) error {
+	err := awgVerify(iface, want)
+	if err == nil {
+		return nil
+	}
+	if out, setErr := awgRun("awg", append([]string{"set", iface}, want.SetArgs()...)...); setErr != nil {
+		return fmt.Errorf("%v; awg set: %v: %s", err, setErr, strings.TrimSpace(string(out)))
+	}
+	return awgVerify(iface, want)
 }
 
 // record persists the applied profile (also read by node-entrypoint.sh at boot) and
