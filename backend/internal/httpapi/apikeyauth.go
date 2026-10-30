@@ -161,6 +161,19 @@ func (s *Server) authenticateAPIKey(w http.ResponseWriter, r *http.Request, next
 		return
 	}
 
+	identity, aerr := s.apiKeyIdentity(ctx, key)
+	if aerr != nil {
+		writeAPIError(w, aerr)
+		return
+	}
+	next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, callerIdentityKey, identity)))
+}
+
+// apiKeyIdentity is the caller identity of an already-authenticated API key: its own
+// scoping, or - for a reseller-owned key - the reseller's namespace with that owner's
+// state re-checked. Shared by the HMAC scheme above and the Marzban facade's bearer
+// tokens (marzbancompat_auth.go) so both scope a key exactly alike.
+func (s *Server) apiKeyIdentity(ctx context.Context, key store.APIKey) (*CallerIdentity, *apiError) {
 	identity := &CallerIdentity{
 		KeyID:        key.KeyID,
 		KeyNamespace: key.KeyID,
@@ -175,24 +188,20 @@ func (s *Server) authenticateAPIKey(w http.ResponseWriter, r *http.Request, next
 		limits, err := s.resellerLimits(ctx, *key.ResellerID)
 		switch {
 		case errors.Is(err, store.ErrResellerNotFound):
-			writeJSONError(w, http.StatusUnauthorized, "unauthorized", "invalid API key")
-			return
+			return nil, &apiError{Status: http.StatusUnauthorized, Code: "unauthorized", Message: "invalid API key"}
 		case err != nil:
 			s.Logger.Error("reseller_limits_lookup_failed", "error", err)
-			writeJSONError(w, http.StatusInternalServerError, "internal_error", "authentication failed")
-			return
+			return nil, &apiError{Status: http.StatusInternalServerError, Code: "internal_error", Message: "authentication failed"}
 		case limits.Disabled:
-			writeJSONError(w, http.StatusUnauthorized, "reseller_disabled", "the reseller owning this API key is disabled")
-			return
+			return nil, &apiError{Status: http.StatusUnauthorized, Code: "reseller_disabled", Message: "the reseller owning this API key is disabled"}
 		case limits.ExpiresAt != nil && !limits.ExpiresAt.After(time.Now()):
-			writeJSONError(w, http.StatusUnauthorized, "reseller_expired", "the reseller plan owning this API key has expired")
-			return
+			return nil, &apiError{Status: http.StatusUnauthorized, Code: "reseller_expired", Message: "the reseller plan owning this API key has expired"}
 		}
 		identity.ResellerID = *key.ResellerID
 		identity.KeyNamespace = store.ResellerNamespace(*key.ResellerID)
 		identity.NodeGroups = effectiveKeyGroups(limits.NodeGroups, key.NodeGroups)
 	}
-	next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, callerIdentityKey, identity)))
+	return identity, nil
 }
 
 // verifyAPIKeySignature checks payload against the key's current secret, falling

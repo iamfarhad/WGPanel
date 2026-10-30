@@ -21,6 +21,9 @@ var resellerRoutes = map[string]bool{
 	"GET /api/v1/me":          true,
 	"GET /api/v1/reseller/me": true,
 	"GET /api/v1/reports":     true, // always scoped to its own namespace
+	// Read-only state of the Marzban-compat switch, so the API Keys page can tell a
+	// reseller whether its bot connection instructions are live.
+	"GET /api/v1/marzban-compat": true,
 	// Self-service two-factor / passkeys: the handlers act only on the session's own
 	// admin id.
 	"GET /api/v1/me/security":                  true,

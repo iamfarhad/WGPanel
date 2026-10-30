@@ -20,6 +20,7 @@ import { Dialog } from '../components/ui/Dialog'
 import { SecuritySettingsCard } from '../components/SecuritySettingsCard'
 import { NotificationChannelsCard } from '../components/settings/NotificationChannelsCard'
 import { BackupScheduleCard } from '../components/settings/BackupScheduleCard'
+import { MarzbanCompatCard } from '../components/settings/MarzbanCompatCard'
 
 interface Settings {
   public_base_url: string | null
@@ -632,6 +633,7 @@ export function SettingsPage() {
         <BackupCard />
         <BackupScheduleCard />
         <NotificationChannelsCard />
+        <MarzbanCompatCard />
       </div>
     </div>
   )
