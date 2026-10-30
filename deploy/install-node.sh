@@ -852,6 +852,28 @@ resolve_node_image() {
   log "Node version: ${RELEASE} (${NODE_IMAGE})"
 }
 
+# ensure_tun_device adds the TUN device AmneziaWG needs to a node compose file written
+# before obfuscation support existed (updates only swap the image, so such a file is
+# never regenerated). It inserts the block under cap_add's NET_ADMIN, keeping the old
+# file as .bak; a hand-edited file it can't place the block in is left alone, with a
+# warning - plain WireGuard keeps working either way.
+ensure_tun_device() {
+  local f="$1"
+  grep -q '/dev/net/tun' "$f" && return 0
+  if grep -q '^    devices:' "$f" || ! grep -q '^      - NET_ADMIN$' "$f"; then
+    warn "Add '/dev/net/tun:/dev/net/tun' under devices: in ${f} by hand - AmneziaWG obfuscation needs it."
+    return 0
+  fi
+  cp "$f" "$f.bak"
+  awk '{ print } /^      - NET_ADMIN$/ && !done {
+    print "    # AmneziaWG (obfuscation profiles) runs in userspace and needs the TUN device."
+    print "    devices:"
+    print "      - /dev/net/tun:/dev/net/tun"
+    done = 1
+  }' "$f.bak" > "$f"
+  log "Added the TUN device AmneziaWG needs to ${f} (previous file kept as ${f}.bak)."
+}
+
 # update_node moves an installed node to another release: only NODE_IMAGE changes, so
 # the node keeps its registration, keys and settings. If the new image can't be
 # pulled, the previous one is put back and nothing restarts.
@@ -877,6 +899,7 @@ update_node() {
     err "Could not pull ${NODE_IMAGE} - kept ${current}. A release tagged minutes ago may still be publishing in CI."
     exit 1
   fi
+  ensure_tun_device "$COMPOSE_FILE"
   start_node
   verify
   log "Node updated to ${NODE_IMAGE}. To go back: sudo bash install-node.sh --update --version $(image_tag "$current")"

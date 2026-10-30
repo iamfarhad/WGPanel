@@ -215,6 +215,28 @@ installed_version() {
   image_tag "$(env_get API_IMAGE || true)"
 }
 
+# ensure_tun_device adds the TUN device AmneziaWG needs to a node compose file written
+# before obfuscation support existed (updates only swap the image, so such a file is
+# never regenerated). It inserts the block under cap_add's NET_ADMIN, keeping the old
+# file as .bak; a hand-edited file it can't place the block in is left alone, with a
+# warning - plain WireGuard keeps working either way.
+ensure_tun_device() {
+  local f="$1"
+  grep -q '/dev/net/tun' "$f" && return 0
+  if grep -q '^    devices:' "$f" || ! grep -q '^      - NET_ADMIN$' "$f"; then
+    warn "Add '/dev/net/tun:/dev/net/tun' under devices: in ${f} by hand - AmneziaWG obfuscation needs it."
+    return 0
+  fi
+  cp "$f" "$f.bak"
+  awk '{ print } /^      - NET_ADMIN$/ && !done {
+    print "    # AmneziaWG (obfuscation profiles) runs in userspace and needs the TUN device."
+    print "    devices:"
+    print "      - /dev/net/tun:/dev/net/tun"
+    done = 1
+  }' "$f.bak" > "$f"
+  log "Added the TUN device AmneziaWG needs to ${f} (previous file kept as ${f}.bak)."
+}
+
 # update_self_node_container moves the self-node (install.sh's setup_self_node, its own
 # compose project under NODE_DIR) to the same release as the panel. A no-op on a
 # panel-only host where that dir doesn't exist. The node's NAT/forwarding lives inside
@@ -224,6 +246,7 @@ update_self_node_container() {
   [[ -f "$NODE_DIR/docker-compose.yml" ]] || return 0
   log "Updating the self-node container to ${release}..."
   [[ -f "$NODE_ENV_FILE" ]] && env_set_key "$NODE_ENV_FILE" NODE_IMAGE "$(image_ref node "$release")"
+  ensure_tun_device "$NODE_DIR/docker-compose.yml"
   ( cd "$NODE_DIR" && docker compose pull && docker compose up -d ) \
     || warn "Could not update the self-node container - check: cd $NODE_DIR && docker compose logs"
 }
