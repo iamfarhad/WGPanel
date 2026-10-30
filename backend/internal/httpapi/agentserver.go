@@ -175,6 +175,9 @@ type agentHeartbeatRequest struct {
 	// DNSForwarder: the agent serves DNS for its clients on the node's tunnel address
 	// (migration 0020). Absent (false) from older agents.
 	DNSForwarder bool `json:"dns_forwarder"`
+	// TorrentHits are the torrent-signature packets the node dropped per tunnel IP since
+	// its last acknowledged heartbeat (migration 0033; absent from older agents).
+	TorrentHits []agentTorrentHit `json:"torrent_hits"`
 }
 
 type agentHeartbeatPeer struct {
@@ -196,6 +199,11 @@ type agentHeartbeatResponse struct {
 	// ClientDNS is the DNS = value client configs carry; the agent checks the node can
 	// reach those resolvers, since client traffic egresses through the node.
 	ClientDNS string `json:"client_dns,omitempty"`
+	// TorrentBlock tells the agent whether to enforce its torrent-signature drop rules:
+	// the node's override, else the panel-wide setting. A pointer so a control plane that
+	// predates the field (absent) is distinguishable from an explicit "off" - the agent
+	// leaves its rules alone on absent and removes them on false.
+	TorrentBlock *bool `json:"torrent_block,omitempty"`
 }
 
 // handleAgentHeartbeat requires a client certificate that both chains to our CA
@@ -264,6 +272,8 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	s.ingestTorrentHits(ctx, nodeID, req.TorrentHits)
+
 	desired, err := s.Store.ListDesiredPeersForNode(ctx, nodeID)
 	if err != nil {
 		s.Logger.Error("list_desired_peers_failed", "error", err)
@@ -285,6 +295,11 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		network := nodeNetworkFor(node)
 		resp.Network = &network
 		resp.ClientDNS = resolveClientDNS(s.clientDNS(ctx), node.WGSubnet, req.DNSForwarder)
+		if on, err := s.Store.EffectiveTorrentBlock(ctx, nodeID); err == nil {
+			resp.TorrentBlock = &on
+		} else {
+			s.Logger.Error("effective_torrent_block_failed", "error", err)
+		}
 	} else {
 		s.Logger.Error("get_node_for_heartbeat_failed", "error", err)
 	}

@@ -121,6 +121,18 @@ func renderEvent(ev events.Event, lang string) rendered {
 		r.Title = pick("Backup failed", "بکاپ ناموفق بود")
 		r.Body = pick(fmt.Sprintf("Backup to %s failed: %s", dataStr(d, "destination"), dataStr(d, "error")),
 			fmt.Sprintf("ارسال بکاپ به %s ناموفق بود: %s", dataStr(d, "destination"), dataStr(d, "error")))
+	case events.AccountSharingSuspected:
+		r.Title = pick("Account may be shared", "احتمال اشتراک‌گذاری اکانت")
+		r.Body = pick(fmt.Sprintf("Account %q is active from %d different networks at once, so it may be shared.", label, dataInt(d, "networks")),
+			faDigits(fmt.Sprintf("اکانت «%s» هم‌زمان از %d شبکه مختلف وصل است و احتمالاً بین چند نفر دست‌به‌دست می‌شود.", label, dataInt(d, "networks"))))
+	case events.AccountTorrentDetected:
+		r.Title = pick("Torrent traffic blocked", "ترافیک تورنت مسدود شد")
+		body := pick(fmt.Sprintf("Account %q tried to use BitTorrent (%d blocked packets).", label, dataInt(d, "hits")),
+			faDigits(fmt.Sprintf("اکانت «%s» تلاش کرده از تورنت استفاده کند (%d بسته مسدود شد).", label, dataInt(d, "hits"))))
+		if dataStr(d, "suspended") == "true" {
+			body += pick(" The account was suspended.", " اکانت تعلیق شد.")
+		}
+		r.Body = body
 	case "test":
 		r.Title = pick("Test notification", "اعلان آزمایشی")
 		r.Body = pick("This is a test message from Jirjirak WireGuard. The channel works.",

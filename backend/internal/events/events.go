@@ -27,6 +27,9 @@ const (
 	ResellerPlanExpires = "reseller.plan_expiring"
 	BackupSucceeded     = "backup.succeeded"
 	BackupFailed        = "backup.failed"
+	// Abuse controls (migration 0033). Keep in sync with notificationEvents.ts.
+	AccountSharingSuspected = "account.sharing_suspected"
+	AccountTorrentDetected  = "account.torrent_detected"
 )
 
 // Test pings are not part of All - they are delivered only to the endpoint tested.
@@ -63,6 +66,8 @@ var catalog = []Meta{
 	{ResellerPlanExpires, SeverityWarning, true},
 	{BackupSucceeded, SeverityInfo, true},
 	{BackupFailed, SeverityCritical, true},
+	{AccountSharingSuspected, SeverityWarning, true},
+	{AccountTorrentDetected, SeverityWarning, true},
 }
 
 // All returns every subscribable event type.

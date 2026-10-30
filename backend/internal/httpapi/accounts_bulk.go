@@ -25,7 +25,7 @@ import (
 const maxBulkItems = 200
 
 type bulkRequest struct {
-	Action string `json:"action"` // create | renew | suspend | enable | delete | reset_usage
+	Action string `json:"action"` // create | renew | suspend | enable | delete | reset_usage | add_tags | remove_tags
 
 	// create: count accounts labelled "<label_prefix>-NN". The account fields are those
 	// of POST /accounts (template_id and explicit fields) - external_ref is not allowed.
@@ -33,7 +33,9 @@ type bulkRequest struct {
 	LabelPrefix string `json:"label_prefix"`
 	createAccountRequest
 
-	// the other actions: the accounts to act on.
+	// the other actions: the accounts to act on. add_tags / remove_tags take the tags in
+	// the embedded createAccountRequest's "tags" field (normalized like account tags; the
+	// accounts' other tags are untouched).
 	IDs []string `json:"ids"`
 
 	// renew: at least one of these.
@@ -63,7 +65,7 @@ func bulkPermission(action string) string {
 	switch action {
 	case "create":
 		return "create"
-	case "renew", "reset_usage":
+	case "renew", "reset_usage", "add_tags", "remove_tags":
 		return "update"
 	case "suspend", "enable":
 		return "suspend"
@@ -101,7 +103,7 @@ func (s *Server) handleBulkAccounts(w http.ResponseWriter, r *http.Request) {
 
 	perm := bulkPermission(req.Action)
 	if perm == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "action must be one of create, renew, suspend, enable, delete, reset_usage")
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "action must be one of create, renew, suspend, enable, delete, reset_usage, add_tags, remove_tags")
 		return
 	}
 	if !identityHasPermission(identity, perm) {
@@ -124,7 +126,7 @@ func (s *Server) handleBulkAccounts(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.Logger.Error("list_account_peers_failed", "error", err)
 		}
-		out := toAccountResponse(a, peers, subBase)
+		out := s.decorateAccount(ctx, toAccountResponse(a, peers, subBase))
 		return &out
 	}
 	audit := func(action string, a store.Account, extra map[string]any) {
@@ -205,6 +207,18 @@ func (s *Server) handleBulkAccounts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var bulkTags []string
+	if req.Action == "add_tags" || req.Action == "remove_tags" {
+		var terr error
+		if bulkTags, terr = store.NormalizeTags(req.Tags); terr != nil || len(bulkTags) == 0 {
+			msg := "tags must list at least one tag"
+			if terr != nil {
+				msg = terr.Error()
+			}
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", msg)
+			return
+		}
+	}
 	seen := map[string]bool{}
 	resp.Total = len(req.IDs)
 	for _, id := range req.IDs {
@@ -239,6 +253,17 @@ func (s *Server) handleBulkAccounts(w http.ResponseWriter, r *http.Request) {
 		case "reset_usage":
 			action = "account.usage_reset"
 			a, err = s.Store.ResetAccountUsage(ctx, id, ns)
+		case "add_tags", "remove_tags":
+			action = "account.updated"
+			extra[req.Action] = bulkTags
+			if req.Action == "add_tags" {
+				err = s.Store.ModifyAccountTags(ctx, id, ns, bulkTags, nil)
+			} else {
+				err = s.Store.ModifyAccountTags(ctx, id, ns, nil, bulkTags)
+			}
+			if err == nil {
+				a, err = s.Store.GetAccount(ctx, id, ns)
+			}
 		}
 		if err != nil {
 			e := toAPIError(err, req.Action)

@@ -36,6 +36,10 @@ var backupTables = []string{
 	"notification_channels",
 	"webhooks",
 	"notify_settings",
+	// Abuse controls (migration 0033): the settings and per-node overrides are
+	// configuration; account_torrent_hits is transient history and stays out.
+	"abuse_settings",
+	"node_abuse_overrides",
 }
 
 // AppliedMigrations returns the filenames recorded in schema_migrations, sorted.

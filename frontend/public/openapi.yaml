@@ -107,6 +107,14 @@ tags:
     description: In-panel notification center and Telegram/email notification channels.
   - name: Webhooks
     description: Signed outbound webhooks with a persistent retry queue and delivery log.
+  - name: Abuse
+    description: >-
+      Abuse controls (super_admin edits, any staff role reads): auto-cleanup of long-dead
+      accounts, device-limit counting mode, the shared-account heuristic and torrent
+      blocking on nodes. Per-account effects (notes/tags, `possibly_shared`, torrent hit
+      counts) appear on the Account schema and `GET /accounts/{id}/devices`; events
+      `account.sharing_suspected` and `account.torrent_detected` go through the usual
+      notification channels and webhooks.
   - name: Reports
     description: Traffic, account-status, quota and expiry reporting for staff and resellers.
   - name: Resellers
@@ -1288,6 +1296,21 @@ paths:
           in: query
           description: Staff admins only. Shorthand for `owner=reseller:<id>`.
           schema: { type: string, format: uuid }
+        - name: tag
+          in: query
+          description: >-
+            Only accounts carrying this tag. Repeatable: `?tag=vip&tag=trial` requires
+            **all** of them. Normalized like stored tags (case-insensitive); a value with
+            characters tags cannot have is 400 `invalid_request`. Ignored when `external_ref` is given.
+          schema: { type: array, items: { type: string } }
+          style: form
+          explode: true
+        - name: q
+          in: query
+          description: >-
+            Case-insensitive substring search over `label`, `external_ref`, `note` and tags.
+            Ignored when `external_ref` is given.
+          schema: { type: string }
       responses:
         "200":
           description: OK
@@ -1320,7 +1343,7 @@ paths:
         Admin session (role >= `operator`), reseller session, or API key. `action` picks
         the operation and the permission it needs, exactly as the single-account routes:
         `create` -> `create`; `renew`, `reset_usage` -> `update`; `suspend`, `enable` ->
-        `suspend`; `delete` -> `delete`. At most 200 items per call. Every item runs the same
+        `suspend`; `delete` -> `delete`; `add_tags`, `remove_tags` -> `update`. At most 200 items per call. Every item runs the same
         store operation as its single-account endpoint - its own transaction and, for a
         reseller, its own limits-row lock - so `max_accounts`, the traffic credit, the plan
         expiry and namespace scoping apply item by item. The call returns 200 with one
@@ -1531,6 +1554,13 @@ paths:
                     (`data_used_bytes`) is not touched.
                 expiry_at: { type: string, format: date-time, nullable: true }
                 device_limit: { type: integer, nullable: true }
+                note: { type: string, maxLength: 2000, description: "Replaces the note; empty string clears it. Omitted = unchanged." }
+                tags:
+                  type: array
+                  items: { type: string }
+                  description: >-
+                    Replaces the tag list (normalized: lowercase, spaces become `-`, deduplicated; letters, digits and
+                    `_-:.`, max 32 characters each, max 20 per account); `[]` clears it. Omitted = unchanged.
                 reset_strategy:
                   type: string
                   enum: [none, day, week, month, year]
@@ -1907,9 +1937,55 @@ paths:
                         first_seen_at: { type: string, format: date-time }
                         last_seen_at: { type: string, format: date-time }
                         active: { type: boolean }
-                  active_devices: { type: integer }
+                  active_devices:
+                    type: integer
+                    description: Distinct active devices - endpoints or IPs depending on `device_limit_mode`.
                   device_limit: { type: integer, nullable: true }
                   device_limit_exceeded: { type: boolean }
+                  device_limit_mode:
+                    type: string
+                    enum: [endpoint, ip]
+                    description: >-
+                      What `device_limit` counts (Abuse settings): distinct `ip:port` endpoints, or distinct source IPs
+                      (ports ignored, so several devices behind one NAT count once).
+                  device_window_minutes: { type: integer, description: "How recent a sighting must be to count toward the limit." }
+                  sharing:
+                    type: object
+                    description: Shared-account heuristic - see the Abuse settings.
+                    properties:
+                      enabled: { type: boolean }
+                      suspected: { type: boolean, description: "Standing flag: active from `min_networks` or more networks at once." }
+                      since: { type: string, format: date-time, description: "When the flag was raised (only while suspected)." }
+                      min_networks: { type: integer }
+                      window_minutes: { type: integer }
+                      networks:
+                        type: array
+                        description: Distinct IPv4 /24 (IPv6 /48) networks seen inside the window, newest first. Empty while detection is off.
+                        items:
+                          type: object
+                          properties:
+                            network: { type: string, example: "203.0.113.0/24" }
+                            ips: { type: array, items: { type: string } }
+                            nodes: { type: array, items: { type: string } }
+                            last_seen_at: { type: string, format: date-time }
+                  torrent:
+                    type: object
+                    description: >-
+                      Blocked BitTorrent-signature packets from this account's tunnel address. A "hit" is one matching
+                      packet, not one attempt. Encrypted/obfuscated BitTorrent is not detected.
+                    properties:
+                      blocking_enabled: { type: boolean, description: "The panel-wide default (a node may override it)." }
+                      hits_24h: { type: integer, format: int64 }
+                      hits_30d: { type: integer, format: int64 }
+                      last_hit_at: { type: string, format: date-time, nullable: true }
+                      recent:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            at: { type: string, format: date-time }
+                            node_name: { type: string }
+                            hits: { type: integer }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -2791,6 +2867,50 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/abuse-settings:
+    get:
+      tags: [Abuse]
+      summary: Get abuse-control settings and per-node torrent overrides
+      description: Readable by any staff role. Not available to reseller sessions.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AbuseSettings" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    patch:
+      tags: [Abuse]
+      summary: Update abuse-control settings
+      description: >-
+        Requires role = `super_admin`; the change is audit-logged (`settings.abuse_updated`). Omitted
+        fields are unchanged. `node_overrides` maps a node id to `true`/`false` (force torrent blocking
+        on/off for that node) or `null` (inherit the panel-wide `torrent_block_enabled`). Everything is
+        off by default. Torrent blocking is a plaintext-signature filter: encrypted or obfuscated
+        BitTorrent traffic is not detected.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AbuseSettingsUpdate" }
+      responses:
+        "200":
+          description: Updated settings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AbuseSettings" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/backup:
@@ -3834,7 +3954,7 @@ components:
         suspend_reason:
           type: string
           nullable: true
-          enum: [manual, abuse_flag, expired, quota_exceeded, device_limit, reseller_suspended]
+          enum: [manual, abuse_flag, expired, quota_exceeded, device_limit, reseller_suspended, torrent_abuse]
           description: >-
             Why a `suspended` account is suspended; null otherwise.
             `quota_exceeded` is set **automatically** when an active account's
@@ -3845,8 +3965,12 @@ components:
             `quota_exceeded` when both apply. `manual` / `abuse_flag` are set by
             `POST .../suspend`, `device_limit` by device-limit hard enforcement,
             and `reseller_suspended` by the super-admin bulk suspension of a
-            reseller's accounts; none of these is ever overwritten or lifted by
-            data-cap enforcement.
+            reseller's accounts; `torrent_abuse` by torrent auto-suspend (Abuse
+            settings); none of these is ever overwritten or lifted by
+            data-cap enforcement. Accounts suspended as `expired` or `quota_exceeded`
+            for longer than the configured number of days are deleted by the optional
+            auto-cleanup (`account.deleted` event with `reason: auto_cleanup`); the other
+            reasons are never auto-deleted.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         last_handshake_at:
@@ -3885,6 +4009,10 @@ components:
         reset_strategy: { type: string, enum: [none, day, week, month, year], description: Scheduled reset of `data_used_bytes`. }
         next_reset_at: { type: string, format: date-time, nullable: true, description: Next scheduled reset; null when the strategy is `none` or the account is still on hold. }
         last_reset_at: { type: string, format: date-time, nullable: true, description: Last usage reset, manual or scheduled. }
+        note: { type: string, description: "Free-text note for the seller (max 2000 characters); empty string when unset." }
+        tags: { type: array, items: { type: string }, description: "Normalized tags, sorted. Filter the list with `?tag=`." }
+        possibly_shared: { type: boolean, description: "The sharing heuristic's standing flag (always false while detection is off). Detail: `GET .../devices`." }
+        torrent_hits_24h: { type: integer, format: int64, description: "Blocked torrent-signature packets in the last 24 hours." }
       required: [id, label, public_key, peers, data_used_bytes, status, created_at, updated_at, last_handshake_at, on_hold, reset_strategy]
 
     AccountPeer:
@@ -3931,6 +4059,8 @@ components:
         hold_duration_days: { type: integer, nullable: true, minimum: 1, maximum: 3650, description: "Validity granted at activation (on hold only)." }
         hold_deadline_days: { type: integer, nullable: true, minimum: 1, maximum: 3650, description: "Activate anyway this many days after creation if there was no handshake (on hold only)." }
         reset_strategy: { type: string, nullable: true, enum: [none, day, week, month, year], description: "Zero data_used_bytes on a schedule." }
+        note: { type: string, nullable: true, maxLength: 2000, description: "Free-text note stored with the account." }
+        tags: { type: array, items: { type: string }, description: "Tags (normalized by the API: lowercase, deduplicated; letters, digits and `_-:.`, max 32 characters, max 20 per account)." }
 
     PlanTemplate:
       type: object
@@ -3970,7 +4100,7 @@ components:
       type: object
       required: [action]
       properties:
-        action: { type: string, enum: [create, renew, suspend, enable, delete, reset_usage] }
+        action: { type: string, enum: [create, renew, suspend, enable, delete, reset_usage, add_tags, remove_tags] }
         count: { type: integer, minimum: 1, maximum: 200, description: "create: how many accounts." }
         label_prefix: { type: string, description: "create: labels are `<prefix>-01`, `<prefix>-02`, ..." }
         template_id: { type: string, format: uuid, nullable: true, description: "create: as in POST /accounts." }
@@ -3983,11 +4113,16 @@ components:
         hold_duration_days: { type: integer, nullable: true }
         hold_deadline_days: { type: integer, nullable: true }
         reset_strategy: { type: string, nullable: true, enum: [none, day, week, month, year] }
+        note: { type: string, nullable: true, description: "create: stored on every created account." }
+        tags:
+          type: array
+          items: { type: string }
+          description: "create: tags for every created account. add_tags / remove_tags: the tags to add to / remove from each listed account (its other tags are untouched; max 20 per account)."
         ids:
           type: array
           maxItems: 200
           items: { type: string, format: uuid }
-          description: "renew / suspend / enable / delete / reset_usage: the accounts to act on."
+          description: "renew / suspend / enable / delete / reset_usage / add_tags / remove_tags: the accounts to act on."
         extend_days: { type: integer, minimum: 1, maximum: 3650, description: "renew: as in POST .../renew." }
         add_quota_gb: { type: number, minimum: 0, description: "renew: as in POST .../renew." }
 
@@ -4107,6 +4242,49 @@ components:
         ip_address: { type: string, nullable: true }
         created_at: { type: string, format: date-time }
       required: [id, actor, action, created_at]
+
+    AbuseSettings:
+      type: object
+      properties:
+        auto_cleanup_enabled: { type: boolean, default: false, description: "Delete accounts suspended as `expired` or `quota_exceeded` for `auto_cleanup_days`. Never touches manual, abuse_flag, device_limit, torrent_abuse or reseller suspensions." }
+        auto_cleanup_days: { type: integer, minimum: 1, maximum: 3650, default: 30 }
+        device_limit_mode: { type: string, enum: [endpoint, ip], default: endpoint, description: "What an account's `device_limit` counts: distinct ip:port endpoints, or distinct source IPs." }
+        device_window_minutes: { type: integer, minimum: 1, maximum: 1440, default: 5, description: "A sighting counts toward the device limit for this long." }
+        sharing_detection_enabled: { type: boolean, default: false }
+        sharing_min_networks: { type: integer, minimum: 2, maximum: 50, default: 3, description: "Flag an account active from this many distinct IPv4 /24 (IPv6 /48) networks at once." }
+        sharing_window_minutes: { type: integer, minimum: 1, maximum: 1440, default: 10 }
+        torrent_block_enabled: { type: boolean, default: false, description: "Panel-wide default for nodes without an override." }
+        torrent_suspend_enabled: { type: boolean, default: false }
+        torrent_suspend_hits: { type: integer, minimum: 1, default: 50, description: "Matching packets (not attempts) inside the window that suspend the account (`suspend_reason: torrent_abuse`)." }
+        torrent_suspend_window_minutes: { type: integer, minimum: 1, maximum: 10080, default: 60 }
+        nodes:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
+              torrent_block: { type: boolean, nullable: true, description: "The node's own override; null = inherit." }
+              torrent_block_effective: { type: boolean, description: "What the node is told on its next heartbeat." }
+
+    AbuseSettingsUpdate:
+      type: object
+      properties:
+        auto_cleanup_enabled: { type: boolean }
+        auto_cleanup_days: { type: integer, minimum: 1, maximum: 3650 }
+        device_limit_mode: { type: string, enum: [endpoint, ip] }
+        device_window_minutes: { type: integer, minimum: 1, maximum: 1440 }
+        sharing_detection_enabled: { type: boolean }
+        sharing_min_networks: { type: integer, minimum: 2, maximum: 50 }
+        sharing_window_minutes: { type: integer, minimum: 1, maximum: 1440 }
+        torrent_block_enabled: { type: boolean }
+        torrent_suspend_enabled: { type: boolean }
+        torrent_suspend_hits: { type: integer, minimum: 1 }
+        torrent_suspend_window_minutes: { type: integer, minimum: 1, maximum: 10080 }
+        node_overrides:
+          type: object
+          additionalProperties: { type: boolean, nullable: true }
+          description: "Node id -> true / false / null (inherit)."
 
     Settings:
       type: object

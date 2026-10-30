@@ -66,10 +66,15 @@ func (s *Server) handleListAccountDevices(w http.ResponseWriter, r *http.Request
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"devices":               out,
 		"active_devices":        activeCount,
 		"device_limit":          account.DeviceLimit,
 		"device_limit_exceeded": account.DeviceLimitExceededAt != nil,
-	})
+	}
+	// device_limit_mode, sharing and torrent details (migration 0033, abuse.go).
+	for k, v := range s.abuseAccountExtras(ctx, id, ns) {
+		resp[k] = v
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

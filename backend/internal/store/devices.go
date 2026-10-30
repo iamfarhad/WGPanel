@@ -110,16 +110,27 @@ func reconcileDeviceLimitsTx(ctx context.Context, tx pgx.Tx, accountIDs []string
 		return nil, nil
 	}
 
+	// What the limit counts and over which window is a panel setting (migration 0033):
+	// distinct endpoints in 5 minutes by default - the original behavior - or distinct
+	// source IPs ('ip'), which stops one NATed home with several devices on churning
+	// ports from looking like many devices. It is a mode of the one device_limit, not a
+	// second limit: sellers set a single number per account and the hard-enforce toggle
+	// keeps meaning the same thing.
+	cfg, err := getAbuseSettings(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := tx.Query(ctx, `
 		SELECT a.id, a.device_limit, a.device_limit_hard_enforce, a.status,
 		       a.device_limit_exceeded_at IS NOT NULL,
-		       (SELECT count(*) FROM account_devices d
+		       (SELECT count(DISTINCT CASE WHEN $3 = 'ip' THEN regexp_replace(d.source_endpoint, ':[0-9]+$', '') ELSE d.source_endpoint END)
+		        FROM account_devices d
 		        WHERE d.account_id = a.id AND d.last_seen_at > now() - make_interval(secs => $2)) AS active_devices
 		FROM accounts a
 		WHERE a.id = ANY($1::uuid[]) AND a.device_limit IS NOT NULL AND a.status != 'deleted'
 		ORDER BY a.id
 		FOR UPDATE OF a
-	`, accountIDs, deviceActiveWindow.Seconds())
+	`, accountIDs, float64(cfg.DeviceWindowMinutes)*60, cfg.DeviceLimitMode)
 	if err != nil {
 		return nil, err
 	}
