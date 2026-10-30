@@ -50,6 +50,8 @@ type heartbeatRequest struct {
 	// DNSForwarder tells the panel it may point this node's clients at the node's
 	// tunnel address for DNS (see dnsForwarder).
 	DNSForwarder bool `json:"dns_forwarder"`
+	// Obfuscation is the interface mode the agent really runs (see awg.go).
+	Obfuscation *obfuscationReport `json:"obfuscation,omitempty"`
 }
 
 type heartbeatPeer struct {
@@ -67,6 +69,8 @@ type heartbeatResponse struct {
 	Network *nodeNetwork `json:"network"`
 	// ClientDNS is the DNS = value client configs carry - see checkClientDNS.
 	ClientDNS string `json:"client_dns"`
+	// Obfuscation is the AmneziaWG profile to run; absent from older control planes.
+	Obfuscation *obfuscationDirective `json:"obfuscation"`
 }
 
 // runHeartbeatLoop returns only on shutdown (nil) or on a fatal node-network
@@ -125,6 +129,7 @@ type heartbeatState struct {
 	checkedNetwork           nodeNetwork
 	checkedDNS               string
 	dnsForwarder             bool
+	awg                      awgAgent
 }
 
 // tick returns an error only for a fatal node-network mismatch; every transient
@@ -155,6 +160,7 @@ func (s *heartbeatState) tick(ctx context.Context, cfg config, client *http.Clie
 	}
 
 	req := heartbeatRequest{PeerCount: peerCount, LoadAvg: 0, Traffic: traffic, DNSForwarder: s.dnsForwarder}
+	req.Obfuscation = s.awg.report(cfg.WGInterface)
 	if s.tickCount%metricsEveryNTicks == 1 {
 		req.CPUPercent = s.readCPUPercent()
 		if used, total, ok := readMemInfo(); ok {
@@ -177,6 +183,12 @@ func (s *heartbeatState) tick(ctx context.Context, cfg config, client *http.Clie
 		s.checkedDNS = resp.ClientDNS
 	}
 	logger.Info("heartbeat_ok", "peer_count", peerCount, "desired_peers", len(resp.Peers))
+
+	// AmneziaWG mode switch / parameter change. A recreated interface starts without
+	// peers or tc shaping, so forget the applied signature to re-sync both below.
+	if s.awg.apply(cfg.WGInterface, resp.Obfuscation, logger) {
+		s.lastAppliedPeerSignature = ""
+	}
 
 	// Only actually touch the interface when the desired peer set changed since the
 	// last tick we successfully applied - see peerSignature's doc comment for why

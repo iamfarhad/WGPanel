@@ -285,6 +285,10 @@ services:
         max-file: "5"
     cap_add:
       - NET_ADMIN
+    # AmneziaWG (obfuscation profiles) runs in userspace and needs the TUN device;
+    # plain WireGuard keeps using the kernel module and never touches it.
+    devices:
+      - /dev/net/tun:/dev/net/tun
     security_opt:
       - no-new-privileges:true
     sysctls:

@@ -75,7 +75,40 @@ fi
 # routes survived (e.g. an unclean stop), tear it down first so `up` starts clean
 # instead of failing with "Device or resource busy".
 wg-quick down "$WG_IFACE" 2>/dev/null || true
-wg-quick up "$WG_IFACE"
+
+# AmneziaWG: when the agent last applied an obfuscation profile it persisted the AWG
+# parameter lines next to wg0.conf (wg0.awg, on the state volume). Boot straight into
+# AWG so a container restart doesn't drop the node to plain WireGuard until the agent's
+# first heartbeat. The AWG config is wg0.conf (just re-synced above, so address, port
+# and iptables rules are current) with those lines spliced in after [Interface]; the
+# agent builds the identical file when it switches modes at runtime (cmd/agent/awg.go,
+# buildAWGConf). With no .awg file - or anything missing for AWG - this is exactly the
+# kernel WireGuard path below, as before. Any AWG failure also falls back to it.
+AWG_PARAMS="/etc/wireguard/${WG_IFACE}.awg"
+awg_up() {
+  [[ -f "$AWG_PARAMS" ]] || return 1
+  command -v awg-quick >/dev/null && command -v amneziawg-go >/dev/null && [[ -c /dev/net/tun ]] || {
+    echo "node-entrypoint: AmneziaWG profile saved but awg binaries or /dev/net/tun are missing - starting plain WireGuard" >&2
+    return 1
+  }
+  mkdir -p /etc/amnezia/amneziawg
+  chmod 700 /etc/amnezia /etc/amnezia/amneziawg
+  ( umask 077
+    { sed -n '1,/^\[Interface\]/p' "$WG_CONF"
+      grep -Ev '^[[:space:]]*(#|$)' "$AWG_PARAMS" || true
+      sed '1,/^\[Interface\]/d' "$WG_CONF"
+    } > "/etc/amnezia/amneziawg/${WG_IFACE}.conf" )
+  if awg-quick up "$WG_IFACE"; then
+    # wgctrl (the agent's peer sync) looks for userspace sockets in /var/run/wireguard.
+    [[ -e /var/run/wireguard || -L /var/run/wireguard ]] || ln -s /var/run/amneziawg /var/run/wireguard
+    return 0
+  fi
+  echo "node-entrypoint: awg-quick up failed - falling back to plain WireGuard" >&2
+  awg-quick down "$WG_IFACE" 2>/dev/null || true
+  return 1
+}
+
+awg_up || wg-quick up "$WG_IFACE"
 
 WGPANEL_WG_PUBLIC_KEY="$(cat "/etc/wireguard/${WG_IFACE}-public.key")"
 export WGPANEL_WG_PUBLIC_KEY
