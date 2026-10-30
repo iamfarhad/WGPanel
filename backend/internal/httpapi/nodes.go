@@ -35,6 +35,9 @@ type nodeResponse struct {
 	Status           string  `json:"status"`
 	PublicKey        *string `json:"public_key"`
 	CreatedAt        string  `json:"created_at"`
+	// Obfuscation is what the node really runs (AmneziaWG or plain WireGuard) and the
+	// assigned profile; see obfuscation.go. Filled by the list/get handlers.
+	Obfuscation *nodeObfuscationResponse `json:"obfuscation,omitempty"`
 }
 
 func toNodeResponse(n store.Node) nodeResponse {
@@ -188,12 +191,18 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	obf := s.nodeObfuscationMap(r.Context())
 	out := make([]nodeResponse, 0, len(nodes))
 	for _, n := range nodes {
 		if !canSeeNodeGroup(identity, n.NodeGroup) {
 			continue
 		}
-		out = append(out, toNodeResponse(n))
+		resp := toNodeResponse(n)
+		if st, ok := obf[n.ID]; ok {
+			o := toNodeObfuscationResponse(st, isStaff(identity))
+			resp.Obfuscation = &o
+		}
+		out = append(out, resp)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": out})
 }
@@ -219,7 +228,12 @@ func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "node_not_found", "no node with that id")
 		return
 	}
-	writeJSON(w, http.StatusOK, toNodeResponse(node))
+	resp := toNodeResponse(node)
+	if st, err := s.Store.GetNodeObfuscation(r.Context(), node.ID); err == nil {
+		o := toNodeObfuscationResponse(st, isStaff(identity))
+		resp.Obfuscation = &o
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type joinTokenResponse struct {

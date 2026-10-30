@@ -175,6 +175,9 @@ type agentHeartbeatRequest struct {
 	// DNSForwarder: the agent serves DNS for its clients on the node's tunnel address
 	// (migration 0020). Absent (false) from older agents.
 	DNSForwarder bool `json:"dns_forwarder"`
+	// Obfuscation is what the agent actually runs (AmneziaWG profile and revision, or
+	// plain WireGuard); see obfuscation.go. Absent from older agents.
+	Obfuscation *agentObfuscationReport `json:"obfuscation"`
 }
 
 type agentHeartbeatPeer struct {
@@ -196,6 +199,9 @@ type agentHeartbeatResponse struct {
 	// ClientDNS is the DNS = value client configs carry; the agent checks the node can
 	// reach those resolvers, since client traffic egresses through the node.
 	ClientDNS string `json:"client_dns,omitempty"`
+	// Obfuscation tells the agent which AmneziaWG profile to run (profile null = plain
+	// WireGuard); absent only when the lookup failed, so the agent keeps its state.
+	Obfuscation *agentObfuscationDirective `json:"obfuscation,omitempty"`
 }
 
 // handleAgentHeartbeat requires a client certificate that both chains to our CA
@@ -280,6 +286,8 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := agentHeartbeatResponse{Status: "ok", Peers: peers}
+	s.recordAgentObfuscation(ctx, nodeID, req.Obfuscation)
+	resp.Obfuscation = s.agentObfuscationFor(ctx, nodeID)
 	// Best-effort like telemetry: a failed lookup only skips the agent's checks this tick.
 	if node, err := s.Store.GetNode(ctx, nodeID); err == nil {
 		network := nodeNetworkFor(node)

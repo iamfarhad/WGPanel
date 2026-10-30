@@ -32,6 +32,8 @@ type subscriptionInfoResponse struct {
 	// choices, best first.
 	ConfigPath string                     `json:"config_path"`
 	Nodes      []subscriptionNodeResponse `json:"nodes"`
+	// Obfuscation tells the page whether the config is AmneziaWG and which apps import it.
+	Obfuscation subscriptionObfuscation `json:"obfuscation"`
 }
 
 func daysLeft(expiry, now time.Time) int {
@@ -94,14 +96,18 @@ func (s *Server) handleSubscriptionInfo(w http.ResponseWriter, r *http.Request) 
 		if candidates, err := s.Store.SteerCandidatesForAccount(ctx, account.ID, nil); err != nil {
 			s.Logger.Warn("subscription_info_nodes_failed", "error", err)
 		} else {
+			awg := s.awgAppliedNodes(ctx)
 			for _, c := range steering.Rank(candidates, "") {
 				resp.Nodes = append(resp.Nodes, subscriptionNodeResponse{
+					AWG:    awg[c.NodeID],
 					NodeID: c.NodeID, Name: c.Name, Region: c.Region, Online: c.Online, Recommended: c.Recommended,
 					ConfigPath: "/api/v1/sub/" + url.PathEscape(account.SubscriptionToken) + "?format=conf&node_id=" + url.QueryEscape(c.NodeID),
 				})
 			}
 		}
 	}
+
+	resp.Obfuscation = s.subscriptionObfuscationFor(ctx, resp.Nodes)
 
 	// The response is per-capability-token private data: never cache it in shared caches.
 	w.Header().Set("Cache-Control", "no-store")

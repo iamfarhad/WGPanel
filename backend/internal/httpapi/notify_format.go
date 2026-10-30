@@ -121,6 +121,10 @@ func renderEvent(ev events.Event, lang string) rendered {
 		r.Title = pick("Backup failed", "بکاپ ناموفق بود")
 		r.Body = pick(fmt.Sprintf("Backup to %s failed: %s", dataStr(d, "destination"), dataStr(d, "error")),
 			fmt.Sprintf("ارسال بکاپ به %s ناموفق بود: %s", dataStr(d, "destination"), dataStr(d, "error")))
+	case events.ObfuscationProfileRotated:
+		r.Title = pick("Obfuscation profile rotated", "پروفایل مبهم‌سازی چرخانده شد")
+		r.Body = pick(fmt.Sprintf("Profile %q was rotated to revision %d. Clients of its nodes must re-import their configs.", dataStr(d, "profile_name"), dataInt(d, "revision")),
+			faDigits(fmt.Sprintf("پروفایل «%s» به نسخه %d چرخانده شد. کاربرهای نودهای آن باید کانفیگ جدید را وارد کنند.", dataStr(d, "profile_name"), dataInt(d, "revision"))))
 	case "test":
 		r.Title = pick("Test notification", "اعلان آزمایشی")
 		r.Body = pick("This is a test message from Jirjirak WireGuard. The channel works.",

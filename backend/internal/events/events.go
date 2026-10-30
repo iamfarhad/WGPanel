@@ -27,6 +27,9 @@ const (
 	ResellerPlanExpires = "reseller.plan_expiring"
 	BackupSucceeded     = "backup.succeeded"
 	BackupFailed        = "backup.failed"
+	// ObfuscationProfileRotated: an AmneziaWG profile's parameters were regenerated,
+	// so client configs for its nodes must be re-imported.
+	ObfuscationProfileRotated = "obfuscation.profile_rotated"
 )
 
 // Test pings are not part of All - they are delivered only to the endpoint tested.
@@ -63,6 +66,7 @@ var catalog = []Meta{
 	{ResellerPlanExpires, SeverityWarning, true},
 	{BackupSucceeded, SeverityInfo, true},
 	{BackupFailed, SeverityCritical, true},
+	{ObfuscationProfileRotated, SeverityWarning, true},
 }
 
 // All returns every subscribable event type.

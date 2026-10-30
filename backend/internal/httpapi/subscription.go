@@ -95,7 +95,7 @@ func (s *Server) resolveEndpointAndMTU(ctx context.Context, target store.Account
 // enabled node endpoint, else the node's public_endpoint), "direct" = the node's
 // public_endpoint, anything else = that specific node_endpoints row (staff-only; the
 // caller must have checked who is asking).
-func (s *Server) renderPeerConfig(ctx context.Context, accountID string, ns *string, target store.AccountPeerWithNode, endpointID string) (string, error) {
+func (s *Server) renderPeerConfigPlain(ctx context.Context, accountID string, ns *string, target store.AccountPeerWithNode, endpointID string) (string, error) {
 	if target.NodePublicKey == nil || *target.NodePublicKey == "" {
 		return "", errNodeMissingPublicKey
 	}
@@ -352,6 +352,8 @@ type subscriptionNodeResponse struct {
 	// ConfigPath is the ready-to-fetch path for this specific node's config, so a
 	// client app can offer a node picker without constructing URLs itself.
 	ConfigPath string `json:"config_path"`
+	// AWG: this node's configs are AmneziaWG (need an AWG client app).
+	AWG bool `json:"awg"`
 }
 
 // handleSubscriptionNodes lets a client app enumerate the nodes available to this
@@ -372,9 +374,11 @@ func (s *Server) handleSubscriptionNodes(w http.ResponseWriter, r *http.Request)
 	}
 	ranked := steering.Rank(candidates, r.URL.Query().Get("region"))
 
+	awg := s.awgAppliedNodes(ctx)
 	out := make([]subscriptionNodeResponse, 0, len(ranked))
 	for _, c := range ranked {
 		out = append(out, subscriptionNodeResponse{
+			AWG:         awg[c.NodeID],
 			NodeID:      c.NodeID,
 			Name:        c.Name,
 			Region:      c.Region,
