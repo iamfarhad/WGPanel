@@ -16,6 +16,7 @@ import { lifecycle } from './fa/lifecycle'
 import { endpoints } from './fa/endpoints'
 import { subscription } from './fa/subscription'
 import { notifications } from './fa/notifications'
+import { marzban } from './fa/marzban'
 
 export const fa: Record<string, string> = {
   ...common,
@@ -33,6 +34,7 @@ export const fa: Record<string, string> = {
   ...endpoints,
   ...subscription,
   ...notifications,
+  ...marzban,
 
   // Shell
   Dashboard: 'داشبورد',

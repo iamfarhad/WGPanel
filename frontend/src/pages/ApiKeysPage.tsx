@@ -18,6 +18,7 @@ import { ErrorState } from '../components/ui/ErrorState'
 import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 import { RowActions } from '../components/ui/RowActions'
+import { ConnectSalesBotCard } from '../components/apikeys/ConnectSalesBotCard'
 
 interface ApiKey {
   id: string
@@ -101,6 +102,8 @@ export function ApiKeysPage() {
           </Button>
         }
       />
+
+      <ConnectSalesBotCard />
 
       <Card className="overflow-hidden">
         {keysQuery.isLoading && <TableSkeleton cols={5} />}
