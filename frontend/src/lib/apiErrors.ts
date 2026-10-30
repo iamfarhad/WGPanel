@@ -48,6 +48,10 @@ const codeMessages: Record<string, string> = {
   notification_not_found: 'That notification no longer exists.',
   backup_not_configured: 'Set a backup password and enable a destination first.',
   backup_in_progress: 'A backup is already running.',
+  node_in_maintenance: 'That node is in maintenance and takes no new accounts.',
+  panel_address_unknown: 'Set the panel domain in Settings first: the node needs an address to reach the panel.',
+  node_already_registered: 'This node is already installed.',
+  too_many_jobs: 'Too many installations are running. Wait for one to finish.',
 }
 
 export function apiErrorMessage(err: unknown, t: (text: string) => string, fallback = 'Something went wrong'): string {

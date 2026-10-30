@@ -69,12 +69,17 @@ func (s *Server) runThresholdSweep(ctx context.Context, now time.Time) error {
 		return err
 	}
 	for _, n := range nodes {
-		rose, fell := s.transition(ctx, active, "node:"+n.ID+":down", n.Status == "offline")
+		// A node in maintenance is expected to go dark, so it never counts as "down":
+		// the transition sees the condition as cleared. If it was already alerted when
+		// maintenance began, that clear is not a real recovery, so the node.recovered
+		// is withheld too; if it is still offline when maintenance ends, node.down
+		// fires then, which is exactly when someone should look.
+		rose, fell := s.transition(ctx, active, "node:"+n.ID+":down", n.Status == "offline" && !n.Maintenance)
 		data := map[string]any{"node_id": n.ID, "node_name": n.Name}
 		if rose {
 			s.emit(events.NodeDown, "", data)
 		}
-		if fell {
+		if fell && !n.Maintenance {
 			s.emit(events.NodeRecovered, "", data)
 		}
 	}

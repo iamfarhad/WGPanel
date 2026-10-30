@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, KeyRound, Copy, Activity, Pencil, Route } from 'lucide-react'
+import { Plus, KeyRound, Copy, Activity, Pencil, Route, Terminal } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { chartAxis, chartColors, chartGrid, chartLegend, chartTooltip } from '../lib/chartTheme'
 import { apiFetch, ApiError } from '../lib/api'
@@ -22,6 +22,9 @@ import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 import { RowActions } from '../components/ui/RowActions'
 import { NodeEndpointsDialog } from '../components/NodeEndpointsDialog'
+import { MaintenanceBadge } from '../components/nodes/MaintenanceToggle'
+import { useNodeMaintenance } from '../components/nodes/useNodeMaintenance'
+import { SshProvisionDialog } from '../components/nodes/SshProvisionDialog'
 
 interface Node {
   id: string
@@ -34,6 +37,8 @@ interface Node {
   capacity_max_peers: number
   public_key: string | null
   created_at: string
+  maintenance?: boolean
+  maintenance_since?: string | null
 }
 
 interface JoinToken {
@@ -111,6 +116,8 @@ export function NodesPage() {
   const [detailNode, setDetailNode] = useState<Node | null>(null)
   const [editNode, setEditNode] = useState<Node | null>(null)
   const [endpointsNode, setEndpointsNode] = useState<Node | null>(null)
+  const [sshOpen, setSshOpen] = useState(false)
+  const maintenanceActions = useNodeMaintenance()
 
   const nodesQuery = useQuery({
     queryKey: ['nodes'],
@@ -139,10 +146,18 @@ export function NodesPage() {
         title="Nodes"
         description="WireGuard servers this panel provisions accounts onto."
         action={
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="h-4 w-4" />
-            New node
-          </Button>
+          <div className="flex items-center gap-2">
+            {user?.role === 'super_admin' && (
+              <Button variant="secondary" onClick={() => setSshOpen(true)}>
+                <Terminal className="h-4 w-4" />
+                Install over SSH
+              </Button>
+            )}
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus className="h-4 w-4" />
+              New node
+            </Button>
+          </div>
         }
       />
 
@@ -184,6 +199,7 @@ export function NodesPage() {
                   <Td className="font-mono text-xs text-muted">{node.public_endpoint}</Td>
                   <Td>
                     <Badge dot tone={statusTone(node.status)}>{node.status}</Badge>
+                    <MaintenanceBadge node={node} />
                   </Td>
                   <Td className="text-muted tabular-nums">{node.capacity_max_peers}</Td>
                   <Td className="text-end">
@@ -191,6 +207,7 @@ export function NodesPage() {
                       actions={[
                         { label: 'Metrics', icon: Activity, onSelect: () => setDetailNode(node) },
                         { label: 'Edit', icon: Pencil, onSelect: () => setEditNode(node) },
+                        ...maintenanceActions(node),
                         ...(user?.role !== 'reseller'
                           ? [{ label: 'Entry endpoints', icon: Route, onSelect: () => setEndpointsNode(node) }]
                           : []),
@@ -237,6 +254,15 @@ export function NodesPage() {
             setJoinTokenNode(null)
             setJoinToken(null)
           }}
+        />
+      )}
+
+      {sshOpen && (
+        <SshProvisionDialog
+          open
+          onClose={() => setSshOpen(false)}
+          defaultSubnet={ALL_RECOMMENDED_SUBNETS.find((s) => !nodes.some((n) => n.wg_subnet === s)) ?? ''}
+          defaultCapacity={settingsQuery.data?.default_node_capacity ?? 250}
         />
       )}
 

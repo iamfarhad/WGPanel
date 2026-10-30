@@ -279,6 +279,8 @@ func toAPIError(err error, op string) *apiError {
 		return &apiError{Status: http.StatusNotFound, Code: "node_not_found", Message: "no node with that id"}
 	case errors.Is(err, store.ErrNodeNotRegistered):
 		return &apiError{Status: http.StatusConflict, Code: "node_not_registered", Message: "node has not completed registration yet"}
+	case errors.Is(err, store.ErrNodeInMaintenance):
+		return &apiError{Status: http.StatusConflict, Code: "node_in_maintenance", Message: "node is in maintenance and takes no new accounts"}
 	case errors.Is(err, store.ErrNodeGroupNotAllowed):
 		return &apiError{Status: http.StatusForbidden, Code: "node_group_not_allowed", Message: "this API key is not scoped to that node's group"}
 	case errors.Is(err, store.ErrNodeCapacityExceeded):

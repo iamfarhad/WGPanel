@@ -144,14 +144,16 @@ type refreshRequest struct {
 
 type refreshResponse struct {
 	AccessToken string `json:"access_token"`
-	ExpiresIn   int    `json:"expires_in_seconds"`
+	// RefreshToken replaces the one presented: refresh tokens are single-use now
+	// (see authcrypto/refresh.go), so a client that keeps the old one gets logged out.
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in_seconds"`
 }
 
 // handleRefresh exchanges a still-valid refresh token (issued at login) for a new
 // access token, so a session can outlive the 15-minute access-token TTL without a
-// full re-login. Added in STORY-06 - a real SPA can't work without it, and Story 1
-// issued refresh tokens that nothing ever consumed. Does not rotate the refresh
-// token itself (STORY-06 scope note).
+// full re-login. Every call rotates the refresh token; replaying an already-rotated
+// one revokes the whole session family (authcrypto/refresh.go, handleRefreshReuse).
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	if !s.enforceAdminIPAllowlist(w, r) {
 		return
@@ -163,16 +165,23 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	adminID, err := authcrypto.ValidateRefreshToken(ctx, s.Redis, req.RefreshToken)
+	rot, err := authcrypto.RotateRefreshToken(ctx, s.Redis, req.RefreshToken)
+	var reuse *authcrypto.ReuseError
+	if errors.As(err, &reuse) {
+		s.handleRefreshReuse(r, reuse)
+		writeJSONError(w, http.StatusUnauthorized, "invalid_refresh_token", "refresh token is invalid or expired")
+		return
+	}
 	if errors.Is(err, authcrypto.ErrInvalidRefreshToken) {
 		writeJSONError(w, http.StatusUnauthorized, "invalid_refresh_token", "refresh token is invalid or expired")
 		return
 	}
 	if err != nil {
-		s.Logger.Error("validate_refresh_token_failed", "error", err)
+		s.Logger.Error("rotate_refresh_token_failed", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not refresh session")
 		return
 	}
+	adminID := rot.AdminID
 
 	admin, err := s.Store.GetAdminByID(ctx, adminID)
 	if errors.Is(err, store.ErrAdminNotFound) {
@@ -202,7 +211,8 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, refreshResponse{
-		AccessToken: accessToken,
-		ExpiresIn:   int(authcrypto.AccessTokenTTL.Seconds()),
+		AccessToken:  accessToken,
+		RefreshToken: rot.NewToken,
+		ExpiresIn:    int(authcrypto.AccessTokenTTL.Seconds()),
 	})
 }

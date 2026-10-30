@@ -35,6 +35,9 @@ type nodeResponse struct {
 	Status           string  `json:"status"`
 	PublicKey        *string `json:"public_key"`
 	CreatedAt        string  `json:"created_at"`
+	// Maintenance mode (ops_maintenance.go): filled by the list/get/update handlers.
+	Maintenance      bool    `json:"maintenance"`
+	MaintenanceSince *string `json:"maintenance_since"`
 }
 
 func toNodeResponse(n store.Node) nodeResponse {
@@ -170,7 +173,7 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, toNodeResponse(node))
+	writeJSON(w, http.StatusOK, s.nodeResponseWithMaintenance(ctx, node))
 }
 
 // handleListNodes serves both the admin panel and bot/reseller API keys
@@ -188,12 +191,17 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	maint, _ := s.Store.NodeMaintenanceSince(r.Context())
 	out := make([]nodeResponse, 0, len(nodes))
 	for _, n := range nodes {
 		if !canSeeNodeGroup(identity, n.NodeGroup) {
 			continue
 		}
-		out = append(out, toNodeResponse(n))
+		resp := toNodeResponse(n)
+		if t, ok := maint[n.ID]; ok {
+			resp.setMaintenance(t)
+		}
+		out = append(out, resp)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": out})
 }
@@ -219,7 +227,7 @@ func (s *Server) handleGetNode(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "node_not_found", "no node with that id")
 		return
 	}
-	writeJSON(w, http.StatusOK, toNodeResponse(node))
+	writeJSON(w, http.StatusOK, s.nodeResponseWithMaintenance(r.Context(), node))
 }
 
 type joinTokenResponse struct {

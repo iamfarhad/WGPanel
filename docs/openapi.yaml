@@ -337,11 +337,18 @@ paths:
   /api/v1/auth/refresh:
     post:
       tags: [Auth]
-      summary: Exchange a refresh token for a new access token
+      summary: Exchange a refresh token for a new access token and a new refresh token
       description: >-
-        Does NOT rotate the refresh token - the same refresh token remains valid
-        and reusable until its own 7-day TTL expires. A rotating-refresh-token
-        design was deliberately deferred (see docs/STORY-06).
+        Refresh tokens are single-use. Every call returns a NEW `refresh_token`
+        and invalidates the one presented; the client must store the new one.
+        Presenting an already-rotated token more than 10 seconds after it was
+        rotated is treated as theft or a stale replay: the whole session family
+        (every token descended from that login, including the newest) is revoked,
+        an `admin.refresh_token_reuse` audit entry is written and a critical
+        `security.refresh_reuse` notification goes to staff. Within the 10-second
+        grace window a repeat call (two browser tabs refreshing at once) is not
+        an error: it receives the family's current token, so nobody is logged out.
+        Password, TOTP/recovery and passkey logins each start their own family.
       security: []
       requestBody:
         required: true
@@ -361,10 +368,13 @@ paths:
                 type: object
                 properties:
                   access_token: { type: string }
+                  refresh_token:
+                    type: string
+                    description: Replaces the refresh token that was sent; the old one no longer works.
                   expires_in_seconds: { type: integer, example: 900 }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401":
-          description: Refresh token is invalid, expired, or its admin no longer exists.
+          description: Refresh token is invalid, expired, reused (family revoked), or its admin no longer exists.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
@@ -891,6 +901,205 @@ paths:
                     items: { $ref: "#/components/schemas/Node" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/nodes/{id}/maintenance:
+    put:
+      tags: [Nodes]
+      summary: Switch a node's maintenance mode on or off
+      description: >-
+        Operator or above. While on, the node keeps serving its existing peers but is
+        excluded from steering (`/accounts/{id}/steer`, the subscription's default node and
+        node list), from automatic placement of new accounts, and from node-down alerts;
+        pinning a new account to it is refused with `409 node_in_maintenance`. Switching
+        off backfills the peers accounts missed meanwhile. Writes an audit entry
+        (`node.maintenance_started` / `node.maintenance_ended`) and emits the matching
+        event. Repeating the current state is a no-op.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: The node with its new maintenance state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Node" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404":
+          description: No such node.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/node-provisioning/ssh/probe:
+    post:
+      tags: [Nodes]
+      summary: Read an SSH server's host key fingerprint (step 1 of provisioning over SSH)
+      description: >-
+        super_admin only. Connects to host:port without credentials and returns the host key
+        fingerprint so the admin can compare it with the server's own before any credential
+        is sent (trust on first use, confirmed by a human).
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [host, username]
+              properties:
+                host: { type: string, example: "203.0.113.10" }
+                port: { type: integer, default: 22 }
+                username: { type: string, example: root }
+      responses:
+        "200":
+          description: Host key fingerprint.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  host: { type: string }
+                  port: { type: integer }
+                  fingerprint: { type: string, example: "SHA256:uNiVztksCsDhcc0u9e8BujQXVUpKZIDTMczCvj3tD2s" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "502":
+          description: The server could not be reached (`ssh_connect_failed`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/node-provisioning/ssh/jobs:
+    post:
+      tags: [Nodes]
+      summary: Install a node over SSH (step 2)
+      description: >-
+        super_admin only. Creates the node (or reuses `node_id` from an earlier failed
+        attempt), mints a join token, then in the background connects with the confirmed
+        host key, uploads the installer bundled in this panel build and runs it
+        non-interactively. The credentials are held in memory for the life of the job and
+        wiped when it ends; they are never stored or logged. The stored log is redacted and
+        capped. A job times out after 15 minutes. Poll `GET .../jobs/{jobId}`.
+        Requires a panel domain (or a Host the panel is browsed on) so the node knows the
+        control-plane address.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [host, username, fingerprint]
+              properties:
+                host: { type: string }
+                port: { type: integer, default: 22 }
+                username: { type: string }
+                password: { type: string, description: Also used for `sudo -S` when the user is not root. }
+                private_key: { type: string, description: PEM/OpenSSH private key. Either this or password is required. }
+                passphrase: { type: string }
+                fingerprint: { type: string, description: The fingerprint the admin confirmed from the probe step. }
+                node_id: { type: string, format: uuid, description: Reuse a node created by a failed attempt. }
+                node:
+                  type: object
+                  description: The node to create (when node_id is not given).
+                  properties:
+                    name: { type: string }
+                    node_group: { type: string }
+                    region: { type: string }
+                    public_endpoint: { type: string }
+                    wg_subnet: { type: string }
+                    capacity_max_peers: { type: integer }
+      responses:
+        "202":
+          description: Job started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SshProvisionJob" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404":
+          description: node_id does not exist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "409":
+          description: Node name taken, node already installed, or panel address unknown.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429":
+          description: Too many jobs running.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/node-provisioning/ssh/jobs/{jobId}:
+    get:
+      tags: [Nodes]
+      summary: Poll an SSH provisioning job
+      description: >-
+        super_admin only. Returns the phase (`connecting`, `checking`, `uploading`,
+        `installing`, `done`), the redacted log so far and, on failure, an `error.code` of
+        `connect_failed`, `host_key_mismatch`, `auth_failed`, `sudo_required`,
+        `unsupported_os`, `no_docker`, `invalid_config`, `join_token_rejected`,
+        `install_failed`, `timeout`, `cancelled` or `interrupted`. When the job succeeds the
+        node joins through the normal join-token flow and shows up online shortly after.
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Job state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SshProvisionJob" }
+        "404":
+          description: No such job.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/node-provisioning/ssh/jobs/{jobId}/cancel:
+    post:
+      tags: [Nodes]
+      summary: Cancel a running SSH provisioning job
+      description: super_admin only. Drops the SSH connection, which ends the remote install.
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      security:
+        - BearerAuth: []
+      responses:
+        "202":
+          description: Cancellation requested.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SshProvisionJob" }
+        "404":
+          description: No running job with that id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
 
   /api/v1/nodes/{id}:
     parameters:
@@ -3681,8 +3890,33 @@ components:
           type: string
           nullable: true
           description: Set once the node's agent reports its own WireGuard server public key.
+        maintenance:
+          type: boolean
+          description: >-
+            In maintenance mode: existing peers keep working, but the node is skipped by
+            steering and automatic subscription selection, gets no new peers and raises no
+            node-down alerts.
+        maintenance_since: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
       required: [id, name, node_group, public_endpoint, wg_subnet, capacity_max_peers, status, created_at]
+
+    SshProvisionJob:
+      type: object
+      properties:
+        job_id: { type: string, format: uuid }
+        node_id: { type: string, format: uuid }
+        host: { type: string }
+        status: { type: string, enum: [running, succeeded, failed, cancelled] }
+        phase: { type: string }
+        log: { type: string, description: Redacted, size-capped transcript. }
+        error:
+          type: object
+          nullable: true
+          properties:
+            code: { type: string }
+            message: { type: string }
+        created_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, nullable: true }
 
     NodeEndpoint:
       type: object

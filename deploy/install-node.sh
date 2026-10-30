@@ -19,6 +19,15 @@
 # in the panel (they must match it exactly); you are only asked for them if the
 # panel can't be queried.
 #
+# Non-interactive (used by the panel's "Install over SSH", but works anywhere):
+#   sudo env NODE_PANEL_ADDR=panel.example.com:48443 NODE_JOIN_TOKEN=... \
+#        bash install-node.sh --non-interactive      (or WGPANEL_NONINTERACTIVE=1)
+# NODE_PANEL_ADDR and NODE_JOIN_TOKEN are required. NODE_NAME, NODE_WG_PORT,
+# NODE_WG_IFACE and NODE_WG_IFACE_ADDR are optional: the panel's preflight answers win
+# for name/port/address, so they only matter when the panel cannot be queried.
+# Instead of prompting, it fails with a distinct exit code: 10 not root, 11 unsupported
+# OS, 12 Docker install failed, 13 invalid/missing settings, 14 join token rejected.
+#
 # The node image is pulled from $NODE_IMAGE (GHCR by default). If it can't be pulled
 # (private package, or before CI has published it), the script falls back to building
 # it from source - override the source with WGPANEL_REPO_URL.
@@ -30,6 +39,13 @@ ENV_FILE="$NODE_DIR/.env"
 NODE_IMAGE="${NODE_IMAGE:-ghcr.io/iamfarhad/wgpanel-node:latest}"
 WGPANEL_REPO_URL="${WGPANEL_REPO_URL:-https://github.com/iamfarhad/WGPanel.git}"
 
+NONINTERACTIVE="${WGPANEL_NONINTERACTIVE:-0}"
+for arg in "$@"; do
+  case "$arg" in
+    --non-interactive|-y) NONINTERACTIVE=1 ;;
+  esac
+done
+
 log()  { echo -e "\033[1;32m[wgpanel-node]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[wgpanel-node]\033[0m $*"; }
 err()  { echo -e "\033[1;31m[wgpanel-node]\033[0m $*" >&2; }
@@ -37,14 +53,14 @@ err()  { echo -e "\033[1;31m[wgpanel-node]\033[0m $*" >&2; }
 require_root() {
   if [[ "$EUID" -ne 0 ]]; then
     err "Please run as root (sudo bash install-node.sh)"
-    exit 1
+    exit 10
   fi
 }
 
 detect_os() {
   if ! command -v apt-get >/dev/null 2>&1; then
     err "This installer currently supports Debian/Ubuntu (apt-based) systems only."
-    exit 1
+    exit 11
   fi
 }
 
@@ -73,7 +89,10 @@ install_docker() {
     return
   fi
   log "Installing Docker Engine + Compose plugin..."
-  curl -fsSL https://get.docker.com | sh
+  if ! curl -fsSL https://get.docker.com | sh; then
+    err "Docker could not be installed (see the output above)."
+    exit 12
+  fi
   systemctl enable --now docker
 }
 
@@ -89,6 +108,15 @@ read_required() {
     val="${val//$'\r'/}"
   done
   printf -v "$var" '%s' "$val"
+}
+
+# read_default applies a default on Enter (also strips pasted CRs). The node-name
+# prompt in prompt_config needs it; install.sh carries the same helper.
+read_default() {
+  local prompt="$1" var="$2" def="$3" val
+  read -rp "$prompt" val
+  val="${val//$'\r'/}"
+  printf -v "$var" '%s' "${val:-$def}"
 }
 
 # valid_cidr4 checks the whole value, not just its shape: 999.1.1.1/40 matches a
@@ -131,8 +159,69 @@ preflight() {
   return 0
 }
 
+# write_env_file persists the answers for docker compose (shared by both modes).
+write_env_file() {
+  cat > "$ENV_FILE" <<EOF
+NODE_IMAGE=${NODE_IMAGE}
+WGPANEL_PANEL_ADDR=${PANEL_ADDR}
+WGPANEL_JOIN_TOKEN=${JOIN_TOKEN}
+WGPANEL_NODE_NAME=${NODE_NAME}
+WGPANEL_WG_INTERFACE=${WG_IFACE}
+WGPANEL_WG_PORT=${WG_PORT}
+WG_IFACE_ADDR=${WG_IFACE_ADDR}
+EOF
+  chmod 600 "$ENV_FILE"
+}
+
+# config_from_env is the non-interactive twin of prompt_config: same validation, but
+# a bad value is a hard failure (exit 13/14) instead of a re-prompt.
+config_from_env() {
+  PF_NAME="" PF_PORT="" PF_IFACE_ADDR="" PF_STATUS=""
+  mkdir -p "$NODE_DIR"
+  PANEL_ADDR="${NODE_PANEL_ADDR:-}"
+  JOIN_TOKEN="${NODE_JOIN_TOKEN:-}"
+  PANEL_ADDR="${PANEL_ADDR#http://}"
+  PANEL_ADDR="${PANEL_ADDR#https://}"
+  PANEL_ADDR="${PANEL_ADDR%%/*}"
+  if [[ "$PANEL_ADDR" != *:* ]] || [[ -z "${PANEL_ADDR%:*}" ]] ||
+     [[ ! "${PANEL_ADDR##*:}" =~ ^[0-9]+$ ]] ||
+     (( 10#${PANEL_ADDR##*:} < 1 || 10#${PANEL_ADDR##*:} > 65535 )); then
+    err "NODE_PANEL_ADDR must be host:port with a numeric port (the panel's NODE_AGENT_PORT)."
+    exit 13
+  fi
+  if [[ ! "$JOIN_TOKEN" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    err "NODE_JOIN_TOKEN is missing or malformed."
+    exit 13
+  fi
+  if ! timeout 5 bash -c ": </dev/tcp/${PANEL_ADDR%:*}/${PANEL_ADDR##*:}" 2>/dev/null; then
+    warn "Cannot reach ${PANEL_ADDR} over TCP - registration will probably fail."
+  fi
+  if preflight; then
+    log "Join token accepted for node '${PF_NAME:-?}'."
+  else
+    case "$PF_STATUS" in
+      401) err "The panel rejected this join token: it is invalid, expired, or already used."; exit 14 ;;
+      404) warn "This panel version can't report the node's WireGuard settings - using NODE_* values." ;;
+      *)   warn "Could not check the token with the panel (HTTP ${PF_STATUS:-none}) - continuing." ;;
+    esac
+  fi
+  NODE_NAME="${PF_NAME:-${NODE_NAME:-}}"
+  [[ "$NODE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || { err "No valid node name (the panel did not supply one and NODE_NAME is unset)."; exit 13; }
+  WG_PORT="${PF_PORT:-${NODE_WG_PORT:-51820}}"
+  { [[ "$WG_PORT" =~ ^[0-9]+$ ]] && (( 10#$WG_PORT >= 1 && 10#$WG_PORT <= 65535 )); } || { err "Invalid WireGuard port: ${WG_PORT}"; exit 13; }
+  WG_IFACE="${NODE_WG_IFACE:-wg0}"
+  [[ "$WG_IFACE" =~ ^[A-Za-z0-9_=+.-]{1,15}$ ]] || { err "Invalid WireGuard interface name: ${WG_IFACE}"; exit 13; }
+  WG_IFACE_ADDR="${PF_IFACE_ADDR:-${NODE_WG_IFACE_ADDR:-}}"
+  valid_cidr4 "$WG_IFACE_ADDR" || { err "No valid WireGuard interface address (the panel did not supply one and NODE_WG_IFACE_ADDR is unset)."; exit 13; }
+  write_env_file
+}
+
 prompt_config() {
   local probe
+  if [[ "$NONINTERACTIVE" == 1 ]]; then
+    config_from_env
+    return
+  fi
   PF_NAME="" PF_PORT="" PF_IFACE_ADDR="" PF_STATUS=""
   mkdir -p "$NODE_DIR"
 
@@ -254,16 +343,7 @@ prompt_config() {
     done
   fi
 
-  cat > "$ENV_FILE" <<EOF
-NODE_IMAGE=${NODE_IMAGE}
-WGPANEL_PANEL_ADDR=${PANEL_ADDR}
-WGPANEL_JOIN_TOKEN=${JOIN_TOKEN}
-WGPANEL_NODE_NAME=${NODE_NAME}
-WGPANEL_WG_INTERFACE=${WG_IFACE}
-WGPANEL_WG_PORT=${WG_PORT}
-WG_IFACE_ADDR=${WG_IFACE_ADDR}
-EOF
-  chmod 600 "$ENV_FILE"
+  write_env_file
 }
 
 write_compose() {
