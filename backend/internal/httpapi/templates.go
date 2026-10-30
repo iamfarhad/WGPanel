@@ -24,6 +24,7 @@ type templateRequest struct {
 	ResetStrategy        string   `json:"reset_strategy"` // "" = none
 	OnHold               bool     `json:"on_hold"`
 	HoldDeadlineDays     *int     `json:"hold_deadline_days"`
+	routingRequest                // routing_mode, routing_excluded_cidrs, routing_precision
 }
 
 type templateResponse struct {
@@ -41,6 +42,7 @@ type templateResponse struct {
 	HoldDeadlineDays     *int    `json:"hold_deadline_days"`
 	CreatedAt            string  `json:"created_at"`
 	UpdatedAt            string  `json:"updated_at"`
+	routingResponse
 }
 
 func toTemplateResponse(t store.PlanTemplate) templateResponse {
@@ -50,6 +52,7 @@ func toTemplateResponse(t store.PlanTemplate) templateResponse {
 		BandwidthLimitMbps: t.BandwidthLimitMbps, NodeGroup: t.NodeGroup, ResetStrategy: t.ResetStrategy,
 		OnHold: t.OnHold, HoldDeadlineDays: t.HoldDeadlineDays,
 		CreatedAt: t.CreatedAt.Format(time.RFC3339), UpdatedAt: t.UpdatedAt.Format(time.RFC3339),
+		routingResponse: routingResponseOf(t.RoutingMode, t.RoutingExcludedCIDRs, t.RoutingPrecision),
 	}
 }
 
@@ -94,6 +97,11 @@ func (r templateRequest) params() (store.TemplateParams, *apiError) {
 			p.NodeGroup = &g
 		}
 	}
+	rt, aerr := r.routingRequest.templateRouting()
+	if aerr != nil {
+		return p, aerr
+	}
+	p.RoutingMode, p.RoutingExcludedCIDRs, p.RoutingPrecision = rt.Mode, rt.CIDRs, rt.Precision
 	if p.OnHold {
 		if p.DurationDays == nil {
 			return p, badRequest("an on-hold template needs duration_days")

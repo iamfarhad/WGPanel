@@ -221,7 +221,7 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	// restored panel works with the new .env as-is. Failures here abort before
 	// anything is touched.
 	if backup.Secrets.AccountKeyEncryptionKey != s.AccountKeyEncryptionKey {
-		reencrypted, err := reencryptRows(backup.Tables["accounts"], []string{"private_key_encrypted"},
+		reencrypted, err := reencryptRows(backup.Tables["accounts"], []string{"private_key_encrypted", "preshared_key_encrypted"},
 			backup.Secrets.AccountKeyEncryptionKey, s.AccountKeyEncryptionKey)
 		if err != nil {
 			s.Logger.Error("restore_reencrypt_accounts_failed", "error", err)

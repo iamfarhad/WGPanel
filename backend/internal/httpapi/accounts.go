@@ -32,6 +32,8 @@ type createAccountRequest struct {
 	HoldDurationDays *int    `json:"hold_duration_days"`
 	HoldDeadlineDays *int    `json:"hold_deadline_days"`
 	ResetStrategy    *string `json:"reset_strategy"` // none|day|week|month|year
+	// Split-tunnel routing (routing_api.go): routing_mode, routing_excluded_cidrs, routing_precision.
+	routingRequest
 }
 
 // maxBandwidthLimitMbps rejects obviously-nonsense rates (100 Gbps) before they
@@ -106,6 +108,8 @@ type accountResponse struct {
 	ResetStrategy string  `json:"reset_strategy"`
 	NextResetAt   *string `json:"next_reset_at"`
 	LastResetAt   *string `json:"last_reset_at"`
+	// routing_mode / routing_excluded_cidrs / routing_precision - filled by fillRouting.
+	routingResponse
 }
 
 func rfc3339Ptr(t *time.Time) *string {
@@ -253,7 +257,9 @@ func (s *Server) respondWithAccount(w http.ResponseWriter, r *http.Request, stat
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not fetch account peers")
 		return
 	}
-	writeJSON(w, status, toAccountResponse(account, peers, s.subscriptionBaseURLFromStore(r.Context())))
+	resp := toAccountResponse(account, peers, s.subscriptionBaseURLFromStore(r.Context()))
+	s.fillRouting(r.Context(), []*accountResponse{&resp})
+	writeJSON(w, status, resp)
 }
 
 // handleCreateAccount serves both admin and API-key callers (requireAdminOrAPIKey).
@@ -385,6 +391,11 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, toAccountResponse(a, peers, subBase))
 	}
+	routingPtrs := make([]*accountResponse, len(out))
+	for i := range out {
+		routingPtrs[i] = &out[i]
+	}
+	s.fillRouting(ctx, routingPtrs)
 	if cursorMode {
 		// next_cursor is null on the last page. Only present in cursor mode, so the
 		// limit/offset response shape is unchanged.
@@ -459,6 +470,8 @@ type updateAccountRequest struct {
 	// expiry_at on an on-hold account activates it with that fixed date instead.
 	ResetStrategy    *string `json:"reset_strategy"`
 	HoldDurationDays *int    `json:"hold_duration_days"`
+	// Split-tunnel routing (routing_api.go). Omitted = unchanged; routing_mode "" = back to default.
+	routingRequest
 }
 
 func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
@@ -513,6 +526,11 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	identity, _ := callerIdentityFromContext(ctx)
 	ns := callerNamespaceArg(identity)
+	routingUpdate, aerr := s.prepareRoutingUpdate(ctx, r.PathValue("id"), ns, req.routingRequest)
+	if aerr != nil {
+		writeAPIError(w, aerr)
+		return
+	}
 	account, err := s.Store.UpdateAccount(ctx, r.PathValue("id"), ns, store.UpdateAccountParams{
 		Label:                  req.Label,
 		DataQuotaBytes:         quotaBytes,
@@ -538,7 +556,17 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.updated", account.ID, nil, r.RemoteAddr); err != nil {
+	var auditDetail any
+	if routingUpdate != nil {
+		if err := s.Store.UpdateAccountRouting(ctx, account.ID, ns, *routingUpdate); err != nil {
+			s.Logger.Error("update_account_routing_failed", "error", err)
+			writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not update account routing")
+			return
+		}
+		auditDetail = map[string]any{"routing_mode": req.RoutingMode, "routing_excluded_cidrs": req.RoutingExcludedCIDRs, "routing_precision": req.RoutingPrecision}
+	}
+
+	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.updated", account.ID, auditDetail, r.RemoteAddr); err != nil {
 		s.Logger.Error("audit_log_failed", "error", err)
 	}
 	s.respondWithAccount(w, r, http.StatusOK, account, ns)

@@ -65,6 +65,14 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	// Accounts created before migration 0029 have no PresharedKey yet. Not fatal: they
+	// simply stay on PSK-less configs until the next start.
+	if n, err := db.BackfillPresharedKeys(ctx, cfg.AccountKeyEncryptionKey); err != nil {
+		logger.Warn("psk_backfill_failed", "filled", n, "error", err)
+	} else if n > 0 {
+		logger.Info("psk_backfill_done", "accounts", n)
+	}
+
 	if err := bootstrapFirstAdmin(ctx, db, logger, cfg.AdminBootstrapUsername); err != nil {
 		return fmt.Errorf("bootstrap first admin: %w", err)
 	}

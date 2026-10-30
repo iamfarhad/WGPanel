@@ -146,6 +146,13 @@ type CreateAccountParams struct {
 	HoldDurationDays *int
 	HoldDeadlineAt   *time.Time
 	ResetStrategy    string
+
+	// Routing mode/precision/excluded CIDRs and the encrypted PresharedKey (migration
+	// 0029), stored by applyNewAccountRoutingTx in the same transaction.
+	RoutingMode           *string
+	RoutingExcludedCIDRs  []string
+	RoutingPrecision      *string
+	PresharedKeyEncrypted *string
 }
 
 var ErrNodeGroupNotAllowed = errors.New("this API key is not allowed to provision accounts on that node's group")
@@ -300,6 +307,10 @@ func (s *Store) CreateAccount(ctx context.Context, p CreateAccountParams) (Accou
 		if isUniqueViolation(err) {
 			return Account{}, ErrExternalRefTaken
 		}
+		return Account{}, err
+	}
+
+	if err := applyNewAccountRoutingTx(ctx, tx, a.ID, p); err != nil {
 		return Account{}, err
 	}
 
