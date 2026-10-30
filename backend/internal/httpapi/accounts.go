@@ -672,6 +672,9 @@ func (s *Server) handleEnableAccount(w http.ResponseWriter, r *http.Request) {
 type renewAccountRequest struct {
 	AddQuotaGB *float64 `json:"add_quota_gb"`
 	ExtendDays *int     `json:"extend_days"` // added to current expiry_at (or now, if it had none)
+	// TemplateID renews with a plan template instead (its quota and duration are added);
+	// a wallet-charging reseller pays the template's price (sales_hook.go).
+	TemplateID *string `json:"template_id"`
 }
 
 func (s *Server) handleRenewAccount(w http.ResponseWriter, r *http.Request) {
@@ -686,7 +689,7 @@ func (s *Server) handleRenewAccount(w http.ResponseWriter, r *http.Request) {
 	identity, _ := callerIdentityFromContext(ctx)
 	ns := callerNamespaceArg(identity)
 
-	account, err := s.renewAccount(ctx, id, ns, req.AddQuotaGB, req.ExtendDays)
+	account, err := s.renewMaybeTemplate(ctx, identity, id, ns, req.TemplateID, req.AddQuotaGB, req.ExtendDays)
 	if errors.Is(err, store.ErrAccountNotFound) {
 		writeJSONError(w, http.StatusNotFound, "account_not_found", "no account with that id")
 		return

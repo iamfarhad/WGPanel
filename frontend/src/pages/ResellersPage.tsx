@@ -21,6 +21,7 @@ import { RowActions } from '../components/ui/RowActions'
 import { ExpiryBadge } from '../components/ui/ExpiryBadge'
 import { ResellerFormDialog } from '../components/resellers/ResellerFormDialog'
 import { flattenTree, formatGB, type ResellerRow } from '../lib/resellerTree'
+import { ResellerSalesButton } from '../components/sales/ResellerSalesButton'
 
 type Reseller = ResellerRow
 
@@ -239,6 +240,7 @@ export function ResellersPage() {
                     )}
                   </Td>
                   <Td className="text-end">
+                    <ResellerSalesButton reseller={r} />
                     <RowActions
                       actions={[
                         {

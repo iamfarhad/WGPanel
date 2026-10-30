@@ -195,8 +195,8 @@ func (s *Server) handleBulkAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Action == "renew" {
-		if req.ExtendDays == nil && req.AddQuotaGB == nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid_request", "renew needs extend_days and/or add_quota_gb")
+		if req.ExtendDays == nil && req.AddQuotaGB == nil && req.TemplateID == nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", "renew needs extend_days and/or add_quota_gb, or a template_id")
 			return
 		}
 		if req.AddQuotaGB != nil && *req.AddQuotaGB < 0 {
@@ -240,7 +240,7 @@ func (s *Server) handleBulkAccounts(w http.ResponseWriter, r *http.Request) {
 		switch req.Action {
 		case "renew":
 			action = "account.renewed"
-			a, err = s.renewAccount(ctx, id, ns, req.AddQuotaGB, req.ExtendDays)
+			a, err = s.renewMaybeTemplate(ctx, identity, id, ns, req.TemplateID, req.AddQuotaGB, req.ExtendDays)
 		case "suspend":
 			action = "account.suspended"
 			extra["reason"] = "manual"
@@ -282,7 +282,7 @@ func (s *Server) handleBulkAccounts(w http.ResponseWriter, r *http.Request) {
 
 func isResellerLimitCode(code string) bool {
 	switch code {
-	case "reseller_account_limit_reached", "reseller_data_credit_exceeded", "reseller_expired", "reseller_disabled":
+	case "reseller_account_limit_reached", "reseller_data_credit_exceeded", "reseller_expired", "reseller_disabled", "insufficient_balance":
 		return true
 	}
 	return false

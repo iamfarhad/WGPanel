@@ -66,6 +66,9 @@ func renderEvent(ev events.Event, lang string) rendered {
 	label := dataStr(d, "label")
 	node := dataStr(d, "node_name")
 	reseller := dataStr(d, "reseller_username")
+	if sr, ok := renderSalesEvent(ev, lang); ok {
+		return sr
+	}
 
 	var r rendered
 	switch ev.Type {

@@ -130,6 +130,7 @@ func run(logger *slog.Logger) error {
 	go srv.RunEndpointHealthLoop(ctx)
 	// Event dispatcher, webhook delivery queue, threshold sweep and scheduled backups.
 	go srv.RunNotificationWorkers(ctx)
+	go srv.RunSalesWorker(ctx)
 	// Re-push any UI-managed domain config (panel domain changed from Settings, or
 	// the DB-only subscription origin) to Caddy, which always boots from the static
 	// Caddyfile - see ReapplyDomainConfig for why this must happen on every start.

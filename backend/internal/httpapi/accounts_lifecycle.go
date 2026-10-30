@@ -53,6 +53,9 @@ type accountSpec struct {
 	Tags *[]string
 	// Routing is the validated routing mode/CIDRs/precision (routing_api.go).
 	Routing resolvedRouting
+	// TemplateID is the template the spec came from ("" = none); the wallet hook
+	// (sales_hook.go) prices accounts by it.
+	TemplateID string
 }
 
 // resolveAccountSpec applies the precedence "explicit request field > template value >
@@ -108,6 +111,7 @@ func resolveAccountSpec(req createAccountRequest, tmpl *store.PlanTemplate, now 
 		sp.ResetStrategy = tmpl.ResetStrategy
 		sp.TemplateNodeGrp = tmpl.NodeGroup
 		sp.TemplateResolved = true
+		sp.TemplateID = tmpl.ID
 	}
 	if req.ResetStrategy != nil {
 		sp.ResetStrategy = *req.ResetStrategy
@@ -209,9 +213,10 @@ func ownerAndGroups(identity *CallerIdentity) (owner *string, groups []string) {
 	return owner, groups
 }
 
-// createFromSpec provisions one account (keypair, subscription token, store call).
-// Errors are returned already mapped to apiError.
-func (s *Server) createFromSpec(ctx context.Context, identity *CallerIdentity, sp accountSpec, label string) (store.Account, *apiError) {
+// createFromSpecUncharged provisions one account (keypair, subscription token, store
+// call). Errors are returned already mapped to apiError. Callers go through
+// createFromSpec (sales_hook.go), which adds the reseller wallet charge.
+func (s *Server) createFromSpecUncharged(ctx context.Context, identity *CallerIdentity, sp accountSpec, label string) (store.Account, *apiError) {
 	internal := func(msg string, err error) (store.Account, *apiError) {
 		s.Logger.Error("create_account_failed", "step", msg, "error", err)
 		return store.Account{}, &apiError{Status: http.StatusInternalServerError, Code: "internal_error", Message: "could not create account"}

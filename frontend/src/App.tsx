@@ -21,6 +21,8 @@ import { TemplatesPage } from './pages/TemplatesPage'
 import { SubscriptionPage } from './pages/SubscriptionPage'
 import { WebhooksPage } from './pages/WebhooksPage'
 import { NotificationsPage } from './pages/NotificationsPage'
+import { PaymentsPage } from './pages/PaymentsPage'
+import { BuyPage } from './pages/BuyPage'
 
 const queryClient = new QueryClient()
 
@@ -35,6 +37,8 @@ function App() {
                 <Route path="/login" element={<LoginPage />} />
                 {/* Public customer page - the token in the URL is the credential. */}
                 <Route path="/s/:token" element={<SubscriptionPage />} />
+                {/* Public purchase page - the server answers an empty shop unless enabled. */}
+                <Route path="/buy" element={<BuyPage />} />
                 <Route
                   element={
                     <ProtectedRoute>
@@ -56,6 +60,7 @@ function App() {
                   <Route path="/security" element={<SecurityPage />} />
                   <Route path="/webhooks" element={<WebhooksPage />} />
                   <Route path="/notifications" element={<NotificationsPage />} />
+                  <Route path="/payments" element={<PaymentsPage />} />
                 </Route>
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
               </Routes>

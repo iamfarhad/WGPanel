@@ -21,6 +21,7 @@ import { ops } from './fa/ops'
 import { abuse } from './fa/abuse'
 import { branding } from './fa/branding'
 import { routing } from './fa/routing'
+import { sales } from './fa/sales'
 
 export const fa: Record<string, string> = {
   ...common,
@@ -43,6 +44,7 @@ export const fa: Record<string, string> = {
   ...abuse,
   ...branding,
   ...routing,
+  ...sales,
 
   // Shell
   Dashboard: 'داشبورد',

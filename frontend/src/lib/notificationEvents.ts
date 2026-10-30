@@ -25,6 +25,11 @@ export const EVENT_CATALOG: { type: string; label: string; severity: 'info' | 'w
   { type: 'security.refresh_reuse', label: 'Session token reuse detected', severity: 'critical' },
   { type: 'account.sharing_suspected', label: 'Account may be shared', severity: 'warning' },
   { type: 'account.torrent_detected', label: 'Torrent traffic blocked', severity: 'warning' },
+  { type: 'payment.awaiting_review', label: 'Payment awaiting review', severity: 'warning' },
+  { type: 'payment.approved', label: 'Payment approved', severity: 'info' },
+  { type: 'payment.rejected', label: 'Payment rejected', severity: 'info' },
+  { type: 'order.fulfilled', label: 'Order fulfilled', severity: 'info' },
+  { type: 'wallet.credited', label: 'Wallet credited', severity: 'info' },
 ]
 
 export function eventLabel(type: string): string {
@@ -32,6 +37,12 @@ export function eventLabel(type: string): string {
 }
 
 type T = (text: string, vars?: Record<string, string | number>) => string
+
+/** Toman with separators in the language the page is currently showing. */
+function tomanText(n: unknown): string {
+  const fa = document.documentElement.lang === 'fa'
+  return new Intl.NumberFormat(fa ? 'fa-IR' : 'en-US', { maximumFractionDigits: 0 }).format(Number(n) || 0)
+}
 
 function bytes(n: unknown): string {
   const v = Number(n) || 0
@@ -129,6 +140,22 @@ export function notificationText(
         body:
           t('Account "{label}" tried to use BitTorrent ({n} blocked packets).', { label: s('label'), n: Number(d.hits) || 0 }) +
           (d.suspended === true ? ` ${t('The account was suspended.')}` : ''),
+      }
+    case 'payment.awaiting_review':
+      return {
+        title,
+        body: t('A payment of {amount} Toman ({who}) needs your review: open Payments to approve or reject it.', {
+          amount: tomanText(d.amount_toman),
+          who: s('label') || s('reseller_username') || s('contact'),
+        }),
+      }
+    case 'wallet.credited':
+      return {
+        title,
+        body: t('{amount} Toman was added to the wallet. Balance: {balance} Toman.', {
+          amount: tomanText(d.amount_toman),
+          balance: tomanText(d.balance_toman),
+        }),
       }
     default:
       return { title: n.title, body: n.body }

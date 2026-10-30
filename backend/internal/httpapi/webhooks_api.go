@@ -104,8 +104,8 @@ func validWebhookEvents(list []string, reseller bool) string {
 		if !events.Valid(e) {
 			return "unknown event " + e
 		}
-		if reseller && !strings.HasPrefix(e, "account.") && !strings.HasPrefix(e, "reseller.") {
-			return "resellers can subscribe to account.* and reseller.* events only"
+		if reseller && !strings.HasPrefix(e, "account.") && !strings.HasPrefix(e, "reseller.") && !salesEventForNamespaces(e) {
+			return "resellers can subscribe to account.*, reseller.*, order.*, payment.approved/rejected and wallet.* events only"
 		}
 	}
 	return ""

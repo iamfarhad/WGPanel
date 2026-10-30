@@ -15,6 +15,7 @@ import { Card, CardHeader } from '../components/ui/Card'
 import { Badge, statusTone } from '../components/ui/Badge'
 import { Skeleton } from '../components/ui/Skeleton'
 import { Progress } from '../components/ui/Progress'
+import { WalletCard } from '../components/sales/WalletCard'
 
 interface Node {
   id: string
@@ -268,6 +269,11 @@ export function DashboardPage() {
           </div>
         </Card>
       </div>
+      {isReseller && (
+        <div className="mt-6">
+          <WalletCard />
+        </div>
+      )}
     </div>
   )
 }

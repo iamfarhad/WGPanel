@@ -47,7 +47,8 @@ interface Delivery {
   created_at: string
 }
 
-const RESELLER_EVENT_PREFIXES = ['account.', 'reseller.']
+// payment.awaiting_review is staff-only (the server never sends it to a namespace).
+const RESELLER_EVENT_PREFIXES = ['account.', 'reseller.', 'order.', 'payment.approved', 'payment.rejected', 'wallet.']
 
 function deliveryTone(status: Delivery['status']) {
   return status === 'success' ? 'green' : status === 'failed' ? 'red' : status === 'retrying' ? 'amber' : 'slate'
