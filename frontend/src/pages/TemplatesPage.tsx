@@ -23,6 +23,8 @@ import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 import { RowActions } from '../components/ui/RowActions'
 import { LifecycleFields } from '../components/accounts/LifecycleFields'
+import { RoutingFields } from '../components/accounts/RoutingFields'
+import { emptyRouting, routingBody, routingFrom, routingLabel, type RoutingState } from '../lib/routing'
 import { emptyLifecycle, lifecycleFromTemplate, type LifecycleState } from '../lib/lifecycleForm'
 
 function gbText(bytes: number | null): string {
@@ -97,6 +99,7 @@ export function TemplatesPage() {
                 <Th>Duration</Th>
                 <Th>Limits</Th>
                 <Th>Reset</Th>
+                <Th>Routing</Th>
                 <Th>Availability</Th>
                 <Th className="text-end">Actions</Th>
               </tr>
@@ -134,6 +137,7 @@ export function TemplatesPage() {
                   <Td className="whitespace-nowrap text-muted">
                     {t(resetStrategies.find((r) => r.value === tm.reset_strategy)?.label ?? 'Never')}
                   </Td>
+                  <Td className="whitespace-nowrap text-muted">{t(routingLabel(tm.routing_mode))}</Td>
                   <Td className="whitespace-nowrap">
                     {tm.owner != null ? (
                       <Badge>{t('Yours')}</Badge>
@@ -208,6 +212,7 @@ function TemplateDialog({
   const [nodeGroup, setNodeGroup] = useState('')
   const [shared, setShared] = useState(false)
   const [life, setLife] = useState<LifecycleState>(emptyLifecycle)
+  const [routing, setRouting] = useState<RoutingState>(emptyRouting)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -220,6 +225,7 @@ function TemplateDialog({
     setNodeGroup(existing?.node_group ?? '')
     setShared(existing?.available_to_resellers ?? false)
     setLife(existing ? lifecycleFromTemplate(existing) : emptyLifecycle)
+    setRouting(routingFrom(existing))
     setError(null)
   }, [open, existing])
 
@@ -238,6 +244,7 @@ function TemplateDialog({
           reset_strategy: life.reset,
           on_hold: life.onHold,
           hold_deadline_days: life.onHold && life.deadlineDays ? Number(life.deadlineDays) : null,
+          ...routingBody(routing),
         }),
       }),
     onSuccess: (saved) => {
@@ -294,6 +301,7 @@ function TemplateDialog({
           </Select>
         </Field>
         <LifecycleFields value={life} onChange={setLife} holdDaysManaged />
+        <RoutingFields value={routing} onChange={setRouting} />
         {isStaff && (
           <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-edge p-3 text-sm text-fg transition-colors hover:bg-inset/50">
             <input type="checkbox" className="mt-0.5" checked={shared} onChange={(e) => setShared(e.target.checked)} />

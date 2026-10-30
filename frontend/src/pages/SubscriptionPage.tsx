@@ -13,6 +13,7 @@ import { Card } from '../components/ui/Card'
 import { Progress } from '../components/ui/Progress'
 import { Select } from '../components/ui/Select'
 import { expiryInfo } from '../lib/expiry'
+import { routingText } from '../lib/routing'
 
 interface SubNode {
   node_id: string
@@ -35,6 +36,7 @@ interface SubInfo {
   devices_active: number
   support_contact: string | null
   config_path: string
+  routing_mode?: 'full' | 'bypass_iran' | 'custom'
   nodes: SubNode[]
 }
 
@@ -260,6 +262,7 @@ export function SubscriptionPage() {
               label="Expires on"
               value={info.expiry_at ? formatDate(info.expiry_at, { year: 'numeric', month: 'long', day: 'numeric' }) : '—'}
             />
+            <Stat label="Routing" value={t(routingText(info.routing_mode))} />
             <Stat
               label="Devices"
               value={

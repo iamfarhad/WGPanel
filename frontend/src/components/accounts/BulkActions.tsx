@@ -21,6 +21,8 @@ import { Input } from '../ui/Input'
 import { Select } from '../ui/Select'
 import { Badge } from '../ui/Badge'
 import { LifecycleFields } from './LifecycleFields'
+import { RoutingFields } from './RoutingFields'
+import { emptyRouting, routingBody, routingFrom, type RoutingState } from '../../lib/routing'
 import { emptyLifecycle, lifecycleBody, lifecycleFromTemplate, type LifecycleState } from '../../lib/lifecycleForm'
 
 export type BulkAccount = CsvAccount & { id: string }
@@ -231,6 +233,7 @@ export function BulkCreateDialog({
   const [bandwidth, setBandwidth] = useState('')
   const [expiryDays, setExpiryDays] = useState('')
   const [life, setLife] = useState<LifecycleState>(emptyLifecycle)
+  const [routing, setRouting] = useState<RoutingState>(emptyRouting)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<BulkResponse<BulkAccount> | null>(null)
 
@@ -245,6 +248,7 @@ export function BulkCreateDialog({
     setBandwidth('')
     setExpiryDays('')
     setLife(emptyLifecycle)
+    setRouting(emptyRouting)
     setError(null)
     setResult(null)
   }, [open])
@@ -257,6 +261,7 @@ export function BulkCreateDialog({
     setBandwidth(tmpl?.bandwidth_limit_mbps?.toString() ?? '')
     setExpiryDays(tmpl && !tmpl.on_hold && tmpl.duration_days ? String(tmpl.duration_days) : '')
     setLife(lifecycleFromTemplate(tmpl))
+    setRouting(routingFrom(tmpl))
   }
 
   const createMutation = useMutation({
@@ -275,6 +280,7 @@ export function BulkCreateDialog({
           expiry_at:
             !life.onHold && expiryDays ? new Date(Date.now() + Number(expiryDays) * 24 * 60 * 60 * 1000).toISOString() : undefined,
           ...lifecycleBody(life),
+          ...routingBody(routing),
         }),
       }),
     onSuccess: (res) => {
@@ -345,6 +351,7 @@ export function BulkCreateDialog({
           )}
         </div>
         <LifecycleFields value={life} onChange={setLife} />
+        <RoutingFields value={routing} onChange={setRouting} defaultLabel={templateId ? 'Same as template' : 'Default (full tunnel)'} />
         {error && <p className="text-sm text-danger-fg">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
