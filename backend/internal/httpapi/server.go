@@ -203,6 +203,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerMarzbanCompatRoutes(mux)
 	s.registerOpsRoutes(mux)
 	s.registerAbuseRoutes(mux)
+	s.registerRoutingRoutes(mux)
 
 	return s.loggingMiddleware(mux)
 }

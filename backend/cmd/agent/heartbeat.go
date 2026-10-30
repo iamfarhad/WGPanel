@@ -53,6 +53,14 @@ type heartbeatRequest struct {
 	// TorrentHits: matched BitTorrent-signature packets per tunnel IP not yet
 	// acknowledged by the panel (see torrent.go); omitted when there are none.
 	TorrentHits []torrentHitReport `json:"torrent_hits,omitempty"`
+	// PSKSupported: this agent sets PresharedKey on peers when the panel supplies one.
+	// The panel only hands out PSKs to nodes that say so - an old agent would drop the
+	// key and every PSK client's handshake would fail.
+	PSKSupported bool `json:"psk_supported"`
+	// IPv6Global / IPv6Ready: the host has a global IPv6 route / the node is set up for
+	// IPv6 egress (see ipv6.go).
+	IPv6Global bool `json:"ipv6_global"`
+	IPv6Ready  bool `json:"ipv6_ready"`
 }
 
 type heartbeatPeer struct {
@@ -61,6 +69,9 @@ type heartbeatPeer struct {
 	// BandwidthLimitMbps: per-account rate limit the control plane wants enforced on
 	// this peer via tc (see tc.go); nil = unshaped.
 	BandwidthLimitMbps *int `json:"bandwidth_limit_mbps"`
+	// PresharedKey (base64) is set by the control plane only for peers whose client was
+	// handed it; "" = none.
+	PresharedKey string `json:"preshared_key"`
 }
 
 type heartbeatResponse struct {
@@ -73,6 +84,8 @@ type heartbeatResponse struct {
 	// TorrentBlock is whether this node should drop torrent-signature packets; nil from
 	// a control plane that predates the feature (see torrentState.sync).
 	TorrentBlock *bool `json:"torrent_block"`
+	// IPv6 is the node's IPv6 egress instruction; nil from an older control plane.
+	IPv6 *heartbeatIPv6 `json:"ipv6"`
 }
 
 // runHeartbeatLoop returns only on shutdown (nil) or on a fatal node-network
@@ -132,6 +145,7 @@ type heartbeatState struct {
 	checkedDNS               string
 	dnsForwarder             bool
 	torrent                  torrentState
+	ipv6                     ipv6State
 }
 
 // tick returns an error only for a fatal node-network mismatch; every transient
@@ -161,7 +175,8 @@ func (s *heartbeatState) tick(ctx context.Context, cfg config, client *http.Clie
 		}
 	}
 
-	req := heartbeatRequest{PeerCount: peerCount, LoadAvg: 0, Traffic: traffic, DNSForwarder: s.dnsForwarder}
+	req := heartbeatRequest{PeerCount: peerCount, LoadAvg: 0, Traffic: traffic, DNSForwarder: s.dnsForwarder,
+		PSKSupported: true, IPv6Global: s.ipv6.reportedGlobal, IPv6Ready: s.ipv6.ready}
 	if s.tickCount%metricsEveryNTicks == 1 {
 		req.CPUPercent = s.readCPUPercent()
 		if used, total, ok := readMemInfo(); ok {
@@ -183,6 +198,7 @@ func (s *heartbeatState) tick(ctx context.Context, cfg config, client *http.Clie
 	if err := s.checkNetwork(cfg, resp.Network, logger); err != nil {
 		return err
 	}
+	s.ipv6.sync(cfg.WGInterface, resp.IPv6, logger)
 	if resp.ClientDNS != "" && resp.ClientDNS != s.checkedDNS {
 		checkClientDNS(resp.ClientDNS, logger)
 		s.checkedDNS = resp.ClientDNS
@@ -260,7 +276,8 @@ func peerSignature(peers []heartbeatPeer) string {
 		if p.BandwidthLimitMbps != nil {
 			limit = strconv.Itoa(*p.BandwidthLimitMbps)
 		}
-		entries = append(entries, p.PublicKey+"|"+strings.Join(allowedIPs, ",")+"|"+limit)
+		// A PSK change must trigger a reconcile too. The signature only lives in memory.
+		entries = append(entries, p.PublicKey+"|"+strings.Join(allowedIPs, ",")+"|"+limit+"|"+p.PresharedKey)
 	}
 	sort.Strings(entries)
 	return strings.Join(entries, "\n")
@@ -351,26 +368,40 @@ func reconcilePeers(iface string, desired []heartbeatPeer) error {
 
 	peerConfigs := make([]wgtypes.PeerConfig, 0, len(desired))
 	for _, p := range desired {
-		pubKey, err := wgtypes.ParseKey(p.PublicKey)
-		if err != nil {
-			continue // a malformed key from the control plane shouldn't abort every other peer
+		if pc, ok := peerConfigFor(p); ok {
+			peerConfigs = append(peerConfigs, pc)
 		}
-		allowedIPs := make([]net.IPNet, 0, len(p.AllowedIPs))
-		for _, cidr := range p.AllowedIPs {
-			_, ipNet, err := net.ParseCIDR(cidr)
-			if err != nil {
-				continue
-			}
-			allowedIPs = append(allowedIPs, *ipNet)
-		}
-		peerConfigs = append(peerConfigs, wgtypes.PeerConfig{
-			PublicKey:  pubKey,
-			AllowedIPs: allowedIPs,
-		})
 	}
 
 	return client.ConfigureDevice(iface, wgtypes.Config{
 		ReplacePeers: true,
 		Peers:        peerConfigs,
 	})
+}
+
+// peerConfigFor turns one desired peer into its wgctrl config. ok=false for a malformed
+// public key: that must not abort every other peer. Malformed AllowedIPs entries and a
+// malformed PSK are skipped individually; a peer whose PSK cannot be parsed is applied
+// without one (the handshake then fails for that client alone, visibly, rather than
+// the whole interface failing to sync).
+func peerConfigFor(p heartbeatPeer) (wgtypes.PeerConfig, bool) {
+	pubKey, err := wgtypes.ParseKey(p.PublicKey)
+	if err != nil {
+		return wgtypes.PeerConfig{}, false
+	}
+	allowedIPs := make([]net.IPNet, 0, len(p.AllowedIPs))
+	for _, cidr := range p.AllowedIPs {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		allowedIPs = append(allowedIPs, *ipNet)
+	}
+	pc := wgtypes.PeerConfig{PublicKey: pubKey, AllowedIPs: allowedIPs}
+	if p.PresharedKey != "" {
+		if psk, err := wgtypes.ParseKey(p.PresharedKey); err == nil {
+			pc.PresharedKey = &psk
+		}
+	}
+	return pc, true
 }

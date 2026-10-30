@@ -35,6 +35,10 @@ type subscriptionInfoResponse struct {
 	// choices, best first.
 	ConfigPath string                     `json:"config_path"`
 	Nodes      []subscriptionNodeResponse `json:"nodes"`
+	// RoutingMode is how this account's traffic is routed: full (everything through
+	// the tunnel), bypass_iran (Iranian and local ranges connect directly) or custom
+	// (an admin-defined exclusion list - the list itself is not exposed).
+	RoutingMode string `json:"routing_mode"`
 }
 
 func daysLeft(expiry, now time.Time) int {
@@ -104,6 +108,10 @@ func (s *Server) handleSubscriptionInfo(w http.ResponseWriter, r *http.Request) 
 	case resp.Brand != nil && brandSource == store.BrandSourceReseller:
 		// A reseller's page must never fall back to the owner's own support contact.
 		resp.SupportContact = nil
+	}
+	resp.RoutingMode = effectiveRoutingMode(nil)
+	if r, err := s.Store.GetAccountRouting(ctx, account.ID); err == nil {
+		resp.RoutingMode = effectiveRoutingMode(r.Mode)
 	}
 
 	if account.Status == "active" {

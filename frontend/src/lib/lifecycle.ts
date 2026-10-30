@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from './api'
+import type { RoutingFields } from './routing'
 
 /** Shared types and helpers for the account lifecycle features: on-hold accounts,
  * scheduled usage resets, plan templates and bulk actions. */
@@ -14,7 +15,7 @@ export const resetStrategies: { value: ResetStrategy; label: string }[] = [
   { value: 'year', label: 'Every year' },
 ]
 
-export interface PlanTemplate {
+export interface PlanTemplate extends RoutingFields {
   id: string
   name: string
   owner: string | null

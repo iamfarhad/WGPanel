@@ -31,6 +31,15 @@ postdown_rules() {
   echo "iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o ${egress_iface} -j MASQUERADE; iptables -t mangle -D ${MSS_ARGS} || true; ip6tables -t mangle -D ${MSS_ARGS} || true"
 }
 
+# IPv6 egress is opt-in per node and configured at runtime by the agent, not here: when
+# the panel enables it the agent puts the node's ULA address on the interface, turns on
+# IPv6 forwarding, and installs NAT66 + the FORWARD accepts (and re-checks the MSS clamp
+# above) idempotently, then reports whether it works. Nothing IPv6 is switched on by
+# default. The container needs a global IPv6 route for that - an IPv6-enabled Docker
+# network - and writable IPv6 sysctls (net.ipv6.conf.all.forwarding=1 and
+# net.ipv6.conf.all.disable_ipv6=0 in the compose 'sysctls:' of a node that opts in);
+# the agent logs ipv6_apply_failed with the exact missing piece otherwise.
+
 mkdir -p /etc/wireguard
 chmod 700 /etc/wireguard
 

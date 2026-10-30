@@ -30,13 +30,18 @@ type PlanTemplate struct {
 	HoldDeadlineDays     *int
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
+	// Routing (migration 0029): copied onto accounts created from the template.
+	RoutingMode          *string
+	RoutingExcludedCIDRs []string
+	RoutingPrecision     *string
 }
 
-const templateColumns = `id, name, owner_namespace, available_to_resellers, data_quota_bytes, duration_days, device_limit, bandwidth_limit_mbps, node_group, reset_strategy, on_hold, hold_deadline_days, created_at, updated_at`
+const templateColumns = `id, name, owner_namespace, available_to_resellers, data_quota_bytes, duration_days, device_limit, bandwidth_limit_mbps, node_group, reset_strategy, on_hold, hold_deadline_days, created_at, updated_at, routing_mode, routing_excluded_cidrs, routing_precision`
 
 func scanTemplate(row pgx.Row, t *PlanTemplate) error {
 	return row.Scan(&t.ID, &t.Name, &t.OwnerNamespace, &t.AvailableToResellers, &t.DataQuotaBytes, &t.DurationDays,
-		&t.DeviceLimit, &t.BandwidthLimitMbps, &t.NodeGroup, &t.ResetStrategy, &t.OnHold, &t.HoldDeadlineDays, &t.CreatedAt, &t.UpdatedAt)
+		&t.DeviceLimit, &t.BandwidthLimitMbps, &t.NodeGroup, &t.ResetStrategy, &t.OnHold, &t.HoldDeadlineDays, &t.CreatedAt, &t.UpdatedAt,
+		&t.RoutingMode, &t.RoutingExcludedCIDRs, &t.RoutingPrecision)
 }
 
 // templateVisible is the read-scope fragment; $1 is the caller namespace (NULL = staff).
@@ -57,6 +62,17 @@ type TemplateParams struct {
 	ResetStrategy        string
 	OnHold               bool
 	HoldDeadlineDays     *int
+	RoutingMode          *string
+	RoutingExcludedCIDRs []string
+	RoutingPrecision     *string
+}
+
+// routingCIDRs keeps the TEXT[] NOT NULL column from ever seeing a nil slice.
+func routingCIDRs(c []string) []string {
+	if c == nil {
+		return []string{}
+	}
+	return c
 }
 
 // CreateTemplate stores a template owned by ownerNamespace (nil = global/staff).
@@ -72,11 +88,13 @@ func (s *Store) CreateTemplate(ctx context.Context, ownerNamespace *string, p Te
 	var t PlanTemplate
 	err := scanTemplate(s.pool.QueryRow(ctx, `
 		INSERT INTO plan_templates (name, owner_namespace, available_to_resellers, data_quota_bytes, duration_days, device_limit,
-		                            bandwidth_limit_mbps, node_group, reset_strategy, on_hold, hold_deadline_days)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		                            bandwidth_limit_mbps, node_group, reset_strategy, on_hold, hold_deadline_days,
+		                            routing_mode, routing_excluded_cidrs, routing_precision)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING `+templateColumns,
 		p.Name, ownerNamespace, p.AvailableToResellers, p.DataQuotaBytes, p.DurationDays, p.DeviceLimit,
-		p.BandwidthLimitMbps, p.NodeGroup, p.ResetStrategy, p.OnHold, p.HoldDeadlineDays), &t)
+		p.BandwidthLimitMbps, p.NodeGroup, p.ResetStrategy, p.OnHold, p.HoldDeadlineDays,
+		p.RoutingMode, routingCIDRs(p.RoutingExcludedCIDRs), p.RoutingPrecision), &t)
 	return t, err
 }
 
@@ -119,11 +137,13 @@ func (s *Store) UpdateTemplate(ctx context.Context, id string, callerNamespace *
 		UPDATE plan_templates SET name = $3,
 			available_to_resellers = CASE WHEN owner_namespace IS NULL THEN $4 ELSE false END,
 			data_quota_bytes = $5, duration_days = $6, device_limit = $7, bandwidth_limit_mbps = $8,
-			node_group = $9, reset_strategy = $10, on_hold = $11, hold_deadline_days = $12, updated_at = now()
+			node_group = $9, reset_strategy = $10, on_hold = $11, hold_deadline_days = $12, updated_at = now(),
+			routing_mode = $13, routing_excluded_cidrs = $14, routing_precision = $15
 		WHERE id = $2 AND `+templateWritable+`
 		RETURNING `+templateColumns,
 		callerNamespace, id, p.Name, p.AvailableToResellers, p.DataQuotaBytes, p.DurationDays, p.DeviceLimit,
-		p.BandwidthLimitMbps, p.NodeGroup, p.ResetStrategy, p.OnHold, p.HoldDeadlineDays), &t)
+		p.BandwidthLimitMbps, p.NodeGroup, p.ResetStrategy, p.OnHold, p.HoldDeadlineDays,
+		p.RoutingMode, routingCIDRs(p.RoutingExcludedCIDRs), p.RoutingPrecision), &t)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PlanTemplate{}, ErrTemplateNotFound
 	}

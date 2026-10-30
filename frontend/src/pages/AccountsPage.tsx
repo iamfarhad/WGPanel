@@ -29,6 +29,8 @@ import { Progress } from '../components/ui/Progress'
 import { ExpiryBadge } from '../components/ui/ExpiryBadge'
 import { BulkActionBar, BulkCreateDialog, BulkRenewDialog, BulkResultDialog, type BulkAccount } from '../components/accounts/BulkActions'
 import { LifecycleFields } from '../components/accounts/LifecycleFields'
+import { RoutingFields } from '../components/accounts/RoutingFields'
+import { emptyRouting, routingBody, routingFrom, routingLabel, routingPatch, type RoutingFields as RoutingApiFields, type RoutingState } from '../lib/routing'
 import { emptyLifecycle, lifecycleBody, lifecycleFromTemplate, type LifecycleState } from '../lib/lifecycleForm'
 import { accountsCsv, downloadTextFile, resetStrategies, useTemplates, type BulkAction, type BulkResponse, type ResetStrategy } from '../lib/lifecycle'
 import { PeerEndpointSelect } from '../components/NodeEndpointsDialog'
@@ -56,7 +58,7 @@ interface UsageSample {
   tx_bytes: number
 }
 
-interface Account {
+interface Account extends RoutingApiFields {
   id: string
   external_ref: string | null
   label: string
@@ -699,6 +701,7 @@ function CreateAccountDialog({
   const [life, setLife] = useState<LifecycleState>(emptyLifecycle)
   const [note, setNote] = useState('')
   const [tags, setTags] = useState<string[]>([])
+  const [routing, setRouting] = useState<RoutingState>(emptyRouting)
   const [error, setError] = useState<string | null>(null)
   const templatesQuery = useTemplates()
   const templates = templatesQuery.data?.templates ?? []
@@ -713,6 +716,7 @@ function CreateAccountDialog({
     setDuration(!tmpl.on_hold && tmpl.duration_days ? String(tmpl.duration_days) : 'none')
     setCustomExpiry('')
     setLife(lifecycleFromTemplate(tmpl))
+    setRouting(routingFrom(tmpl))
   }
 
   // The dialog stays mounted (just hidden) between opens, so plain useState
@@ -731,6 +735,7 @@ function CreateAccountDialog({
     setLife(emptyLifecycle)
     setNote('')
     setTags([])
+    setRouting(emptyRouting)
     setError(null)
   }, [open, defaultQuotaGb, defaultDeviceLimit])
 
@@ -758,6 +763,7 @@ function CreateAccountDialog({
           note: note.trim() || undefined,
           tags: tags.length > 0 ? tags : undefined,
           ...lifecycleBody(life),
+          ...routingBody(routing),
         }),
       }),
     onSuccess: () => {
@@ -857,6 +863,7 @@ function CreateAccountDialog({
         <Field label="Note" labelSuffix="(optional)" hint="Only you see this - for example who paid and how.">
           <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} />
         </Field>
+        <RoutingFields value={routing} onChange={setRouting} defaultLabel={templateId ? 'Same as template' : 'Default (full tunnel)'} />
         {error && <p className="text-sm text-danger-fg">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>
@@ -979,7 +986,13 @@ function AccountDetailDialog({
       // Generated entirely client-side - this config contains the account's real
       // private key, so it's never sent anywhere but rendered locally as a QR
       // code for scanning into a mobile WireGuard app.
-      setQrDataUrl(await QRCode.toDataURL(text, { width: 240, margin: 1 }))
+      try {
+        setQrDataUrl(await QRCode.toDataURL(text, { width: 240, margin: 1 }))
+      } catch {
+        // A split-tunnel config lists hundreds of routes: far beyond what a QR code can hold.
+        setQrDataUrl(null)
+        push('error', t('This config is too large for a QR code - use the file or the subscription link.'))
+      }
     } catch (err) {
       push('error', err instanceof Error ? err.message : t('Could not load WireGuard config'))
     } finally {
@@ -1061,6 +1074,10 @@ function AccountDetailDialog({
                 </span>
               </Row>
             )}
+            <Row label="Routing">
+              {t(routingLabel(account.routing_mode))}
+              {account.routing_mode === 'custom' && <span className="ms-1.5 ltr tabular-nums text-xs text-muted">({account.routing_excluded_cidrs.length})</span>}
+            </Row>
             <Row label="Device limit">{account.device_limit ?? t('Unlimited')}</Row>
             <Row label="Bandwidth limit">
               {account.bandwidth_limit_mbps != null ? `${account.bandwidth_limit_mbps} Mbps` : t('Unlimited')}
@@ -1338,6 +1355,7 @@ function EditAccountForm({
       reset: account.reset_strategy,
       note: account.note ?? '',
       tags: account.tags ?? [],
+      routing: routingFrom(account),
     }),
     [account.id, account.updated_at], // eslint-disable-line react-hooks/exhaustive-deps
   )
@@ -1351,6 +1369,7 @@ function EditAccountForm({
   const [reset, setReset] = useState<ResetStrategy>(initial.reset)
   const [note, setNote] = useState(initial.note)
   const [tags, setTags] = useState(initial.tags)
+  const [routing, setRouting] = useState<RoutingState>(initial.routing)
 
   useEffect(() => {
     setLabel(initial.label)
@@ -1362,6 +1381,7 @@ function EditAccountForm({
     setReset(initial.reset)
     setNote(initial.note)
     setTags(initial.tags)
+    setRouting(initial.routing)
   }, [initial])
 
   // Only changed fields are sent - the PATCH endpoint treats omitted fields as
@@ -1378,6 +1398,7 @@ function EditAccountForm({
   if (reset !== initial.reset) changes.reset_strategy = reset
   if (note !== initial.note) changes.note = note
   if (!sameTags(tags, initial.tags)) changes.tags = tags
+  Object.assign(changes, routingPatch(initial.routing, routing))
   const hasChanges = Object.keys(changes).length > 0
 
   function handleSubmit(e: FormEvent) {
@@ -1434,6 +1455,7 @@ function EditAccountForm({
       <Field label="Note" hint="Only you see this.">
         <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} />
       </Field>
+      <RoutingFields value={routing} onChange={setRouting} />
       <div className="flex items-center justify-end gap-3 border-t border-edge pt-4">
         {hasChanges && <span className="text-xs text-muted">{t('{n} changes pending', { n: Object.keys(changes).length })}</span>}
         <Button type="submit" disabled={busy || !hasChanges}>

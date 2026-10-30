@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, KeyRound, Copy, Activity, Pencil, Route, Terminal } from 'lucide-react'
+import { Plus, KeyRound, Copy, Activity, Pencil, Route, Terminal, Globe } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { chartAxis, chartColors, chartGrid, chartLegend, chartTooltip } from '../lib/chartTheme'
 import { apiFetch, ApiError } from '../lib/api'
@@ -25,6 +25,7 @@ import { NodeEndpointsDialog } from '../components/NodeEndpointsDialog'
 import { MaintenanceBadge } from '../components/nodes/MaintenanceToggle'
 import { useNodeMaintenance } from '../components/nodes/useNodeMaintenance'
 import { SshProvisionDialog } from '../components/nodes/SshProvisionDialog'
+import { NodeIPv6Dialog } from '../components/NodeIPv6Dialog'
 
 interface Node {
   id: string
@@ -118,6 +119,7 @@ export function NodesPage() {
   const [endpointsNode, setEndpointsNode] = useState<Node | null>(null)
   const [sshOpen, setSshOpen] = useState(false)
   const maintenanceActions = useNodeMaintenance()
+  const [ipv6Node, setIPv6Node] = useState<Node | null>(null)
 
   const nodesQuery = useQuery({
     queryKey: ['nodes'],
@@ -209,7 +211,10 @@ export function NodesPage() {
                         { label: 'Edit', icon: Pencil, onSelect: () => setEditNode(node) },
                         ...maintenanceActions(node),
                         ...(user?.role !== 'reseller'
-                          ? [{ label: 'Entry endpoints', icon: Route, onSelect: () => setEndpointsNode(node) }]
+                          ? [
+                              { label: 'Entry endpoints', icon: Route, onSelect: () => setEndpointsNode(node) },
+                              { label: 'IPv6 egress', icon: Globe, onSelect: () => setIPv6Node(node) },
+                            ]
                           : []),
                         ...(user?.role === 'super_admin'
                           ? [
@@ -268,6 +273,7 @@ export function NodesPage() {
 
       {detailNode && <NodeDetailDialog node={detailNode} onClose={() => setDetailNode(null)} />}
       {endpointsNode && <NodeEndpointsDialog node={endpointsNode} onClose={() => setEndpointsNode(null)} />}
+      {ipv6Node && <NodeIPv6Dialog node={ipv6Node} onClose={() => setIPv6Node(null)} />}
 
       {editNode && (
         <EditNodeDialog

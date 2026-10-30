@@ -127,6 +127,7 @@ func (s *Server) handleBulkAccounts(w http.ResponseWriter, r *http.Request) {
 			s.Logger.Error("list_account_peers_failed", "error", err)
 		}
 		out := s.decorateAccount(ctx, toAccountResponse(a, peers, subBase))
+		s.fillRouting(ctx, []*accountResponse{&out})
 		return &out
 	}
 	audit := func(action string, a store.Account, extra map[string]any) {

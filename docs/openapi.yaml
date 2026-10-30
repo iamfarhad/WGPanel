@@ -1171,6 +1171,76 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorEnvelope" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/node-ipv6:
+    get:
+      tags: [Nodes]
+      summary: List every node's IPv6 egress and PresharedKey state
+      description: >-
+        Admin session (any role). Per node: the admin's IPv6 settings and what the agent reported
+        on its last heartbeat. IPv6 is rendered into client configs only while `ipv6_active`
+        (enabled AND reported ready).
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: One entry per node.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes:
+                    type: array
+                    items: { $ref: "#/components/schemas/NodeIPv6" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/node-ipv6/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      tags: [Nodes]
+      summary: Enable or disable IPv6 egress for a node
+      description: >-
+        Admin session with role >= `operator`. Enabling asks the node's agent to put a ULA /64 on the
+        tunnel interface, enable IPv6 forwarding and NAT66 (masquerade to the node's own global
+        address); client configs gain a `/128` address once the agent reports it ready, which needs a
+        global IPv6 route on the node (on the container install that means an IPv6-enabled Docker
+        network). The node's prefix is generated (random `fd..::/64`) when none is given or stored.
+        It cannot be changed while the node is enabled (409 `ipv6_prefix_locked`): clients hold
+        addresses derived from it. Disabling keeps the prefix and clears the reported-ready flag.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                ula_prefix: { type: string, example: "fd12:3456:789a:1::/64", description: "An IPv6 /64 inside fc00::/7. Omitted/empty keeps the stored one (or generates one on first enable)." }
+      responses:
+        "200":
+          description: Updated state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NodeIPv6" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`ipv6_prefix_locked` - disable IPv6 on the node before changing its prefix."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/nodes/{id}/endpoints:
     parameters:
       - name: id
@@ -1795,6 +1865,24 @@ paths:
                 device_limit_hard_enforce:
                   type: boolean
                   description: Toggle auto-suspend on device-limit breach (PRD-account-management.md §6.4).
+                routing_mode:
+                  type: string
+                  enum: ["", full, bypass_iran, custom]
+                  description: >-
+                    Split-tunnel mode (see `CreateAccountRequest`). Omitted = unchanged; `""` returns
+                    the account to the default (full tunnel). `custom` needs a non-empty
+                    `routing_excluded_cidrs` (sent now or already stored). Leaving `custom` drops the
+                    stored list. Takes effect on the next config the client fetches - existing clients
+                    keep their imported config until they re-import.
+                routing_excluded_cidrs:
+                  type: array
+                  maxItems: 500
+                  items: { type: string }
+                  description: IPv4 CIDRs kept out of the tunnel; only valid with mode `custom`. Omitted = unchanged.
+                routing_precision:
+                  type: string
+                  enum: ["", compact, exact]
+                  description: "Omitted = unchanged; `\"\"` clears it back to `compact`."
       responses:
         "200":
           description: Updated account.
@@ -2050,6 +2138,15 @@ paths:
         peer is used by default; if it has more than one, this 400s with the
         list of valid node ids instead of guessing. Admin session (any role)
         or API key with `read` permission.
+
+
+        `AllowedIPs` follows the account's `routing_mode` (always ending in
+        `::/0`). `Address` gains a `/128` ULA address on nodes with IPv6 egress
+        enabled and reported working (`GET /api/v1/node-ipv6`). `PresharedKey`
+        is included only for nodes whose agent reports it can apply one;
+        serving it is what makes that node's peer require the key, so a client
+        that imported an older config without it must re-import after the next
+        fetch.
       parameters:
         - name: id
           in: path
@@ -4439,6 +4536,18 @@ components:
         logo_url: { type: string, description: "https URL." }
         logo_base64: { type: string, description: "Raw base64 or a data: URL." }
         remove_logo: { type: boolean }
+    NodeIPv6:
+      type: object
+      properties:
+        node_id: { type: string, format: uuid }
+        ipv6_enabled: { type: boolean, description: "The admin's opt-in." }
+        ipv6_ula_prefix: { type: string, nullable: true, example: "fd12:3456:789a:1::/64" }
+        ipv6_host_global: { type: boolean, description: "Agent-reported: the host has a working global IPv6 route." }
+        ipv6_ready: { type: boolean, description: "Agent-reported: IPv6 forwarding, NAT66 and the tunnel address are in place." }
+        ipv6_active: { type: boolean, description: "enabled AND ready: configs for this node carry IPv6." }
+        psk_supported: { type: boolean, description: "Agent-reported: it can apply a PresharedKey. Configs carry PresharedKey only for such nodes." }
+      required: [node_id, ipv6_enabled, ipv6_ula_prefix, ipv6_host_global, ipv6_ready, ipv6_active, psk_supported]
+
     SubscriptionInfo:
       type: object
       properties:
@@ -4455,6 +4564,7 @@ components:
         support_contact: { type: string, nullable: true, description: "The brand's support link when it has one (a branded page never falls back to the owner's contact)." }
         brand: { $ref: "#/components/schemas/PublicBrand" }
         config_path: { type: string, example: "/api/v1/sub/<token>?format=conf" }
+        routing_mode: { type: string, enum: [full, bypass_iran, custom], description: "How the account's traffic is routed: everything through the tunnel, Iranian and local ranges direct, or an admin-defined exclusion list (the list is not exposed)." }
         nodes:
           type: array
           items:
@@ -4631,7 +4741,10 @@ components:
         tags: { type: array, items: { type: string }, description: "Normalized tags, sorted. Filter the list with `?tag=`." }
         possibly_shared: { type: boolean, description: "The sharing heuristic's standing flag (always false while detection is off). Detail: `GET .../devices`." }
         torrent_hits_24h: { type: integer, format: int64, description: "Blocked torrent-signature packets in the last 24 hours." }
-      required: [id, label, public_key, peers, data_used_bytes, status, created_at, updated_at, last_handshake_at, on_hold, reset_strategy]
+        routing_mode: { type: string, nullable: true, enum: [full, bypass_iran, custom], description: "The account's split-tunnel mode; null = default (full tunnel)." }
+        routing_excluded_cidrs: { type: array, items: { type: string }, description: "Excluded IPv4 CIDRs (`custom` only); empty otherwise." }
+        routing_precision: { type: string, nullable: true, enum: [compact, exact], description: "Null = compact." }
+      required: [id, label, public_key, peers, data_used_bytes, status, created_at, updated_at, last_handshake_at, on_hold, reset_strategy, routing_excluded_cidrs]
 
     AccountPeer:
       type: object
@@ -4679,6 +4792,32 @@ components:
         reset_strategy: { type: string, nullable: true, enum: [none, day, week, month, year], description: "Zero data_used_bytes on a schedule." }
         note: { type: string, nullable: true, maxLength: 2000, description: "Free-text note stored with the account." }
         tags: { type: array, items: { type: string }, description: "Tags (normalized by the API: lowercase, deduplicated; letters, digits and `_-:.`, max 32 characters, max 20 per account)." }
+        routing_mode:
+          type: string
+          nullable: true
+          enum: [full, bypass_iran, custom]
+          description: >-
+            Split tunnel. `full` (the default when omitted) sends everything through the tunnel.
+            `bypass_iran` sends everything except Iranian IPv4 ranges and private/LAN ranges
+            (the node's own tunnel subnet and the DNS resolver stay in the tunnel). `custom`
+            sends everything except `routing_excluded_cidrs`. IPv6 (`::/0`) stays in
+            AllowedIPs in every mode. Omitted/null = the template's mode, else `full`.
+        routing_excluded_cidrs:
+          type: array
+          nullable: true
+          maxItems: 500
+          items: { type: string, example: "203.0.113.0/24" }
+          description: "IPv4 CIDRs kept out of the tunnel. Required and only allowed with routing_mode custom."
+        routing_precision:
+          type: string
+          nullable: true
+          enum: [compact, exact]
+          description: >-
+            `compact` (default) caps the client's AllowedIPs near 1000 IPv4 entries by flipping the
+            cheapest slivers of address space (a few foreign IPs may connect directly, the smallest
+            Iranian prefixes may ride the tunnel; about 84% of Iranian addresses still go direct).
+            `exact` keeps every prefix: about 8200 entries for `bypass_iran`, which some mobile and
+            Windows clients import slowly.
 
     PlanTemplate:
       type: object
@@ -4695,9 +4834,12 @@ components:
         reset_strategy: { type: string, enum: [none, day, week, month, year] }
         on_hold: { type: boolean }
         hold_deadline_days: { type: integer, nullable: true }
+        routing_mode: { type: string, nullable: true, enum: [full, bypass_iran, custom], description: "Copied onto accounts created from the template. Null = full tunnel." }
+        routing_excluded_cidrs: { type: array, items: { type: string }, description: "Excluded IPv4 CIDRs (`custom` only); empty otherwise." }
+        routing_precision: { type: string, nullable: true, enum: [compact, exact] }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-      required: [id, name, available_to_resellers, reset_strategy, on_hold, created_at, updated_at]
+      required: [id, name, available_to_resellers, reset_strategy, on_hold, routing_excluded_cidrs, created_at, updated_at]
 
     TemplateRequest:
       type: object
@@ -4713,6 +4855,32 @@ components:
         reset_strategy: { type: string, enum: [none, day, week, month, year] }
         on_hold: { type: boolean, description: "Needs duration_days." }
         hold_deadline_days: { type: integer, nullable: true, minimum: 1, maximum: 3650 }
+        routing_mode:
+          type: string
+          nullable: true
+          enum: [full, bypass_iran, custom]
+          description: >-
+            Split tunnel. `full` (the default when omitted) sends everything through the tunnel.
+            `bypass_iran` sends everything except Iranian IPv4 ranges and private/LAN ranges
+            (the node's own tunnel subnet and the DNS resolver stay in the tunnel). `custom`
+            sends everything except `routing_excluded_cidrs`. IPv6 (`::/0`) stays in
+            AllowedIPs in every mode. Omitted/null = `full`. PUT replaces the whole template, so omitting it resets it.
+        routing_excluded_cidrs:
+          type: array
+          nullable: true
+          maxItems: 500
+          items: { type: string, example: "203.0.113.0/24" }
+          description: "IPv4 CIDRs kept out of the tunnel. Required and only allowed with routing_mode custom."
+        routing_precision:
+          type: string
+          nullable: true
+          enum: [compact, exact]
+          description: >-
+            `compact` (default) caps the client's AllowedIPs near 1000 IPv4 entries by flipping the
+            cheapest slivers of address space (a few foreign IPs may connect directly, the smallest
+            Iranian prefixes may ride the tunnel; about 84% of Iranian addresses still go direct).
+            `exact` keeps every prefix: about 8200 entries for `bypass_iran`, which some mobile and
+            Windows clients import slowly.
 
     BulkAccountsRequest:
       type: object
@@ -4736,6 +4904,9 @@ components:
           type: array
           items: { type: string }
           description: "create: tags for every created account. add_tags / remove_tags: the tags to add to / remove from each listed account (its other tags are untouched; max 20 per account)."
+        routing_mode: { type: string, nullable: true, enum: [full, bypass_iran, custom], description: "create: as in POST /accounts." }
+        routing_excluded_cidrs: { type: array, nullable: true, items: { type: string }, description: "create: as in POST /accounts (custom only)." }
+        routing_precision: { type: string, nullable: true, enum: [compact, exact], description: "create: as in POST /accounts." }
         ids:
           type: array
           maxItems: 200

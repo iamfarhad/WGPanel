@@ -36,6 +36,8 @@ type createAccountRequest struct {
 	// labels used for filtering (?tag=). Both are stored with migration 0033.
 	Note *string  `json:"note"`
 	Tags []string `json:"tags"`
+	// Split-tunnel routing (routing_api.go): routing_mode, routing_excluded_cidrs, routing_precision.
+	routingRequest
 }
 
 // maxBandwidthLimitMbps rejects obviously-nonsense rates (100 Gbps) before they
@@ -117,6 +119,8 @@ type accountResponse struct {
 	Tags           []string `json:"tags"`
 	PossiblyShared bool     `json:"possibly_shared"`
 	TorrentHits24h int64    `json:"torrent_hits_24h"`
+	// routing_mode / routing_excluded_cidrs / routing_precision - filled by fillRouting.
+	routingResponse
 }
 
 func rfc3339Ptr(t *time.Time) *string {
@@ -264,7 +268,9 @@ func (s *Server) respondWithAccount(w http.ResponseWriter, r *http.Request, stat
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not fetch account peers")
 		return
 	}
-	writeJSON(w, status, s.decorateAccount(r.Context(), toAccountResponse(account, peers, s.subscriptionBaseURLFromStore(r.Context()))))
+	resp := s.decorateAccount(r.Context(), toAccountResponse(account, peers, s.subscriptionBaseURLFromStore(r.Context())))
+	s.fillRouting(r.Context(), []*accountResponse{&resp})
+	writeJSON(w, status, resp)
 }
 
 // handleCreateAccount serves both admin and API-key callers (requireAdminOrAPIKey).
@@ -402,6 +408,11 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 		out = append(out, toAccountResponse(a, peers, subBase))
 	}
 	s.decorateAccounts(ctx, out)
+	routingPtrs := make([]*accountResponse, len(out))
+	for i := range out {
+		routingPtrs[i] = &out[i]
+	}
+	s.fillRouting(ctx, routingPtrs)
 	if cursorMode {
 		// next_cursor is null on the last page. Only present in cursor mode, so the
 		// limit/offset response shape is unchanged.
@@ -480,6 +491,8 @@ type updateAccountRequest struct {
 	// Omitted = unchanged.
 	Note *string   `json:"note"`
 	Tags *[]string `json:"tags"`
+	// Split-tunnel routing (routing_api.go). Omitted = unchanged; routing_mode "" = back to default.
+	routingRequest
 }
 
 func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
@@ -539,6 +552,11 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	identity, _ := callerIdentityFromContext(ctx)
 	ns := callerNamespaceArg(identity)
+	routingUpdate, aerr := s.prepareRoutingUpdate(ctx, r.PathValue("id"), ns, req.routingRequest)
+	if aerr != nil {
+		writeAPIError(w, aerr)
+		return
+	}
 	account, err := s.Store.UpdateAccount(ctx, r.PathValue("id"), ns, store.UpdateAccountParams{
 		Label:                  req.Label,
 		DataQuotaBytes:         quotaBytes,
@@ -569,7 +587,17 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not save note/tags")
 		return
 	}
-	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.updated", account.ID, nil, r.RemoteAddr); err != nil {
+	var auditDetail any
+	if routingUpdate != nil {
+		if err := s.Store.UpdateAccountRouting(ctx, account.ID, ns, *routingUpdate); err != nil {
+			s.Logger.Error("update_account_routing_failed", "error", err)
+			writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not update account routing")
+			return
+		}
+		auditDetail = map[string]any{"routing_mode": req.RoutingMode, "routing_excluded_cidrs": req.RoutingExcludedCIDRs, "routing_precision": req.RoutingPrecision}
+	}
+
+	if err := s.Store.InsertAuditLog(ctx, auditActor(identity), "account.updated", account.ID, auditDetail, r.RemoteAddr); err != nil {
 		s.Logger.Error("audit_log_failed", "error", err)
 	}
 	s.respondWithAccount(w, r, http.StatusOK, account, ns)

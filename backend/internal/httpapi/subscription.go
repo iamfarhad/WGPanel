@@ -135,18 +135,29 @@ func (s *Server) renderPeerConfig(ctx context.Context, accountID string, ns *str
 	// back to IPv4 and no traffic escapes unprotected. If/when nodes gain real IPv6
 	// egress (v6 address + NAT66), this line already carries it end to end - no client
 	// reconfig needed.
+	//
+	// That holds in every routing mode: split tunnelling (routing_mode bypass_iran /
+	// custom, see internal/routing) only carves IPv4 ranges out of 0.0.0.0/0; ::/0 is
+	// always present. Nodes with IPv6 egress enabled (ipv6_enabled AND reported working)
+	// also give the client a ULA address; the PresharedKey is included only for nodes
+	// whose agent reports it can apply it. Both are resolved in peerRoutingConfig.
+	rt := s.peerRoutingConfig(ctx, accountID, target, dns)
+	psk := ""
+	if rt.PresharedKey != "" {
+		psk = "PresharedKey = " + rt.PresharedKey + "\n"
+	}
 	return fmt.Sprintf(`[Interface]
 PrivateKey = %s
-Address = %s/32
+Address = %s
 DNS = %s
 MTU = %d
 
 [Peer]
 PublicKey = %s
-Endpoint = %s
-AllowedIPs = 0.0.0.0/0, ::/0
+%sEndpoint = %s
+AllowedIPs = %s
 PersistentKeepalive = 25
-`, privateKey, target.AssignedIP, dns, mtu, *target.NodePublicKey, endpoint), nil
+`, privateKey, rt.Address, dns, mtu, *target.NodePublicKey, psk, endpoint, rt.AllowedIPs), nil
 }
 
 // nodeClientDNS is the client_dns setting value meaning "each node's own forwarder".

@@ -178,6 +178,8 @@ type agentHeartbeatRequest struct {
 	// TorrentHits are the torrent-signature packets the node dropped per tunnel IP since
 	// its last acknowledged heartbeat (migration 0033; absent from older agents).
 	TorrentHits []agentTorrentHit `json:"torrent_hits"`
+	// psk_supported / ipv6_global / ipv6_ready (routing_agent.go).
+	routingAgentReport
 }
 
 type agentHeartbeatPeer struct {
@@ -187,6 +189,9 @@ type agentHeartbeatPeer struct {
 	// shaping in the same reconcile pass; nil/omitted = unshaped. Older agents ignore
 	// the field entirely (peers still sync, just without rate enforcement).
 	BandwidthLimitMbps *int `json:"bandwidth_limit_mbps,omitempty"`
+	// PresharedKey (base64), only for nodes whose agent reported psk support and peers
+	// whose key was issued to a client - see augmentHeartbeatRouting.
+	PresharedKey string `json:"preshared_key,omitempty"`
 }
 
 type agentHeartbeatResponse struct {
@@ -204,6 +209,8 @@ type agentHeartbeatResponse struct {
 	// predates the field (absent) is distinguishable from an explicit "off" - the agent
 	// leaves its rules alone on absent and removes them on false.
 	TorrentBlock *bool `json:"torrent_block,omitempty"`
+	// IPv6 is the node's IPv6 egress instruction (routing_agent.go).
+	IPv6 *agentIPv6 `json:"ipv6,omitempty"`
 }
 
 // handleAgentHeartbeat requires a client certificate that both chains to our CA
@@ -243,6 +250,8 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not record heartbeat")
 		return
 	}
+
+	s.recordAgentRoutingState(ctx, nodeID, req.routingAgentReport)
 
 	// Real traffic accounting + node health (docs/STORY-10-monitoring-and-domain-
 	// management.md) - best-effort: a failure here shouldn't fail the heartbeat
@@ -300,6 +309,7 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		} else {
 			s.Logger.Error("effective_torrent_block_failed", "error", err)
 		}
+		s.augmentHeartbeatRouting(ctx, node, req.routingAgentReport, desired, resp.Peers, &resp)
 	} else {
 		s.Logger.Error("get_node_for_heartbeat_failed", "error", err)
 	}

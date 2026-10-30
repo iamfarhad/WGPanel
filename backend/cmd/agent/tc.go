@@ -30,6 +30,7 @@ import (
 // response's desired-peer list.
 type shapedPeer struct {
 	ip   string // the peer's /32 tunnel address, without the mask
+	ip6  string // the peer's /128 tunnel address, without the mask; "" when it has none
 	mbps int
 }
 
@@ -45,7 +46,16 @@ func shapedPeersFrom(peers []heartbeatPeer) []shapedPeer {
 		if !ok || ip == "" {
 			continue // shaping matches exact host addresses; anything else isn't ours to shape
 		}
-		out = append(out, shapedPeer{ip: ip, mbps: *p.BandwidthLimitMbps})
+		// The peer's IPv6 host route (node IPv6 egress) rides in the same limit, or a
+		// v6-capable client would simply bypass its shaping over IPv6.
+		var ip6 string
+		for _, a := range p.AllowedIPs[1:] {
+			if h, ok := strings.CutSuffix(a, "/128"); ok && h != "" {
+				ip6 = h
+				break
+			}
+		}
+		out = append(out, shapedPeer{ip: ip, ip6: ip6, mbps: *p.BandwidthLimitMbps})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ip < out[j].ip })
 	return out
@@ -100,6 +110,11 @@ func buildShapingCommands(iface, ifbDev string, shaped []shapedPeer, useIFB bool
 		return teardown, nil
 	}
 
+	anyV6 := false
+	for _, p := range shaped {
+		anyV6 = anyV6 || p.ip6 != ""
+	}
+
 	// Download (egress on wg0) - HTB tree, identical in both modes.
 	setup = [][]string{
 		{"tc", "qdisc", "add", "dev", iface, "root", "handle", "1:", "htb", "default", "0"},
@@ -116,6 +131,11 @@ func buildShapingCommands(iface, ifbDev string, shaped []shapedPeer, useIFB bool
 				"u32", "match", "u32", "0", "0", "action", "mirred", "egress", "redirect", "dev", ifbDev},
 			[]string{"tc", "qdisc", "add", "dev", ifbDev, "root", "handle", "1:", "htb", "default", "0"},
 		)
+		if anyV6 {
+			// A separate prio and protocol: tc refuses to mix protocols under one prio.
+			setup = append(setup, []string{"tc", "filter", "add", "dev", iface, "parent", "ffff:", "protocol", "ipv6", "prio", "2",
+				"u32", "match", "u32", "0", "0", "action", "mirred", "egress", "redirect", "dev", ifbDev})
+		}
 	} else {
 		setup = append(setup,
 			[]string{"tc", "qdisc", "add", "dev", iface, "handle", "ffff:", "ingress"},
@@ -133,6 +153,11 @@ func buildShapingCommands(iface, ifbDev string, shaped []shapedPeer, useIFB bool
 				"u32", "match", "ip", "dst", p.ip + "/32", "flowid", classID},
 		)
 
+		if p.ip6 != "" {
+			setup = append(setup, []string{"tc", "filter", "add", "dev", iface, "parent", "1:", "protocol", "ipv6", "prio", "2",
+				"u32", "match", "ip6", "dst", p.ip6 + "/128", "flowid", classID})
+		}
+
 		if useIFB {
 			// Upload: shape on ifbDev (the mirrored ingress), matched on source
 			// (packets FROM the client). Real queuing, not dropping.
@@ -141,6 +166,10 @@ func buildShapingCommands(iface, ifbDev string, shaped []shapedPeer, useIFB bool
 				[]string{"tc", "filter", "add", "dev", ifbDev, "parent", "1:", "protocol", "ip", "prio", "1",
 					"u32", "match", "ip", "src", p.ip + "/32", "flowid", classID},
 			)
+			if p.ip6 != "" {
+				setup = append(setup, []string{"tc", "filter", "add", "dev", ifbDev, "parent", "1:", "protocol", "ipv6", "prio", "2",
+					"u32", "match", "ip6", "src", p.ip6 + "/128", "flowid", classID})
+			}
 		} else {
 			// Upload fallback: police (drop above rate) on wg0 ingress.
 			setup = append(setup,
@@ -148,6 +177,11 @@ func buildShapingCommands(iface, ifbDev string, shaped []shapedPeer, useIFB bool
 					"u32", "match", "ip", "src", p.ip + "/32",
 					"police", "rate", rate, "burst", fmt.Sprintf("%dk", policeBurstKB(p.mbps)), "drop"},
 			)
+			if p.ip6 != "" {
+				setup = append(setup, []string{"tc", "filter", "add", "dev", iface, "parent", "ffff:", "protocol", "ipv6", "prio", "2",
+					"u32", "match", "ip6", "src", p.ip6 + "/128",
+					"police", "rate", rate, "burst", fmt.Sprintf("%dk", policeBurstKB(p.mbps)), "drop"})
+			}
 		}
 	}
 	return teardown, setup

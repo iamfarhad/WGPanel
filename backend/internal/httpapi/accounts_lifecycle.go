@@ -51,6 +51,8 @@ type accountSpec struct {
 	// Note/Tags are the normalized note and tags to store after creation (nil = none).
 	Note *string
 	Tags *[]string
+	// Routing is the validated routing mode/CIDRs/precision (routing_api.go).
+	Routing resolvedRouting
 }
 
 // resolveAccountSpec applies the precedence "explicit request field > template value >
@@ -94,6 +96,12 @@ func resolveAccountSpec(req createAccountRequest, tmpl *store.PlanTemplate, now 
 	} else if tmpl != nil {
 		sp.DeviceLimit = tmpl.DeviceLimit
 	}
+
+	rt, aerr := resolveRoutingForCreate(req.routingRequest, tmpl)
+	if aerr != nil {
+		return sp, aerr
+	}
+	sp.Routing = rt
 
 	sp.ResetStrategy = store.ResetNone
 	if tmpl != nil {
@@ -220,6 +228,10 @@ func (s *Server) createFromSpec(ctx context.Context, identity *CallerIdentity, s
 	if err != nil {
 		return internal("encrypt", err)
 	}
+	encPSK, err := newEncryptedPSK(s.AccountKeyEncryptionKey)
+	if err != nil {
+		return internal("psk", err)
+	}
 
 	owner, groups := ownerAndGroups(identity)
 	// A template's node group narrows placement when no specific node is pinned.
@@ -247,6 +259,11 @@ func (s *Server) createFromSpec(ctx context.Context, identity *CallerIdentity, s
 		HoldDurationDays:    sp.HoldDays,
 		HoldDeadlineAt:      sp.HoldDeadline,
 		ResetStrategy:       sp.ResetStrategy,
+
+		RoutingMode:           sp.Routing.Mode,
+		RoutingExcludedCIDRs:  sp.Routing.CIDRs,
+		RoutingPrecision:      sp.Routing.Precision,
+		PresharedKeyEncrypted: &encPSK,
 	})
 	if err != nil {
 		return store.Account{}, toAPIError(err, "create")
