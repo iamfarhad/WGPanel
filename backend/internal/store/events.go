@@ -76,14 +76,15 @@ func (s *Store) PruneEventState(ctx context.Context, olderThan time.Duration) er
 // ---- sweep inputs ---------------------------------------------------------------
 
 type NodeHealth struct {
-	ID     string
-	Name   string
-	Status string
+	ID          string
+	Name        string
+	Status      string
+	Maintenance bool // in maintenance: node-down alerts are suppressed (threshold_sweep.go)
 }
 
 // ListNodeHealth returns nodes that have ever reported (online/offline).
 func (s *Store) ListNodeHealth(ctx context.Context) ([]NodeHealth, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, name, status FROM nodes WHERE status IN ('online', 'offline')`)
+	rows, err := s.pool.Query(ctx, `SELECT id, name, status, maintenance_since IS NOT NULL FROM nodes WHERE status IN ('online', 'offline')`)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +92,7 @@ func (s *Store) ListNodeHealth(ctx context.Context) ([]NodeHealth, error) {
 	var out []NodeHealth
 	for rows.Next() {
 		var n NodeHealth
-		if err := rows.Scan(&n.ID, &n.Name, &n.Status); err != nil {
+		if err := rows.Scan(&n.ID, &n.Name, &n.Status, &n.Maintenance); err != nil {
 			return nil, err
 		}
 		out = append(out, n)

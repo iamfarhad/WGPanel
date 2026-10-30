@@ -12,7 +12,8 @@ import (
 const steeringCPUWindow = "15 minutes"
 
 // SteerCandidatesForAccount gathers, for every node this account has a peer on and
-// that could actually serve a connection (a WireGuard public key exists), the raw
+// that could actually serve a connection (a WireGuard public key exists, not in
+// maintenance), the raw
 // inputs steering.Rank scores: current active-peer load, capacity, and recent average
 // CPU. Namespace-scoped like every other account read so an API key can't probe node
 // load through an account it doesn't own.
@@ -30,6 +31,7 @@ func (s *Store) SteerCandidatesForAccount(ctx context.Context, accountID string,
 		JOIN accounts a ON a.id = ap.account_id
 		WHERE ap.account_id = $2 AND `+namespaceFilter+`
 		  AND n.public_key IS NOT NULL AND n.public_key != ''
+		  AND n.maintenance_since IS NULL -- maintenance nodes are never recommended (ops_maintenance.go)
 	`, callerNamespace, accountID, steeringCPUWindow)
 	if err != nil {
 		return nil, err

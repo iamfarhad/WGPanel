@@ -227,9 +227,10 @@ func (s *Store) CreateAccount(ctx context.Context, p CreateAccountParams) (Accou
 	if pinned {
 		var n eligibleNode
 		var status, nodeGroup string
+		var inMaintenance bool
 		err := tx.QueryRow(ctx, `
-			SELECT id, wg_subnet, status, capacity_max_peers, node_group FROM nodes WHERE id = $1 FOR UPDATE
-		`, p.NodeIDOrAuto).Scan(&n.id, &n.wgSubnet, &status, &n.capacity, &nodeGroup)
+			SELECT id, wg_subnet, status, capacity_max_peers, node_group, maintenance_since IS NOT NULL FROM nodes WHERE id = $1 FOR UPDATE
+		`, p.NodeIDOrAuto).Scan(&n.id, &n.wgSubnet, &status, &n.capacity, &nodeGroup, &inMaintenance)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Account{}, ErrNodeNotFound
 		}
@@ -246,12 +247,16 @@ func (s *Store) CreateAccount(ctx context.Context, p CreateAccountParams) (Accou
 		if restrictGroups && !contains(p.AllowedNodeGroups, nodeGroup) {
 			return Account{}, groupErr
 		}
+		if inMaintenance {
+			return Account{}, ErrNodeInMaintenance
+		}
 		nodes = append(nodes, n)
 	} else {
 		rows, err := tx.Query(ctx, `
 			SELECT id, wg_subnet, capacity_max_peers
 			FROM nodes
 			WHERE status IN ('registered', 'online')
+			  AND maintenance_since IS NULL
 			  AND (NOT $1::bool OR node_group = ANY($2::text[]))
 			ORDER BY id
 			FOR UPDATE
@@ -397,12 +402,17 @@ func (s *Store) BackfillAccountPeersForNode(ctx context.Context, nodeID string) 
 
 	var wgSubnet string
 	var capacity int
-	err = tx.QueryRow(ctx, `SELECT wg_subnet, capacity_max_peers FROM nodes WHERE id = $1 FOR UPDATE`, nodeID).Scan(&wgSubnet, &capacity)
+	var inMaintenance bool
+	err = tx.QueryRow(ctx, `SELECT wg_subnet, capacity_max_peers, maintenance_since IS NOT NULL FROM nodes WHERE id = $1 FOR UPDATE`, nodeID).Scan(&wgSubnet, &capacity, &inMaintenance)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNodeNotFound
 	}
 	if err != nil {
 		return err
+	}
+	if inMaintenance {
+		// No new peers while in maintenance; ending it re-runs this backfill.
+		return nil
 	}
 
 	rows, err := tx.Query(ctx, `
