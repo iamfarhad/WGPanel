@@ -141,7 +141,10 @@ func (s *Server) renderPeerConfig(ctx context.Context, accountID string, ns *str
 	// always present. Nodes with IPv6 egress enabled (ipv6_enabled AND reported working)
 	// also give the client a ULA address; the PresharedKey is included only for nodes
 	// whose agent reports it can apply it. Both are resolved in peerRoutingConfig.
-	rt := s.peerRoutingConfig(ctx, accountID, target, dns)
+	rt, err := s.peerRoutingConfig(ctx, accountID, target, dns)
+	if err != nil {
+		return "", err
+	}
 	psk := ""
 	if rt.PresharedKey != "" {
 		psk = "PresharedKey = " + rt.PresharedKey + "\n"

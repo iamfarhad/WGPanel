@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"strings"
 
@@ -79,8 +80,10 @@ func buildAllowedIPs(r store.AccountRouting, nodeSubnet, dns string) (string, er
 // peerRoutingConfig gathers the routing, IPv6 and PSK parts of one peer's config.
 // Every lookup that fails degrades to today's plain config (full tunnel, IPv4 only, no
 // PSK) rather than failing config delivery: a client with a working-but-plainer config
-// is better than none.
-func (s *Server) peerRoutingConfig(ctx context.Context, accountID string, target store.AccountPeerWithNode, dns string) peerRouting {
+// is better than none. The one exception is recording the PSK decision: a config whose
+// serve went unrecorded could later be broken by a PSK the node starts to require, so
+// that failure fails the request instead.
+func (s *Server) peerRoutingConfig(ctx context.Context, accountID string, target store.AccountPeerWithNode, dns string) (peerRouting, error) {
 	out := peerRouting{
 		Address:    target.AssignedIP + "/32",
 		AllowedIPs: "0.0.0.0/0, ::/0",
@@ -96,8 +99,10 @@ func (s *Server) peerRoutingConfig(ctx context.Context, accountID string, target
 
 	nr, err := s.Store.GetNodeRouting(ctx, target.NodeID)
 	if err != nil {
+		// Treated as a node with neither IPv6 nor PSK support, so the serve below still
+		// pins this peer to plain mode.
 		s.Logger.Warn("get_node_routing_failed", "error", err)
-		return out
+		nr = store.NodeRouting{}
 	}
 
 	// IPv6 only where the admin enabled it AND the agent reported it working.
@@ -109,22 +114,30 @@ func (s *Server) peerRoutingConfig(ctx context.Context, accountID string, target
 		}
 	}
 
-	// PresharedKey only for nodes whose agent can apply it. Serving the config is what
-	// "issues" the key (see migration 0029): from then on the node's peer requires it.
+	// PresharedKey: a node peer may require it only if every config ever served for this
+	// (account, node) carried it (store.ServeConfigPSK, migration 0029). So the key is
+	// offered only when the node's agent can apply it and the account has one, and the
+	// store then refuses it if a PSK-less config was ever served for this peer (always
+	// the case for accounts that predate the feature). Every PSK-less serve pins the peer
+	// to plain mode for good, which is what keeps already-imported configs working.
+	psk := ""
 	if nr.PSKSupported {
 		if enc, err := s.Store.GetAccountPSK(ctx, accountID); err != nil {
 			s.Logger.Warn("get_account_psk_failed", "error", err)
 		} else if enc != nil {
-			if psk, err := wgkeys.Decrypt(s.AccountKeyEncryptionKey, *enc); err != nil {
+			if p, err := wgkeys.Decrypt(s.AccountKeyEncryptionKey, *enc); err != nil {
 				s.Logger.Warn("decrypt_account_psk_failed", "error", err)
-			} else if err := s.Store.MarkPeerPSKIssued(ctx, accountID, target.NodeID); err != nil {
-				// Without the latch the node would not require the key, so handing it out
-				// would be harmless but pointless; skip it and stay consistent.
-				s.Logger.Warn("mark_peer_psk_issued_failed", "error", err)
 			} else {
-				out.PresharedKey = psk
+				psk = p
 			}
 		}
 	}
-	return out
+	use, err := s.Store.ServeConfigPSK(ctx, accountID, target.NodeID, psk != "")
+	if err != nil {
+		return peerRouting{}, fmt.Errorf("record config psk decision: %w", err)
+	}
+	if use {
+		out.PresharedKey = psk
+	}
+	return out, nil
 }

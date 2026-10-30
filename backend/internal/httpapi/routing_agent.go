@@ -45,9 +45,9 @@ func (s *Server) recordAgentRoutingState(ctx context.Context, nodeID string, rep
 // which is still correct for a node that never gets the new features.
 //
 // PresharedKey goes only to a node whose agent reported psk support on THIS heartbeat,
-// and only for peers whose key has been issued to a client (store.MarkPeerPSKIssued) -
-// both sides of the handshake must agree, so a peer never requires a key its client was
-// not handed. The /128 goes to the peer only while IPv6 is active for the node, the same
+// and only for peers that qualify under store.ServeConfigPSK's rule (a config with the key
+// was served and no PSK-less one ever was) - both sides of the handshake must agree, so a
+// peer never requires a key that some imported config lacks. The /128 goes to the peer only while IPv6 is active for the node, the same
 // condition under which client configs carry the address.
 func (s *Server) augmentHeartbeatRouting(ctx context.Context, node store.Node, rep routingAgentReport, desired []store.DesiredPeer, peers []agentHeartbeatPeer, resp *agentHeartbeatResponse) {
 	nr, err := s.Store.GetNodeRouting(ctx, node.ID)

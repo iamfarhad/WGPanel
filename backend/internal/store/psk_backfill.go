@@ -13,9 +13,9 @@ import (
 // restart halfway, a second replica, or a concurrent create never overwrites a key.
 // Returns how many accounts this call filled.
 //
-// Generating a key does NOT change what any node requires: a node's peer only starts
-// requiring its PSK once a client config carrying it has been served (see migration
-// 0029), so existing clients keep working.
+// Generating a key does NOT change what any node requires: migration 0029 marks every
+// existing peer plain_served, so those peers never require a PSK; the keys only matter
+// for peers created later (new nodes backfilled to an old account).
 func (s *Store) BackfillPresharedKeys(ctx context.Context, encryptionKey string) (int, error) {
 	const batch = 500
 	total := 0

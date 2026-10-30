@@ -154,24 +154,40 @@ func (s *Store) SetAccountPSKIfMissing(ctx context.Context, accountID, encrypted
 	return tag.RowsAffected() == 1, nil
 }
 
-// MarkPeerPSKIssued records that a client config carrying the PSK was served for this
-// (account, node). From the next heartbeat the node's peer requires the PSK. Idempotent:
-// only the first issue sets the timestamp.
-func (s *Store) MarkPeerPSKIssued(ctx context.Context, accountID, nodeID string) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE account_peers SET psk_issued_at = now() WHERE account_id = $1 AND node_id = $2 AND psk_issued_at IS NULL`,
-		accountID, nodeID)
-	return err
+// ServeConfigPSK decides, atomically, whether the client config being served for this
+// (account, node) may carry the PSK, and records the decision. wantPSK says the caller
+// could include it (the node's agent supports it and the account has one).
+//
+// The rule: a node peer requires its PSK only if EVERY config ever served for it carried
+// it. So a config without the PSK permanently pins the peer to plain mode
+// (plain_served), and a config with the PSK is only allowed while no plain one was ever
+// served - otherwise an older, PSK-less copy on another device would stop working the
+// moment the node started requiring the key. Returns whether to include the PSK.
+func (s *Store) ServeConfigPSK(ctx context.Context, accountID, nodeID string, wantPSK bool) (bool, error) {
+	if !wantPSK {
+		_, err := s.pool.Exec(ctx,
+			`UPDATE account_peers SET plain_served = true WHERE account_id = $1 AND node_id = $2 AND NOT plain_served`,
+			accountID, nodeID)
+		return false, err
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE account_peers SET psk_issued_at = COALESCE(psk_issued_at, now())
+		WHERE account_id = $1 AND node_id = $2 AND NOT plain_served`, accountID, nodeID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // PeerPSK is what the heartbeat needs per peer: its encrypted PSK, set only for peers
-// whose PSK has been issued to a client.
+// that qualify under the rule on ServeConfigPSK.
 type PeerPSK struct {
 	PublicKey    string
 	PSKEncrypted string
 }
 
-// ListIssuedPSKsForNode returns the PSKs of every active, PSK-issued peer on the node,
+// ListIssuedPSKsForNode returns the PSKs of every active peer on the node that must
+// require one (PSK issued and no PSK-less config ever served),
 // keyed by the peer's WireGuard public key.
 func (s *Store) ListIssuedPSKsForNode(ctx context.Context, nodeID string) (map[string]string, error) {
 	rows, err := s.pool.Query(ctx, `
@@ -179,7 +195,7 @@ func (s *Store) ListIssuedPSKsForNode(ctx context.Context, nodeID string) (map[s
 		FROM account_peers ap
 		JOIN accounts a ON a.id = ap.account_id
 		WHERE ap.node_id = $1 AND a.status = 'active'
-		  AND ap.psk_issued_at IS NOT NULL AND a.preshared_key_encrypted IS NOT NULL`, nodeID)
+		  AND ap.psk_issued_at IS NOT NULL AND NOT ap.plain_served AND a.preshared_key_encrypted IS NOT NULL`, nodeID)
 	if err != nil {
 		return nil, err
 	}

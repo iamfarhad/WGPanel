@@ -131,22 +131,49 @@ func TestPSKBackfillAndRoutingStore(t *testing.T) {
 		t.Fatalf("mode not cleared: %+v", r)
 	}
 
-	// The PSK latch: nothing issued -> nothing listed; issuing is idempotent.
+	// The PSK rule: a peer requires its PSK only if every config ever served carried it.
+	// Nothing served yet -> nothing listed.
 	issued, err := s.ListIssuedPSKsForNode(ctx, node.ID)
 	if err != nil || len(issued) != 0 {
 		t.Fatalf("issued before any config was served = %v, %v", issued, err)
 	}
+	// A PSK serve issues the key; repeating it is fine and stays allowed.
 	for i := 0; i < 2; i++ {
-		if err := s.MarkPeerPSKIssued(ctx, legacy.ID, node.ID); err != nil {
-			t.Fatal(err)
+		if use, err := s.ServeConfigPSK(ctx, legacy.ID, node.ID, true); err != nil || !use {
+			t.Fatalf("PSK serve %d = %v, %v; want allowed", i, use, err)
 		}
 	}
 	issued, _ = s.ListIssuedPSKsForNode(ctx, node.ID)
 	if len(issued) != 1 || issued[legacy.PublicKey] != *enc {
 		t.Fatalf("issued = %v", issued)
 	}
+	// A PSK-less serve pins the peer to plain mode for good: it leaves the list, and no
+	// later serve may carry the key again.
+	if use, err := s.ServeConfigPSK(ctx, legacy.ID, node.ID, false); err != nil || use {
+		t.Fatalf("plain serve = %v, %v", use, err)
+	}
+	if issued, _ = s.ListIssuedPSKsForNode(ctx, node.ID); len(issued) != 0 {
+		t.Fatalf("a peer with a PSK-less config in the wild is still listed: %v", issued)
+	}
+	if use, err := s.ServeConfigPSK(ctx, legacy.ID, node.ID, true); err != nil || use {
+		t.Fatalf("PSK serve after a plain one = %v, %v; want refused", use, err)
+	}
+	// A peer that predates the feature (migration marks plain_served) never gets a PSK.
+	if _, err := s.pool.Exec(ctx, `UPDATE account_peers SET plain_served = true WHERE account_id = $1`, withPSK.ID); err != nil {
+		t.Fatal(err)
+	}
+	if use, _ := s.ServeConfigPSK(ctx, withPSK.ID, node.ID, true); use {
+		t.Fatal("existing peer was PSK'd")
+	}
 	// A suspended account's peer is not desired, so its PSK is not listed either.
-	if _, err := s.SuspendAccount(ctx, legacy.ID, &ns, "manual"); err != nil {
+	fresh := mk("fresh", nil, nil, &keep)
+	if use, _ := s.ServeConfigPSK(ctx, fresh.ID, node.ID, true); !use {
+		t.Fatal("a new peer's first config must be allowed to carry the PSK")
+	}
+	if issued, _ = s.ListIssuedPSKsForNode(ctx, node.ID); len(issued) != 1 {
+		t.Fatalf("issued = %v", issued)
+	}
+	if _, err := s.SuspendAccount(ctx, fresh.ID, &ns, "manual"); err != nil {
 		t.Fatal(err)
 	}
 	if issued, _ = s.ListIssuedPSKsForNode(ctx, node.ID); len(issued) != 0 {

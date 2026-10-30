@@ -20,13 +20,23 @@ ALTER TABLE plan_templates
 -- private_key_encrypted. NULL until generated: SQL cannot encrypt with the app key, so
 -- existing accounts are backfilled in Go at API start (cmd/api psk backfill).
 --
--- account_peers.psk_issued_at is the rollout safety latch. WireGuard needs the PSK on
--- BOTH ends or the handshake fails, so an existing client that imported a config
--- without a PSK must keep working until it is handed one. A peer gets the PSK on its
--- node only after a client config carrying it was served for that (account, node), and
--- only on nodes whose agent reports psk support (nodes.psk_supported).
+-- Rollout rule: WireGuard needs the PSK on BOTH ends or the handshake fails, so a node
+-- peer may require its PSK only if EVERY config ever served for that (account, node)
+-- carried it. A customer's config is often on several devices, and a config imported
+-- before this feature has no PSK, so:
+--   plain_served  - a PSK-less config was (or must be assumed to have been) served for
+--                   this (account, node). Sticky: once true the peer never requires a PSK.
+--   psk_issued_at - a config carrying the PSK was served (only possible while
+--                   plain_served is false, on a node whose agent reports psk support).
+-- The node is told to require the PSK only for peers with psk_issued_at set and
+-- plain_served false. Every peer that exists now is marked plain_served, since we cannot
+-- know whether a PSK-less config was handed out; so existing accounts stay PSK-less on
+-- their current nodes, and only peers created from now on can get a PSK.
 ALTER TABLE accounts ADD COLUMN preshared_key_encrypted TEXT;
-ALTER TABLE account_peers ADD COLUMN psk_issued_at TIMESTAMPTZ;
+ALTER TABLE account_peers
+    ADD COLUMN psk_issued_at TIMESTAMPTZ,
+    ADD COLUMN plain_served BOOLEAN NOT NULL DEFAULT false;
+UPDATE account_peers SET plain_served = true;
 
 ALTER TABLE nodes
     ADD COLUMN psk_supported BOOLEAN NOT NULL DEFAULT false,      -- agent heartbeat capability
