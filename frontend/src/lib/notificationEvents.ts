@@ -17,6 +17,9 @@ export const EVENT_CATALOG: { type: string; label: string; severity: 'info' | 'w
   { type: 'reseller.plan_expiring', label: 'Reseller plan expires soon', severity: 'warning' },
   { type: 'backup.succeeded', label: 'Backup completed', severity: 'info' },
   { type: 'backup.failed', label: 'Backup failed', severity: 'critical' },
+  { type: 'node.maintenance_started', label: 'Node maintenance started', severity: 'info' },
+  { type: 'node.maintenance_ended', label: 'Node maintenance ended', severity: 'info' },
+  { type: 'security.refresh_reuse', label: 'Session token reuse detected', severity: 'critical' },
 ]
 
 export function eventLabel(type: string): string {
@@ -46,6 +49,15 @@ export function notificationText(
   switch (n.event) {
     case 'node.down':
       return { title, body: t('Node "{node}" stopped sending heartbeats and is now offline.', { node: s('node_name') }) }
+    case 'node.maintenance_started':
+      return { title, body: t('Node "{node}" is in maintenance: no new peers or steering until it ends.', { node: s('node_name') }) }
+    case 'node.maintenance_ended':
+      return { title, body: t('Node "{node}" is back in rotation.', { node: s('node_name') }) }
+    case 'security.refresh_reuse':
+      return {
+        title,
+        body: t('A refresh token of admin "{admin}" was replayed after rotation. All their sessions from that login were revoked.', { admin: s('admin') }),
+      }
     case 'node.recovered':
       return { title, body: t('Node "{node}" is sending heartbeats again.', { node: s('node_name') }) }
     case 'account.quota_80':

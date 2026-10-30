@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
-import { apiFetch, getStoredRefreshToken, setStoredRefreshToken } from './api'
+import { apiFetch, getStoredRefreshToken, refreshSession, setStoredRefreshToken } from './api'
 import { setAccessToken } from './tokenStore'
 import { decodeAccessToken } from './jwt'
 import { getPasskey, type RequestOptionsJSON } from './webauthn'
@@ -51,11 +51,6 @@ interface PasskeyBegin<T> {
   options: T
 }
 
-interface RefreshResponse {
-  access_token: string
-  expires_in_seconds: number
-}
-
 function userFromToken(token: string): CurrentUser | null {
   const decoded = decodeAccessToken(token)
   if (!decoded) return null
@@ -76,13 +71,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setIsLoading(false)
       return
     }
-    apiFetch<RefreshResponse>('/api/v1/auth/refresh', {
-      method: 'POST',
-      body: JSON.stringify({ refresh_token: refreshToken }),
-    })
-      .then((data) => {
-        setAccessToken(data.access_token)
-        setUser(userFromToken(data.access_token))
+    refreshSession()
+      .then((token) => {
+        if (!token) return
+        setUser(userFromToken(token))
         setIsAuthenticated(true)
       })
       .catch(() => {

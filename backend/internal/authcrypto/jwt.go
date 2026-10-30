@@ -2,8 +2,6 @@ package authcrypto
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -61,20 +59,11 @@ func ParseAccessToken(secret, tokenString string) (*Claims, error) {
 	return claims, nil
 }
 
-// IssueRefreshToken generates an opaque random token and stores it in Redis, keyed by
-// its own value, mapped to the admin id, with a TTL. Revoking a session (Security PRD
-// §6) is deleting this key - a follow-up story, not needed for login itself.
+// IssueRefreshToken starts a new token family for a login (password, MFA or passkey):
+// an opaque random token stored in Redis, mapped to the admin id with a TTL. Each use
+// rotates it - see refresh.go. Revoking a session is deleting the family's live key.
 func IssueRefreshToken(ctx context.Context, rdb *redis.Client, adminID string) (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generate refresh token: %w", err)
-	}
-	token := hex.EncodeToString(buf)
-
-	if err := rdb.Set(ctx, refreshTokenKey(token), adminID, RefreshTokenTTL).Err(); err != nil {
-		return "", fmt.Errorf("store refresh token: %w", err)
-	}
-	return token, nil
+	return issueFamilyToken(ctx, rdb, adminID)
 }
 
 func refreshTokenKey(token string) string {
@@ -86,10 +75,8 @@ func refreshTokenKey(token string) string {
 // must log in again.
 var ErrInvalidRefreshToken = errors.New("invalid or expired refresh token")
 
-// ValidateRefreshToken looks up the admin id a refresh token maps to. Does not
-// rotate or delete the token - the same refresh token remains valid until its TTL
-// naturally expires (STORY-06 scope note: rotation-per-use is deferred, it needs its
-// own design for concurrent-tab races rather than a rushed addition here).
+// ValidateRefreshToken looks up the admin id a refresh token maps to without
+// consuming it. The refresh endpoint uses RotateRefreshToken instead.
 func ValidateRefreshToken(ctx context.Context, rdb *redis.Client, token string) (string, error) {
 	adminID, err := rdb.Get(ctx, refreshTokenKey(token)).Result()
 	if errors.Is(err, redis.Nil) {
@@ -98,5 +85,5 @@ func ValidateRefreshToken(ctx context.Context, rdb *redis.Client, token string) 
 	if err != nil {
 		return "", fmt.Errorf("look up refresh token: %w", err)
 	}
-	return adminID, nil
+	return adminOfRefreshValue(adminID), nil
 }

@@ -121,6 +121,18 @@ func renderEvent(ev events.Event, lang string) rendered {
 		r.Title = pick("Backup failed", "بکاپ ناموفق بود")
 		r.Body = pick(fmt.Sprintf("Backup to %s failed: %s", dataStr(d, "destination"), dataStr(d, "error")),
 			fmt.Sprintf("ارسال بکاپ به %s ناموفق بود: %s", dataStr(d, "destination"), dataStr(d, "error")))
+	case events.NodeMaintStarted:
+		r.Title = pick("Node maintenance started", "نگهداری نود شروع شد")
+		r.Body = pick(fmt.Sprintf("Node %q is in maintenance: no new peers or steering until it ends.", node),
+			fmt.Sprintf("نود «%s» در حالت نگهداری است؛ تا پایان آن اکانت جدید روی آن ساخته نمی‌شود و ترافیک به آن هدایت نمی‌شود.", node))
+	case events.NodeMaintEnded:
+		r.Title = pick("Node maintenance ended", "نگهداری نود تمام شد")
+		r.Body = pick(fmt.Sprintf("Node %q is back in rotation.", node),
+			fmt.Sprintf("نود «%s» دوباره وارد چرخه شد.", node))
+	case events.RefreshReuse:
+		r.Title = pick("Session token reuse detected", "استفادهٔ مجدد از توکن نشست شناسایی شد")
+		r.Body = pick(fmt.Sprintf("A refresh token of admin %q was replayed after rotation. All their sessions from that login were revoked.", dataStr(d, "admin")),
+			fmt.Sprintf("یک توکن نشست قدیمی ادمین «%s» دوباره استفاده شد؛ همهٔ نشست‌های آن ورود لغو شد. در صورت نیاز رمز را عوض کنید.", dataStr(d, "admin")))
 	case "test":
 		r.Title = pick("Test notification", "اعلان آزمایشی")
 		r.Body = pick("This is a test message from Jirjirak WireGuard. The channel works.",

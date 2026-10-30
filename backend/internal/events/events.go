@@ -27,6 +27,11 @@ const (
 	ResellerPlanExpires = "reseller.plan_expiring"
 	BackupSucceeded     = "backup.succeeded"
 	BackupFailed        = "backup.failed"
+	NodeMaintStarted    = "node.maintenance_started"
+	NodeMaintEnded      = "node.maintenance_ended"
+	// RefreshReuse: an already-rotated refresh token was replayed and its session
+	// family was revoked (authcrypto/refresh.go).
+	RefreshReuse = "security.refresh_reuse"
 )
 
 // Test pings are not part of All - they are delivered only to the endpoint tested.
@@ -63,6 +68,9 @@ var catalog = []Meta{
 	{ResellerPlanExpires, SeverityWarning, true},
 	{BackupSucceeded, SeverityInfo, true},
 	{BackupFailed, SeverityCritical, true},
+	{NodeMaintStarted, SeverityInfo, true},
+	{NodeMaintEnded, SeverityInfo, true},
+	{RefreshReuse, SeverityCritical, true},
 }
 
 // All returns every subscribable event type.
