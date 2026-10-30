@@ -309,12 +309,7 @@ func TestRoutingPSKIPv6EndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("PresharedKey rollout latch", func(t *testing.T) {
-		a := createAccount(`{"label":"psk-a"}`)
-		b := createAccount(`{"label":"psk-b"}`)
-		aID, bID := a["id"].(string), b["id"].(string)
-		aPub := a["public_key"].(string)
-
+	t.Run("PresharedKey never breaks an imported config", func(t *testing.T) {
 		desired := func() ([]store.DesiredPeer, []agentHeartbeatPeer) {
 			d, err := st.ListDesiredPeersForNode(ctx, node.ID)
 			if err != nil {
@@ -327,68 +322,93 @@ func TestRoutingPSKIPv6EndToEnd(t *testing.T) {
 			return d, peers
 		}
 		n, _ := st.GetNode(ctx, node.ID)
+		// pskOf is the PSK the heartbeat would hand the node for one account ("" = none).
+		pskOf := func(report bool, pub string) string {
+			t.Helper()
+			d, peers := desired()
+			var resp agentHeartbeatResponse
+			s.augmentHeartbeatRouting(ctx, n, routingAgentReport{PSKSupported: report}, d, peers, &resp)
+			for i := range d {
+				if d[i].PublicKey == pub {
+					return peers[i].PresharedKey
+				}
+			}
+			t.Fatalf("peer %s not desired", pub)
+			return ""
+		}
+		storedPSK := func(id string) string {
+			enc, _ := st.GetAccountPSK(ctx, id)
+			plain, _ := wgkeys.Decrypt(itHexKey, *enc)
+			return plain
+		}
 
-		// Old agent: nothing reported. No config PSK, nothing sent to the node.
-		if err := st.RecordNodeRoutingState(ctx, node.ID, false, false, false); err != nil {
+		// (1) An account that existed before the upgrade: its peers are marked plain_served
+		// by the migration (simulated here). However often its config is fetched, and
+		// whatever the node supports, it never gets a PSK.
+		legacy := createAccount(`{"label":"psk-legacy"}`)
+		lID, lPub := legacy["id"].(string), legacy["public_key"].(string)
+		if _, err := conn.Exec(ctx, `UPDATE account_peers SET plain_served = true WHERE account_id = $1`, lID); err != nil {
 			t.Fatal(err)
 		}
-		if _, has := config(aID)["PresharedKey"]; has {
-			t.Fatal("config carries a PSK for a node without psk support")
-		}
-
-		// The agent upgrades and reports support. Nothing issued yet, so the heartbeat
-		// still sends no PSK: existing clients (which imported PSK-less configs) keep working.
 		if err := st.RecordNodeRoutingState(ctx, node.ID, true, false, false); err != nil {
 			t.Fatal(err)
 		}
-		d, peers := desired()
-		var resp agentHeartbeatResponse
-		s.augmentHeartbeatRouting(ctx, n, routingAgentReport{PSKSupported: true}, d, peers, &resp)
-		for _, p := range peers {
-			if p.PresharedKey != "" {
-				t.Fatalf("node peer requires a PSK that no client holds yet: %s", p.PublicKey)
+		for i := 0; i < 2; i++ {
+			if _, has := config(lID)["PresharedKey"]; has {
+				t.Fatal("an account that predates the feature was handed a PSK")
 			}
+		}
+		if pskOf(true, lPub) != "" {
+			t.Fatal("node told to require a PSK for an account with a PSK-less config in the wild")
 		}
 
-		// Serving account a's config issues its key: the config carries it, and from
-		// now on the node's peer for a requires the very same key. b is untouched.
-		cfg := config(aID)
-		psk := cfg["PresharedKey"]
-		if psk == "" {
-			t.Fatal("config lacks PresharedKey although the node supports it")
+		// (2) A new account on a PSK-capable node: PSK from its very first config, the same
+		// key on every later fetch, and the node requires exactly that key.
+		fresh := createAccount(`{"label":"psk-fresh"}`)
+		fID, fPub := fresh["id"].(string), fresh["public_key"].(string)
+		if pskOf(true, fPub) != "" {
+			t.Fatal("peer requires a PSK before any config carrying it was served")
 		}
-		enc, _ := st.GetAccountPSK(ctx, aID)
-		want, _ := wgkeys.Decrypt(itHexKey, *enc)
-		if psk != want {
-			t.Fatal("config PSK differs from the stored one")
+		first := config(fID)["PresharedKey"]
+		if first == "" || first != storedPSK(fID) {
+			t.Fatalf("first config PSK = %q, want the account's stored key", first)
 		}
-		d, peers = desired()
-		resp = agentHeartbeatResponse{}
-		s.augmentHeartbeatRouting(ctx, n, routingAgentReport{PSKSupported: true}, d, peers, &resp)
-		for i, p := range peers {
-			switch d[i].PublicKey {
-			case aPub:
-				if p.PresharedKey != want {
-					t.Fatalf("issued peer got PSK %q, want the account's", p.PresharedKey)
-				}
-			default:
-				if p.PresharedKey != "" {
-					t.Fatalf("peer of an account whose config was never served got a PSK")
-				}
-			}
+		if got := pskOf(true, fPub); got != first {
+			t.Fatalf("heartbeat PSK = %q, want %q", got, first)
 		}
-		// An agent that does NOT report support on this heartbeat never gets one.
-		d, peers = desired()
-		s.augmentHeartbeatRouting(ctx, n, routingAgentReport{PSKSupported: false}, d, peers, &resp)
-		for _, p := range peers {
-			if p.PresharedKey != "" {
-				t.Fatal("PSK sent to an agent that did not report support")
-			}
+		if again := config(fID)["PresharedKey"]; again != first {
+			t.Fatal("a second fetch must still carry the same PSK (no break)")
 		}
-		_ = bID
-		// Rendering twice yields the same key (no rotation on fetch).
-		if config(aID)["PresharedKey"] != psk {
-			t.Fatal("PSK changed between fetches")
+		if pskOf(true, fPub) != first {
+			t.Fatal("PSK dropped after a second fetch")
+		}
+		// An agent that does not report support on this heartbeat is never sent a key.
+		if pskOf(false, fPub) != "" {
+			t.Fatal("PSK sent to an agent that did not report support")
+		}
+
+		// (3) A PSK-less serve pins the peer to plain mode for good: the node lost
+		// support when the first config was served, and regaining it changes nothing.
+		late := createAccount(`{"label":"psk-late"}`)
+		xID, xPub := late["id"].(string), late["public_key"].(string)
+		if err := st.RecordNodeRoutingState(ctx, node.ID, false, false, false); err != nil {
+			t.Fatal(err)
+		}
+		if _, has := config(xID)["PresharedKey"]; has {
+			t.Fatal("config carries a PSK for a node without psk support")
+		}
+		if err := st.RecordNodeRoutingState(ctx, node.ID, true, false, false); err != nil {
+			t.Fatal(err)
+		}
+		if _, has := config(xID)["PresharedKey"]; has {
+			t.Fatal("a peer already served a PSK-less config was upgraded to PSK")
+		}
+		if pskOf(true, xPub) != "" {
+			t.Fatal("node told to require a PSK that the first-served config lacks")
+		}
+		// And the pinned one does not disturb the PSK'd account.
+		if pskOf(true, fPub) != first {
+			t.Fatal("pinning one account changed another's PSK")
 		}
 		if err := st.RecordNodeRoutingState(ctx, node.ID, false, false, false); err != nil {
 			t.Fatal(err)

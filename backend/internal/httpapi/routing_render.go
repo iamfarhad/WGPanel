@@ -109,22 +109,29 @@ func (s *Server) peerRoutingConfig(ctx context.Context, accountID string, target
 		}
 	}
 
-	// PresharedKey only for nodes whose agent can apply it. Serving the config is what
-	// "issues" the key (see migration 0029): from then on the node's peer requires it.
+	// PresharedKey: a node peer may require it only if every config ever served for this
+	// (account, node) carried it (store.ServeConfigPSK, migration 0029). So the key is
+	// offered only when the node's agent can apply it and the account has one, and the
+	// store then refuses it if a PSK-less config was ever served for this peer (always
+	// the case for accounts that predate the feature). Every PSK-less serve pins the peer
+	// to plain mode for good, which is what keeps already-imported configs working.
+	psk := ""
 	if nr.PSKSupported {
 		if enc, err := s.Store.GetAccountPSK(ctx, accountID); err != nil {
 			s.Logger.Warn("get_account_psk_failed", "error", err)
 		} else if enc != nil {
-			if psk, err := wgkeys.Decrypt(s.AccountKeyEncryptionKey, *enc); err != nil {
+			if p, err := wgkeys.Decrypt(s.AccountKeyEncryptionKey, *enc); err != nil {
 				s.Logger.Warn("decrypt_account_psk_failed", "error", err)
-			} else if err := s.Store.MarkPeerPSKIssued(ctx, accountID, target.NodeID); err != nil {
-				// Without the latch the node would not require the key, so handing it out
-				// would be harmless but pointless; skip it and stay consistent.
-				s.Logger.Warn("mark_peer_psk_issued_failed", "error", err)
 			} else {
-				out.PresharedKey = psk
+				psk = p
 			}
 		}
+	}
+	use, err := s.Store.ServeConfigPSK(ctx, accountID, target.NodeID, psk != "")
+	if err != nil {
+		s.Logger.Warn("serve_config_psk_failed", "error", err)
+	} else if use {
+		out.PresharedKey = psk
 	}
 	return out
 }

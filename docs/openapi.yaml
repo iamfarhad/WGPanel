@@ -1902,10 +1902,11 @@ paths:
         `AllowedIPs` follows the account's `routing_mode` (always ending in
         `::/0`). `Address` gains a `/128` ULA address on nodes with IPv6 egress
         enabled and reported working (`GET /api/v1/node-ipv6`). `PresharedKey`
-        is included only for nodes whose agent reports it can apply one;
-        serving it is what makes that node's peer require the key, so a client
-        that imported an older config without it must re-import after the next
-        fetch.
+        is included only for nodes whose agent reports it can apply one, and
+        only for a (account, node) pair that has never been served a config
+        without it: a node peer requires the key only if every config ever
+        served for it carried the key, so configs already imported (all
+        accounts that existed before the feature) keep working unchanged.
       parameters:
         - name: id
           in: path
