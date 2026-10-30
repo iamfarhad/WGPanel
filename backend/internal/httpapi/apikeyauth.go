@@ -181,10 +181,10 @@ func (s *Server) authenticateAPIKey(w http.ResponseWriter, r *http.Request, next
 			s.Logger.Error("reseller_limits_lookup_failed", "error", err)
 			writeJSONError(w, http.StatusInternalServerError, "internal_error", "authentication failed")
 			return
-		case limits.Disabled:
+		case limits.IsDisabled():
 			writeJSONError(w, http.StatusUnauthorized, "reseller_disabled", "the reseller owning this API key is disabled")
 			return
-		case limits.ExpiresAt != nil && !limits.ExpiresAt.After(time.Now()):
+		case limits.PlanEnd() != nil && !limits.PlanEnd().After(time.Now()):
 			writeJSONError(w, http.StatusUnauthorized, "reseller_expired", "the reseller plan owning this API key has expired")
 			return
 		}

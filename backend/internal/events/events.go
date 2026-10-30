@@ -25,8 +25,12 @@ const (
 	AccountExpired      = "account.expired"
 	ResellerCreditLow   = "reseller.credit_low"
 	ResellerPlanExpires = "reseller.plan_expiring"
-	BackupSucceeded     = "backup.succeeded"
-	BackupFailed        = "backup.failed"
+	// Sub-reseller lifecycle, emitted into the PARENT's namespace (migration 0032).
+	ResellerChildCreated = "reseller.child_created"
+	ResellerChildUpdated = "reseller.child_updated"
+	ResellerChildDeleted = "reseller.child_deleted"
+	BackupSucceeded      = "backup.succeeded"
+	BackupFailed         = "backup.failed"
 )
 
 // Test pings are not part of All - they are delivered only to the endpoint tested.
@@ -61,6 +65,9 @@ var catalog = []Meta{
 	{AccountExpired, SeverityWarning, true},
 	{ResellerCreditLow, SeverityWarning, true},
 	{ResellerPlanExpires, SeverityWarning, true},
+	{ResellerChildCreated, SeverityInfo, false},
+	{ResellerChildUpdated, SeverityInfo, false},
+	{ResellerChildDeleted, SeverityInfo, false},
 	{BackupSucceeded, SeverityInfo, true},
 	{BackupFailed, SeverityCritical, true},
 }

@@ -28,6 +28,9 @@ type subscriptionInfoResponse struct {
 	DevicesActive  int     `json:"devices_active"`
 	LastHandshake  *string `json:"last_handshake_at"`
 	SupportContact *string `json:"support_contact"`
+	// Brand is the owning reseller's branding (nearest ancestor with any, else the global
+	// default); null when nothing is configured. See brandForAccount.
+	Brand *publicBrand `json:"brand"`
 	// ConfigPath downloads the config; Nodes (active accounts only) lists per-node
 	// choices, best first.
 	ConfigPath string                     `json:"config_path"`
@@ -88,6 +91,19 @@ func (s *Server) handleSubscriptionInfo(w http.ResponseWriter, r *http.Request) 
 	}
 	if settings, err := s.Store.GetSettings(ctx); err == nil {
 		resp.SupportContact = settings.SupportContact
+	}
+	// A branded page uses its brand's support link; the panel-wide support_contact stays
+	// as the fallback for unbranded pages (and for clients older than `brand`).
+	var brand store.BrandProfile
+	var brandSource string
+	resp.Brand, brand, brandSource = s.brandForAccount(r, account)
+	switch {
+	case brand.SupportLink != "":
+		link := brand.SupportLink
+		resp.SupportContact = &link
+	case resp.Brand != nil && brandSource == store.BrandSourceReseller:
+		// A reseller's page must never fall back to the owner's own support contact.
+		resp.SupportContact = nil
 	}
 
 	if account.Status == "active" {

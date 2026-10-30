@@ -43,6 +43,12 @@ func (s *Server) handleReports(w http.ResponseWriter, r *http.Request) {
 		params.IncludeResellers = identity.AdminRole == "super_admin" && params.OwnerFilter == ""
 	}
 
+	// A reseller gets the same per-reseller tree, limited to itself and its descendants
+	// (the store scopes it by CallerNamespace); empty for a reseller with no children.
+	if identity.ResellerID != "" {
+		params.IncludeResellers = true
+	}
+
 	report, err := s.Store.BuildReport(ctx, params)
 	if err != nil {
 		s.Logger.Error("build_report_failed", "error", err)

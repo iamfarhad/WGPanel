@@ -35,7 +35,7 @@ func routePatterns(t *testing.T) []string {
 	var out []string
 	// Routes live in server.go and in feature files that register their own groups
 	// (security.go: registerSecurityRoutes, notify_api.go: registerNotificationRoutes).
-	for _, file := range []string{"server.go", "security.go", "notify_api.go"} {
+	for _, file := range []string{"server.go", "security.go", "notify_api.go", "reseller_children.go", "branding.go"} {
 		src, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
@@ -73,7 +73,7 @@ func TestResellerAllowlist(t *testing.T) {
 	}
 	public := map[string]bool{
 		"GET /healthz": true, "POST /api/v1/auth/login": true, "POST /api/v1/auth/refresh": true,
-		"POST /api/v1/nodes/join": true, "GET /api/v1/sub/{token}": true, "GET /api/v1/sub/{token}/nodes": true, "GET /api/v1/sub/{token}/info": true,
+		"POST /api/v1/nodes/join": true, "GET /api/v1/sub/{token}": true, "GET /api/v1/sub/{token}/nodes": true, "GET /api/v1/sub/{token}/info": true, "GET /api/v1/sub/{token}/logo": true,
 		"POST /api/v1/auth/mfa/totp": true, "POST /api/v1/auth/mfa/recovery": true,
 		"POST /api/v1/auth/mfa/passkey/begin": true, "POST /api/v1/auth/mfa/passkey/finish": true,
 		"POST /api/v1/auth/passkey/begin": true, "POST /api/v1/auth/passkey/finish": true,

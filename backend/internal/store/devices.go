@@ -194,7 +194,7 @@ func (s *Store) ListAccountDevices(ctx context.Context, accountID string, caller
 		FROM account_devices d
 		JOIN nodes n ON n.id = d.node_id
 		JOIN accounts a ON a.id = d.account_id
-		WHERE d.account_id = $2 AND `+namespaceFilter+`
+		WHERE d.account_id = $2 AND `+namespaceTreeFilter+`
 		ORDER BY d.last_seen_at DESC
 		LIMIT 200
 	`, callerNamespace, accountID)

@@ -60,7 +60,7 @@ func activateHeldSQL(cond string) string {
 	return `
 		UPDATE accounts SET
 			expiry_at = LEAST(now() + hold_duration_days * interval '1 day',
-				COALESCE((SELECT rl.expires_at FROM reseller_limits rl
+				COALESCE((SELECT reseller_effective_expires_at(rl.admin_id) FROM reseller_limits rl
 				          WHERE accounts.owner_key_namespace = '` + ResellerNamespacePrefix + `' || rl.admin_id::text),
 				         'infinity'::timestamptz)),
 			hold_duration_days = NULL,

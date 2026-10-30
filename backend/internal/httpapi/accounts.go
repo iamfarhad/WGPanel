@@ -780,6 +780,12 @@ func (s *Server) handleGetAccountConfig(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusConflict, "node_missing_public_key", "the node this account is on has no public key set yet")
 		return
 	}
+	// A parent reseller can read a descendant's account but never its keys: the strict
+	// private-key lookup misses, which is the same 404 as any foreign account.
+	if errors.Is(err, store.ErrAccountNotFound) {
+		writeJSONError(w, http.StatusNotFound, "account_not_found", "no account with that id")
+		return
+	}
 	if err != nil {
 		s.Logger.Error("render_account_config_failed", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not render config")

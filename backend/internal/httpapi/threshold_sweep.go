@@ -121,7 +121,7 @@ func (s *Server) runThresholdSweep(ctx context.Context, now time.Time) error {
 		ns := "reseller:" + r.AdminID
 		data := map[string]any{"reseller_id": r.AdminID, "reseller_username": r.Username}
 		if r.DataLimitBytes != nil && *r.DataLimitBytes > 0 {
-			pct := r.Usage.DataAllocatedBytes * 100 / *r.DataLimitBytes
+			pct := (r.Usage.DataAllocatedBytes + r.ReservedBytes) * 100 / *r.DataLimitBytes // credit handed to sub-resellers counts as allocated
 			low := !r.Disabled && pct >= resellerCreditLowPct
 			if rose, _ := s.transition(ctx, active, "reseller:"+r.AdminID+":credit", low); rose {
 				d := cloneData(data)

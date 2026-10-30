@@ -114,11 +114,11 @@ func (s *Server) admitAdminClaims(w http.ResponseWriter, r *http.Request, claims
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "authentication failed")
 		return nil, false
 	}
-	if limits.Disabled {
+	if limits.IsDisabled() {
 		writeJSONError(w, http.StatusUnauthorized, "account_disabled", "this reseller account is disabled")
 		return nil, false
 	}
-	if limits.ExpiresAt != nil && !limits.ExpiresAt.After(time.Now()) {
+	if end := limits.PlanEnd(); end != nil && !end.After(time.Now()) {
 		writeJSONError(w, http.StatusUnauthorized, "reseller_expired", "this reseller plan has expired")
 		return nil, false
 	}
