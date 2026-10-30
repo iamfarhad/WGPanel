@@ -55,8 +55,8 @@ func renderSalesEvent(ev events.Event, lang string) (rendered, bool) {
 	switch ev.Type {
 	case events.PaymentAwaitingReview:
 		r.Title = pick("Payment awaiting review", "پرداخت در انتظار بررسی")
-		r.Body = pick(fmt.Sprintf("A %s payment of %s Toman (%s) needs your review: open Orders to approve or reject it.", method, amount, who),
-			faDigits(fmt.Sprintf("یک پرداخت %s به مبلغ %s تومان (%s) منتظر بررسی شماست؛ از بخش سفارش‌ها تأیید یا رد کنید.", methodFa, amount, who)))
+		r.Body = pick(fmt.Sprintf("A %s payment of %s Toman (%s) needs your review: open Payments to approve or reject it.", method, amount, who),
+			faDigits(fmt.Sprintf("یک پرداخت %s به مبلغ %s تومان (%s) منتظر بررسی شماست؛ از بخش پرداخت‌ها تأیید یا رد کنید.", methodFa, amount, who)))
 	case events.PaymentApproved:
 		r.Title = pick("Payment approved", "پرداخت تأیید شد")
 		r.Body = pick(fmt.Sprintf("Payment of %s Toman (%s) was accepted.", amount, who),

@@ -22,6 +22,7 @@ import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 import { RowActions } from '../components/ui/RowActions'
 import { ExpiryBadge } from '../components/ui/ExpiryBadge'
+import { ResellerSalesButton } from '../components/sales/ResellerSalesButton'
 
 interface Reseller {
   id: string
@@ -245,6 +246,7 @@ export function ResellersPage() {
                     )}
                   </Td>
                   <Td className="text-end">
+                    <ResellerSalesButton reseller={r} />
                     <RowActions
                       actions={[
                         {

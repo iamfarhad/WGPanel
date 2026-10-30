@@ -23,6 +23,7 @@ import { TableSkeleton } from '../components/ui/Skeleton'
 import { Table, THead, Th, Tr, Td } from '../components/ui/Table'
 import { RowActions } from '../components/ui/RowActions'
 import { LifecycleFields } from '../components/accounts/LifecycleFields'
+import { TemplatePriceCell } from '../components/sales/TemplatePriceCell'
 import { emptyLifecycle, lifecycleFromTemplate, type LifecycleState } from '../lib/lifecycleForm'
 
 function gbText(bytes: number | null): string {
@@ -98,6 +99,7 @@ export function TemplatesPage() {
                 <Th>Limits</Th>
                 <Th>Reset</Th>
                 <Th>Availability</Th>
+                <Th>Price</Th>
                 <Th className="text-end">Actions</Th>
               </tr>
             </THead>
@@ -142,6 +144,9 @@ export function TemplatesPage() {
                     ) : (
                       <span className="text-xs text-faint">{t('Staff only')}</span>
                     )}
+                  </Td>
+                  <Td>
+                    <TemplatePriceCell template={tm} canChange={canChange(tm)} />
                   </Td>
                   <Td className="text-end">
                     {canChange(tm) && (

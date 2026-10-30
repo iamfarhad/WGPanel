@@ -21,6 +21,7 @@ import {
   ExternalLink,
   Fingerprint,
   Webhook,
+  CreditCard,
 } from 'lucide-react'
 import { useAuth } from '../lib/auth'
 import type { AdminRole } from '../lib/auth'
@@ -71,6 +72,7 @@ const navGroups: NavGroup[] = [
     label: 'Administration',
     items: [
       { to: '/resellers', label: 'Resellers', icon: Store, minRole: 'super_admin' },
+      { to: '/payments', label: 'Payments', icon: CreditCard, minRole: 'support' },
       { to: '/api-keys', label: 'API Keys', icon: KeyRound, minRole: 'super_admin', reseller: true },
       { to: '/webhooks', label: 'Webhooks', icon: Webhook, minRole: 'support', reseller: true },
       { to: '/admins', label: 'Admin Users', icon: ShieldCheck, minRole: 'super_admin' },

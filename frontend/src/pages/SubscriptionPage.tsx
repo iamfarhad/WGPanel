@@ -13,6 +13,7 @@ import { Card } from '../components/ui/Card'
 import { Progress } from '../components/ui/Progress'
 import { Select } from '../components/ui/Select'
 import { expiryInfo } from '../lib/expiry'
+import { SubscriptionShop } from '../components/sales/SubscriptionShop'
 
 interface SubNode {
   node_id: string
@@ -270,6 +271,8 @@ export function SubscriptionPage() {
             />
           </div>
         </Card>
+
+        <SubscriptionShop token={token} />
 
         {active && (
           <Section title="Connect">
