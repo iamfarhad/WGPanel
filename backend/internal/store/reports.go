@@ -102,6 +102,15 @@ type ReportReseller struct {
 	DataLimitBytes     *int64     `json:"data_limit_bytes"`
 	RxBytes            int64      `json:"rx_bytes"`
 	TxBytes            int64      `json:"tx_bytes"`
+	// Tree (migration 0032). Rows come out depth-first (a parent directly above its
+	// children), so a client can indent by Depth with no further sorting. The fields above
+	// describe the reseller itself; Subtree* roll the reseller and all its descendants up.
+	ParentID        *string `json:"parent_id"`
+	Depth           int     `json:"depth"`
+	Children        int     `json:"children"`
+	SubtreeAccounts int     `json:"subtree_accounts"`
+	SubtreeRxBytes  int64   `json:"subtree_rx_bytes"`
+	SubtreeTxBytes  int64   `json:"subtree_tx_bytes"`
 }
 
 type Report struct {
@@ -152,7 +161,8 @@ func ValidReportRange(key string) bool { _, ok := reportRanges[key]; return ok }
 // namespace, $2 staff owner filter) - the same shape as namespaceFilter plus the
 // admin-only owner narrowing, so a reseller can never reach another namespace.
 func reportScopeSQL(alias string) string {
-	return fmt.Sprintf(`(($1::text IS NULL OR %[1]s.owner_key_namespace = $1)
+	return fmt.Sprintf(`(($1::text IS NULL OR %[1]s.owner_key_namespace = $1::text OR %[1]s.owner_key_namespace IN (
+		SELECT 'reseller:' || rt.admin_id::text FROM reseller_limits rt WHERE rt.ancestors @> ARRAY[$1::text]))
 		AND ($2::text = '' OR ($2 = 'admin' AND %[1]s.owner_key_namespace IS NULL) OR %[1]s.owner_key_namespace = $2))`, alias)
 }
 

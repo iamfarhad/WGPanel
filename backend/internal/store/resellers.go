@@ -39,6 +39,39 @@ var (
 	ErrInvalidQuota                = errors.New("data quota must not be negative")
 )
 
+// Hierarchy errors (migration 0032). The Child* ones are the carving rules: a child's
+// plan is cut out of its parent's, so every one of them is a refusal about the plan the
+// request asked for (422) except the allocation ones, which depend on how much the
+// parent has left right now (409).
+var (
+	ErrResellerTooDeep          = errors.New("reseller hierarchy is too deep")
+	ErrChildAccountAllocation   = errors.New("child account limit exceeds the parent's remaining allocation")
+	ErrChildCreditAllocation    = errors.New("child traffic credit exceeds the parent's remaining credit")
+	ErrChildLimitRequired       = errors.New("a child of a limited reseller must have finite account and traffic limits")
+	ErrChildExpiryTooLong       = errors.New("child plan expiry is beyond the parent's plan expiry")
+	ErrChildExpiryRequired      = errors.New("a child of an expiring reseller must have a plan expiry")
+	ErrChildNodeGroupNotAllowed = errors.New("child node groups must be a subset of the parent's")
+	ErrResellerHasChildren      = errors.New("reseller still has child resellers")
+	ErrResellerCarveConflict    = errors.New("limit change conflicts with what the reseller already handed to its children")
+	ErrChildLockedByAdmin       = errors.New("reseller was disabled by an administrator")
+	ErrNotDescendant            = errors.New("reseller is not in your subtree")
+)
+
+// MaxResellerDepth is how many reseller levels may be stacked below the super admin
+// (a top-level reseller is depth 1). Three covers the real market structure -
+// wholesaler -> agent -> sub-agent - plus one spare level for a sub-agent's own
+// helper, which is the deepest a human can still audit. Deeper trees add nothing but
+// cost: every subtree read (accounts list, reports) widens with depth, a chain of four
+// resellers is no longer a business anyone can reconcile, and each level multiplies the
+// "who disabled whom" questions the UI has to answer. It is a constant, not a setting,
+// because the carving rules and their tests are written against it.
+const MaxResellerDepth = 3
+
+// SuspendReasonParent marks accounts a parent reseller suspended in bulk through its
+// child. Unlike SuspendReasonReseller (staff only), any ancestor can undo it but the
+// owning reseller cannot - see EnableAccount and ReactivateChildAccounts.
+const SuspendReasonParent = "parent_suspended"
+
 // ResellerNamespace is the owner_key_namespace value for accounts owned by adminID.
 func ResellerNamespace(adminID string) string { return ResellerNamespacePrefix + adminID }
 
@@ -62,6 +95,38 @@ type ResellerLimits struct {
 	Notes          string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+
+	// Hierarchy (migration 0032). ParentID is nil for a top-level reseller; Ancestors
+	// holds every ancestor namespace, root first.
+	ParentID        *string
+	Ancestors       []string
+	DisabledByStaff bool
+	// EffectiveExpiresAt is the earliest plan end along the chain (own included) and
+	// AncestorDisabled whether any ancestor is disabled - the SQL functions in
+	// migration 0032. Both are derived: they cannot be set, only inherited.
+	EffectiveExpiresAt *time.Time
+	AncestorDisabled   bool
+	// ReservedAccounts/ReservedBytes are the direct children's limits, i.e. what this
+	// reseller has already handed down. Filled by lockResellerRow and the Reseller
+	// view; zero elsewhere.
+	ReservedAccounts int
+	ReservedBytes    int64
+}
+
+// Depth is the reseller's level: 1 for a top-level reseller.
+func (l *ResellerLimits) Depth() int { return len(l.Ancestors) + 1 }
+
+// IsDisabled: the reseller or any ancestor is disabled.
+func (l *ResellerLimits) IsDisabled() bool { return l.Disabled || l.AncestorDisabled }
+
+// PlanEnd is the earliest plan end along the chain, nil when nothing expires. It folds
+// ExpiresAt in as well so a hand-built ResellerLimits (tests) behaves like a loaded one.
+func (l *ResellerLimits) PlanEnd() *time.Time {
+	end := l.ExpiresAt
+	if l.EffectiveExpiresAt != nil && (end == nil || l.EffectiveExpiresAt.Before(*end)) {
+		end = l.EffectiveExpiresAt
+	}
+	return end
 }
 
 type ResellerUsage struct {
@@ -74,12 +139,15 @@ type Reseller struct {
 	ResellerLimits
 	Username string
 	Usage    ResellerUsage
+	Children int // direct child resellers
 }
 
-const resellerLimitColumns = `l.admin_id, l.max_accounts, l.data_limit_bytes, l.node_groups, l.expires_at, l.disabled, l.notes, l.created_at, l.updated_at`
+const resellerLimitColumns = `l.admin_id, l.max_accounts, l.data_limit_bytes, l.node_groups, l.expires_at, l.disabled, l.notes, l.created_at, l.updated_at,
+	l.parent_id::text, l.ancestors, l.disabled_by_staff, reseller_effective_expires_at(l.admin_id), reseller_ancestor_disabled(l.admin_id)`
 
 func scanResellerLimits(row pgx.Row, l *ResellerLimits, extra ...any) error {
-	dest := []any{&l.AdminID, &l.MaxAccounts, &l.DataLimitBytes, &l.NodeGroups, &l.ExpiresAt, &l.Disabled, &l.Notes, &l.CreatedAt, &l.UpdatedAt}
+	dest := []any{&l.AdminID, &l.MaxAccounts, &l.DataLimitBytes, &l.NodeGroups, &l.ExpiresAt, &l.Disabled, &l.Notes, &l.CreatedAt, &l.UpdatedAt,
+		&l.ParentID, &l.Ancestors, &l.DisabledByStaff, &l.EffectiveExpiresAt, &l.AncestorDisabled}
 	return row.Scan(append(dest, extra...)...)
 }
 
@@ -98,7 +166,7 @@ func (s *Store) GetResellerLimits(ctx context.Context, adminID string) (Reseller
 
 const resellerSelect = `
 	SELECT ` + resellerLimitColumns + `, a.username,
-	       u.accounts_used, u.alloc, u.used
+	       u.accounts_used, u.alloc, u.used, k.res_accounts, k.res_bytes, k.children
 	FROM reseller_limits l
 	JOIN admins a ON a.id = l.admin_id
 	CROSS JOIN LATERAL (
@@ -107,11 +175,18 @@ const resellerSelect = `
 		       COALESCE(sum(data_used_bytes), 0)::bigint AS used
 		FROM accounts
 		WHERE owner_key_namespace = 'reseller:' || a.id::text AND status != 'deleted'
-	) u`
+	) u
+	CROSS JOIN LATERAL (
+		SELECT COALESCE(sum(c.max_accounts), 0)::int AS res_accounts,
+		       COALESCE(sum(c.data_limit_bytes), 0)::bigint AS res_bytes,
+		       count(*)::int AS children
+		FROM reseller_limits c WHERE c.parent_id = a.id
+	) k`
 
 func scanReseller(row pgx.Row, r *Reseller) error {
 	return scanResellerLimits(row, &r.ResellerLimits,
-		&r.Username, &r.Usage.AccountsUsed, &r.Usage.DataAllocatedBytes, &r.Usage.DataUsedBytes)
+		&r.Username, &r.Usage.AccountsUsed, &r.Usage.DataAllocatedBytes, &r.Usage.DataUsedBytes,
+		&r.ReservedAccounts, &r.ReservedBytes, &r.Children)
 }
 
 // GetReseller returns limits plus live usage for one reseller.
@@ -151,17 +226,55 @@ type NewResellerParams struct {
 	ExpiresAt      *time.Time
 	Disabled       bool
 	Notes          string
+	// ParentID makes the new reseller a child of that reseller (nil = top level, staff
+	// only). A child's plan is carved out of the parent's: see carveChild.
+	ParentID *string
+	// ByParent says a reseller (not staff) is creating it; only then may the child's
+	// disabled state be cleared by the parent later (DisabledByStaff stays false).
+	ByParent bool
 }
 
 // CreateReseller inserts the admin row and its limits row atomically - a reseller
 // without a limits row could never log in (requireAdmin denies it), but a half-created
-// one would still burn the username.
+// one would still burn the username. For a child it first locks the parent's limits
+// row, so concurrent child creates (and the parent's own account creates) serialise
+// and cannot over-allocate the parent's plan - same discipline as CreateAccount.
 func (s *Store) CreateReseller(ctx context.Context, p NewResellerParams) (Reseller, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Reseller{}, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+
+	ancestors := []string{}
+	if p.ParentID != nil {
+		parent, err := lockResellerRow(ctx, tx, *p.ParentID)
+		if err != nil {
+			return Reseller{}, err
+		}
+		if err := parent.loadReserved(ctx, tx); err != nil {
+			return Reseller{}, err
+		}
+		// A disabled/expired parent (or one under such an ancestor) cannot grow its tree.
+		if err := parent.blockedErr(); err != nil {
+			return Reseller{}, err
+		}
+		if parent.Depth() >= MaxResellerDepth {
+			return Reseller{}, ErrResellerTooDeep
+		}
+		own, alloc, err := resellerAllocatedTx(ctx, tx, ResellerNamespace(parent.AdminID), "")
+		if err != nil {
+			return Reseller{}, err
+		}
+		p.NodeGroups, err = parent.carveChild(childPlan{
+			MaxAccounts: p.MaxAccounts, DataLimitBytes: p.DataLimitBytes, ExpiresAt: p.ExpiresAt, NodeGroups: p.NodeGroups,
+			checkAccounts: true, checkCredit: true, checkExpiry: true, checkGroups: true,
+		}, own, alloc, 0, 0)
+		if err != nil {
+			return Reseller{}, err
+		}
+		ancestors = append(append(ancestors, parent.Ancestors...), ResellerNamespace(parent.AdminID))
+	}
 
 	var adminID string
 	err = tx.QueryRow(ctx,
@@ -178,9 +291,11 @@ func (s *Store) CreateReseller(ctx context.Context, p NewResellerParams) (Resell
 		groups = []string{}
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO reseller_limits (admin_id, max_accounts, data_limit_bytes, node_groups, expires_at, disabled, notes)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		adminID, p.MaxAccounts, p.DataLimitBytes, groups, p.ExpiresAt, p.Disabled, p.Notes); err != nil {
+		INSERT INTO reseller_limits (admin_id, max_accounts, data_limit_bytes, node_groups, expires_at, disabled, notes,
+		                             parent_id, ancestors, disabled_by_staff)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		adminID, p.MaxAccounts, p.DataLimitBytes, groups, p.ExpiresAt, p.Disabled, p.Notes,
+		p.ParentID, ancestors, p.Disabled && !p.ByParent); err != nil {
 		return Reseller{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -210,150 +325,6 @@ func (o *Opt[T]) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-type ResellerLimitsPatch struct {
-	MaxAccounts    Opt[int]
-	DataLimitBytes Opt[int64]
-	ExpiresAt      Opt[time.Time]
-	NodeGroups     *[]string
-	Disabled       *bool
-	Notes          *string
-}
-
-// UpdateResellerLimits applies a patch. Lowering a limit below current usage is
-// allowed: it blocks further growth but never touches existing accounts. It takes the
-// same row lock as quota enforcement, so a limit change and a concurrent create
-// serialise cleanly.
-func (s *Store) UpdateResellerLimits(ctx context.Context, adminID string, p ResellerLimitsPatch) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-
-	var cur ResellerLimits
-	if err := scanResellerLimits(tx.QueryRow(ctx,
-		`SELECT `+resellerLimitColumns+` FROM reseller_limits l WHERE l.admin_id = $1 FOR UPDATE`, adminID), &cur); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrResellerNotFound
-		}
-		return err
-	}
-	if p.MaxAccounts.Set {
-		cur.MaxAccounts = p.MaxAccounts.Value
-	}
-	if p.DataLimitBytes.Set {
-		cur.DataLimitBytes = p.DataLimitBytes.Value
-	}
-	if p.ExpiresAt.Set {
-		cur.ExpiresAt = p.ExpiresAt.Value
-	}
-	if p.NodeGroups != nil {
-		cur.NodeGroups = *p.NodeGroups
-		if cur.NodeGroups == nil {
-			cur.NodeGroups = []string{}
-		}
-	}
-	if p.Disabled != nil {
-		cur.Disabled = *p.Disabled
-	}
-	if p.Notes != nil {
-		cur.Notes = *p.Notes
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE reseller_limits SET max_accounts = $2, data_limit_bytes = $3, node_groups = $4,
-			expires_at = $5, disabled = $6, notes = $7, updated_at = now()
-		WHERE admin_id = $1`,
-		adminID, cur.MaxAccounts, cur.DataLimitBytes, cur.NodeGroups, cur.ExpiresAt, cur.Disabled, cur.Notes); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
-// DeleteReseller removes the login and its limits, but only while the reseller owns
-// no non-deleted accounts: those accounts would otherwise be orphaned in a namespace
-// nobody can act on except a super admin. The limits row lock makes the check race-safe
-// against a concurrent create.
-func (s *Store) DeleteReseller(ctx context.Context, adminID string) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-
-	if _, err := lockResellerRow(ctx, tx, adminID); err != nil {
-		return err
-	}
-	var n int
-	if err := tx.QueryRow(ctx,
-		`SELECT count(*) FROM accounts WHERE owner_key_namespace = $1 AND status != 'deleted'`,
-		ResellerNamespace(adminID)).Scan(&n); err != nil {
-		return err
-	}
-	if n > 0 {
-		return ErrResellerHasAccounts
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM admins WHERE id = $1 AND role = 'reseller'`, adminID); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
-// SuspendResellerAccounts suspends every active account the reseller owns with the
-// dedicated reason, returning how many it changed. Accounts already suspended keep
-// their original reason.
-func (s *Store) SuspendResellerAccounts(ctx context.Context, adminID string) (int, error) {
-	if _, err := s.GetResellerLimits(ctx, adminID); err != nil {
-		return 0, err
-	}
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE accounts SET status = 'suspended', suspend_reason = $2, updated_at = now()
-		WHERE owner_key_namespace = $1 AND status = 'active'`,
-		ResellerNamespace(adminID), SuspendReasonReseller)
-	if err != nil {
-		return 0, err
-	}
-	return int(tag.RowsAffected()), nil
-}
-
-// ReactivateResellerAccounts undoes SuspendResellerAccounts - only accounts whose
-// reason is 'reseller_suspended'. One that has meanwhile expired or run out of quota
-// is not reactivated; it stays suspended under the real reason instead (otherwise it
-// would flip back on for a heartbeat or two before enforcement caught it again). It
-// applies the same rule as the enforcement in limits.go - same fragments, expired
-// before quota_exceeded - to the accounts it touches.
-func (s *Store) ReactivateResellerAccounts(ctx context.Context, adminID string) (reactivated, stillSuspended int, err error) {
-	if _, err := s.GetResellerLimits(ctx, adminID); err != nil {
-		return 0, 0, err
-	}
-	rows, err := s.pool.Query(ctx, `
-		UPDATE accounts SET
-			status = CASE WHEN `+accountExpiredSQL+` OR `+accountQuotaReachedSQL+`
-			              THEN 'suspended' ELSE 'active' END,
-			suspend_reason = CASE WHEN `+accountExpiredSQL+` THEN 'expired'
-			                      WHEN `+accountQuotaReachedSQL+` THEN 'quota_exceeded'
-			                      ELSE NULL END,
-			updated_at = now()
-		WHERE owner_key_namespace = $1 AND status = 'suspended' AND suspend_reason = $2
-		RETURNING status`,
-		ResellerNamespace(adminID), SuspendReasonReseller)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var st string
-		if err := rows.Scan(&st); err != nil {
-			return 0, 0, err
-		}
-		if st == "active" {
-			reactivated++
-		} else {
-			stillSuspended++
-		}
-	}
-	return reactivated, stillSuspended, rows.Err()
-}
-
 // lockResellerRow takes the per-reseller row lock every quota-affecting write
 // serialises on. Callers must always take it before any node row locks (CreateAccount
 // does) so lock order is consistent and cannot deadlock.
@@ -379,6 +350,9 @@ func lockResellerForNamespace(ctx context.Context, tx pgx.Tx, ns *string) (*Rese
 	if err != nil {
 		return nil, err
 	}
+	if err := l.loadReserved(ctx, tx); err != nil {
+		return nil, err
+	}
 	if err := l.blockedErr(); err != nil {
 		return nil, err
 	}
@@ -388,25 +362,30 @@ func lockResellerForNamespace(ctx context.Context, tx pgx.Tx, ns *string) (*Rese
 // blockedErr is non-nil when the reseller may not act: disabled by an admin, or past
 // its plan end date. Its existing accounts are untouched either way.
 func (l *ResellerLimits) blockedErr() error {
-	if l.Disabled {
+	// Disabled or expired anywhere up the chain blocks the whole subtree: that is how
+	// suspending or expiring a parent cascades to its descendants without writing to
+	// each of them (and re-enabling the parent undoes it just as cleanly).
+	if l.IsDisabled() {
 		return ErrResellerDisabled
 	}
-	if l.ExpiresAt != nil && !l.ExpiresAt.After(time.Now()) {
+	if end := l.PlanEnd(); end != nil && !end.After(time.Now()) {
 		return ErrResellerExpired
 	}
 	return nil
 }
 
-// checkExpiry: no account may outlive the reseller's plan, and when the plan has an
-// end date an account must carry an expiry (otherwise it would be unbounded).
+// checkExpiry: no account may outlive the reseller's plan - the earliest plan end up
+// the chain, so a child can never sell past its parent - and when the plan has an end
+// date an account must carry an expiry (otherwise it would be unbounded).
 func (l *ResellerLimits) checkExpiry(expiry *time.Time) error {
-	if l.ExpiresAt == nil {
+	end := l.PlanEnd()
+	if end == nil {
 		return nil
 	}
 	if expiry == nil {
 		return ErrResellerExpiryRequired
 	}
-	if expiry.After(*l.ExpiresAt) {
+	if expiry.After(*end) {
 		return ErrResellerExpiryTooLong
 	}
 	return nil
@@ -425,12 +404,23 @@ func resellerAllocatedTx(ctx context.Context, tx pgx.Tx, ns string, excludeAccou
 
 // checkCredit reports whether handing out `add` more bytes would exceed the credit.
 // Written as add > limit-allocated (never allocated+add) so a huge add can't overflow.
+// What the reseller has already carved out for its children counts as allocated: that
+// credit is spoken for, so the reseller's own accounts can only use the rest.
 func (l *ResellerLimits) checkCredit(allocated, add int64) error {
 	if l.DataLimitBytes == nil || add <= 0 {
 		return nil
 	}
-	if add > *l.DataLimitBytes-allocated {
+	if add > *l.DataLimitBytes-allocated-l.ReservedBytes {
 		return ErrResellerDataCredit
+	}
+	return nil
+}
+
+// checkAccountRoom reports whether one more own account fits: count of own accounts
+// plus the account slots reserved for children must stay under max_accounts.
+func (l *ResellerLimits) checkAccountRoom(count int) error {
+	if l.MaxAccounts != nil && count+l.ReservedAccounts >= *l.MaxAccounts {
+		return ErrResellerAccountLimit
 	}
 	return nil
 }

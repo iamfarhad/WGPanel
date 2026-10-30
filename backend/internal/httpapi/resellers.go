@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"wgpanel-api/internal/authcrypto"
+	"wgpanel-api/internal/events"
 	"wgpanel-api/internal/store"
 )
 
@@ -42,6 +43,27 @@ func writeResellerError(w http.ResponseWriter, err error) bool {
 		writeJSONError(w, http.StatusForbidden, "account_suspended_by_admin", "this account was suspended by an administrator and can only be reactivated by one")
 	case errors.Is(err, store.ErrInvalidQuota):
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "data quota must not be negative")
+	// Sub-reseller carving (see store/reseller_tree.go).
+	case errors.Is(err, store.ErrResellerTooDeep):
+		writeJSONError(w, http.StatusUnprocessableEntity, "reseller_too_deep", "the reseller hierarchy cannot go any deeper")
+	case errors.Is(err, store.ErrChildAccountAllocation):
+		writeJSONError(w, http.StatusConflict, "child_account_allocation_exceeded", "the child's account limit is more than the parent has left to give")
+	case errors.Is(err, store.ErrChildCreditAllocation):
+		writeJSONError(w, http.StatusConflict, "child_credit_allocation_exceeded", "the child's traffic credit is more than the parent has left to give")
+	case errors.Is(err, store.ErrChildLimitRequired):
+		writeJSONError(w, http.StatusUnprocessableEntity, "child_limit_required", "a child of a limited reseller needs a finite account limit and traffic credit")
+	case errors.Is(err, store.ErrChildExpiryTooLong):
+		writeJSONError(w, http.StatusUnprocessableEntity, "child_expiry_too_long", "the child's plan cannot end after its parent's plan")
+	case errors.Is(err, store.ErrChildExpiryRequired):
+		writeJSONError(w, http.StatusUnprocessableEntity, "child_expiry_required", "the parent's plan expires, so the child's plan needs an end date too")
+	case errors.Is(err, store.ErrChildNodeGroupNotAllowed):
+		writeJSONError(w, http.StatusUnprocessableEntity, "child_node_group_not_allowed", "a child's node groups must be a subset of its parent's")
+	case errors.Is(err, store.ErrResellerHasChildren):
+		writeJSONError(w, http.StatusConflict, "reseller_has_children", "this reseller still has child resellers; delete them first or confirm a cascade delete")
+	case errors.Is(err, store.ErrResellerCarveConflict):
+		writeJSONError(w, http.StatusConflict, "reseller_carve_conflict", "that limit is below what this reseller already handed to its children; reduce the children first")
+	case errors.Is(err, store.ErrChildLockedByAdmin):
+		writeJSONError(w, http.StatusForbidden, "reseller_locked_by_admin", "this reseller was disabled by an administrator and can only be re-enabled by one")
 	default:
 		return false
 	}
@@ -55,9 +77,9 @@ func (s *Server) resellerBlockCode(ctx context.Context, adminID string) string {
 	switch {
 	case err != nil:
 		return "account_disabled"
-	case l.Disabled:
+	case l.IsDisabled():
 		return "account_disabled"
-	case l.ExpiresAt != nil && !l.ExpiresAt.After(time.Now()):
+	case l.PlanEnd() != nil && !l.PlanEnd().After(time.Now()):
 		return "reseller_expired"
 	}
 	return ""
@@ -90,8 +112,20 @@ type resellerResponse struct {
 	NodeGroups     []string              `json:"node_groups"`
 	ExpiresAt      *string               `json:"expires_at"` // RFC3339; null = never expires
 	Usage          resellerUsageResponse `json:"usage"`
-	CreatedAt      string                `json:"created_at"`
-	UpdatedAt      string                `json:"updated_at"`
+	// Hierarchy (migration 0032). parent_id is null for a top-level reseller; depth is 1
+	// for those. reserved_* is what the reseller already handed to its children; the
+	// effective_* fields fold in its ancestors (a disabled or expired parent blocks the
+	// whole subtree). disabled_by_staff: a parent reseller cannot re-enable this one.
+	ParentID           *string `json:"parent_id"`
+	Depth              int     `json:"depth"`
+	Children           int     `json:"children"`
+	ReservedAccounts   int     `json:"reserved_accounts"`
+	ReservedDataBytes  int64   `json:"reserved_data_bytes"`
+	EffectiveDisabled  bool    `json:"effective_disabled"`
+	EffectiveExpiresAt *string `json:"effective_expires_at"`
+	DisabledByStaff    bool    `json:"disabled_by_staff"`
+	CreatedAt          string  `json:"created_at"`
+	UpdatedAt          string  `json:"updated_at"`
 }
 
 func toResellerResponse(r store.Reseller) resellerResponse {
@@ -106,6 +140,9 @@ func toResellerResponse(r store.Reseller) resellerResponse {
 		Usage: resellerUsageResponse{
 			AccountsUsed: r.Usage.AccountsUsed, DataAllocatedBytes: r.Usage.DataAllocatedBytes, DataUsedBytes: r.Usage.DataUsedBytes,
 		},
+		ParentID: r.ParentID, Depth: r.Depth(), Children: r.Children,
+		ReservedAccounts: r.ReservedAccounts, ReservedDataBytes: r.ReservedBytes,
+		EffectiveDisabled: r.IsDisabled(), EffectiveExpiresAt: expiresAtString(r.PlanEnd()), DisabledByStaff: r.DisabledByStaff,
 		CreatedAt: r.CreatedAt.Format(time.RFC3339),
 		UpdatedAt: r.UpdatedAt.Format(time.RFC3339),
 	}
@@ -171,6 +208,8 @@ type createResellerRequest struct {
 	DataLimitGB *float64 `json:"data_limit_gb"`
 	NodeGroups  []string `json:"node_groups"`
 	ExpiresAt   *string  `json:"expires_at"`
+	// ParentID (staff only) creates the reseller as a child of that reseller.
+	ParentID *string `json:"parent_id"`
 }
 
 // validateResellerLimits is shared by create and patch; the DB CHECKs are the backstop.
@@ -195,6 +234,12 @@ func (s *Server) handleCreateReseller(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
 		return
 	}
+	s.createReseller(w, r, req, req.ParentID, false)
+}
+
+// createReseller is shared by the staff endpoint (any parent, or none) and the
+// reseller's own "create a child" endpoint (parent = the caller, byParent).
+func (s *Server) createReseller(w http.ResponseWriter, r *http.Request, req createResellerRequest, parentID *string, byParent bool) {
 	if req.Username == "" || len(req.Password) < 8 {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "username is required and password must be at least 8 characters")
 		return
@@ -228,9 +273,23 @@ func (s *Server) handleCreateReseller(w http.ResponseWriter, r *http.Request) {
 	res, err := s.Store.CreateReseller(ctx, store.NewResellerParams{
 		Username: req.Username, PasswordHash: hash, MaxAccounts: req.MaxAccounts, DataLimitBytes: dataLimit,
 		NodeGroups: req.NodeGroups, ExpiresAt: expiresAt, Disabled: req.Disabled, Notes: req.Notes,
+		ParentID: parentID, ByParent: byParent,
 	})
 	if errors.Is(err, store.ErrUsernameTaken) {
 		writeJSONError(w, http.StatusConflict, "username_taken", "an admin with this username already exists")
+		return
+	}
+	if errors.Is(err, store.ErrResellerNotFound) && parentID != nil {
+		writeJSONError(w, http.StatusNotFound, "reseller_not_found", "no reseller with that parent id")
+		return
+	}
+	if errors.Is(err, store.ErrResellerDisabled) || errors.Is(err, store.ErrResellerExpired) {
+		// Not the 401/403 writeResellerError uses for the *caller's* own state: here the
+		// blocked party is the parent, and a 401 would log a staff session out.
+		writeJSONError(w, http.StatusConflict, "parent_unavailable", "the parent reseller is disabled or its plan has expired")
+		return
+	}
+	if writeResellerError(w, err) {
 		return
 	}
 	if err != nil {
@@ -238,7 +297,14 @@ func (s *Server) handleCreateReseller(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not create reseller")
 		return
 	}
-	s.auditReseller(r, "reseller.created", res.Username, nil)
+	if parentID != nil {
+		s.auditReseller(r, "reseller.child_created", res.Username, map[string]any{"parent_id": *parentID, "depth": res.Depth()})
+		s.emit(events.ResellerChildCreated, store.ResellerNamespace(*parentID), map[string]any{
+			"reseller_id": res.AdminID, "reseller_username": res.Username, "parent_id": *parentID,
+		})
+	} else {
+		s.auditReseller(r, "reseller.created", res.Username, nil)
+	}
 	writeJSON(w, http.StatusCreated, toResellerResponse(res))
 }
 
@@ -280,7 +346,12 @@ type updateResellerRequest struct {
 }
 
 func (s *Server) handleUpdateReseller(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	s.updateReseller(w, r, r.PathValue("id"), false)
+}
+
+// updateReseller is shared by the staff endpoint and a parent reseller editing one of
+// its descendants (byParent: no password reset, and it cannot undo a staff disable).
+func (s *Server) updateReseller(w http.ResponseWriter, r *http.Request, id string, byParent bool) {
 	var req updateResellerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
@@ -294,6 +365,10 @@ func (s *Server) handleUpdateReseller(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", msg)
 		return
 	}
+	if byParent && req.Password != nil {
+		writeJSONError(w, http.StatusForbidden, "forbidden", "only an administrator can reset a reseller's password")
+		return
+	}
 	if req.Password != nil && len(*req.Password) < 8 {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "password must be at least 8 characters")
 		return
@@ -302,7 +377,7 @@ func (s *Server) handleUpdateReseller(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	patch := store.ResellerLimitsPatch{
 		MaxAccounts: req.MaxAccounts, ExpiresAt: req.ExpiresAt,
-		NodeGroups: req.NodeGroups, Disabled: req.Disabled, Notes: req.Notes,
+		NodeGroups: req.NodeGroups, Disabled: req.Disabled, Notes: req.Notes, ByParent: byParent,
 	}
 	if req.DataLimitGB.Set {
 		patch.DataLimitBytes.Set = true
@@ -313,6 +388,8 @@ func (s *Server) handleUpdateReseller(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.Store.UpdateResellerLimits(ctx, id, patch); errors.Is(err, store.ErrResellerNotFound) {
 		writeJSONError(w, http.StatusNotFound, "reseller_not_found", "no reseller with that id")
+		return
+	} else if writeResellerError(w, err) {
 		return
 	} else if err != nil {
 		s.Logger.Error("update_reseller_failed", "error", err)
@@ -339,7 +416,14 @@ func (s *Server) handleUpdateReseller(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not fetch reseller")
 		return
 	}
-	s.auditReseller(r, "reseller.updated", res.Username, map[string]any{"password_reset": req.Password != nil})
+	if res.ParentID != nil {
+		s.auditReseller(r, "reseller.child_updated", res.Username, map[string]any{"parent_id": *res.ParentID, "password_reset": req.Password != nil})
+		s.emit(events.ResellerChildUpdated, store.ResellerNamespace(*res.ParentID), map[string]any{
+			"reseller_id": res.AdminID, "reseller_username": res.Username, "parent_id": *res.ParentID,
+		})
+	} else {
+		s.auditReseller(r, "reseller.updated", res.Username, map[string]any{"password_reset": req.Password != nil})
+	}
 	writeJSON(w, http.StatusOK, toResellerResponse(res))
 }
 
@@ -348,8 +432,14 @@ func (s *Server) handleUpdateReseller(w http.ResponseWriter, r *http.Request) {
 // customers' VPN access. Disable the reseller (and bulk-suspend or delete its
 // accounts) first.
 func (s *Server) handleDeleteReseller(w http.ResponseWriter, r *http.Request) {
+	s.deleteReseller(w, r, r.PathValue("id"))
+}
+
+// deleteReseller refuses (409 reseller_has_children) while the reseller has children,
+// unless ?cascade=true confirms removing the whole subtree - and still refuses
+// (reseller_has_accounts) while anything in that subtree owns accounts.
+func (s *Server) deleteReseller(w http.ResponseWriter, r *http.Request, id string) {
 	ctx := r.Context()
-	id := r.PathValue("id")
 	res, err := s.Store.GetReseller(ctx, id)
 	if errors.Is(err, store.ErrResellerNotFound) {
 		writeJSONError(w, http.StatusNotFound, "reseller_not_found", "no reseller with that id")
@@ -360,7 +450,12 @@ func (s *Server) handleDeleteReseller(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not fetch reseller")
 		return
 	}
-	switch err := s.Store.DeleteReseller(ctx, id); {
+	cascade := r.URL.Query().Get("cascade") == "true"
+	removed, err := s.Store.DeleteResellerTree(ctx, id, cascade)
+	switch {
+	case errors.Is(err, store.ErrResellerHasChildren):
+		writeResellerError(w, err)
+		return
 	case errors.Is(err, store.ErrResellerHasAccounts):
 		writeJSONError(w, http.StatusConflict, "reseller_has_accounts", "this reseller still owns accounts; delete them first (disable the reseller meanwhile)")
 		return
@@ -372,7 +467,14 @@ func (s *Server) handleDeleteReseller(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "could not delete reseller")
 		return
 	}
-	s.auditReseller(r, "reseller.deleted", res.Username, nil)
+	if res.ParentID != nil {
+		s.auditReseller(r, "reseller.child_deleted", res.Username, map[string]any{"parent_id": *res.ParentID, "removed": removed})
+		s.emit(events.ResellerChildDeleted, store.ResellerNamespace(*res.ParentID), map[string]any{
+			"reseller_id": res.AdminID, "reseller_username": res.Username, "parent_id": *res.ParentID, "removed": removed,
+		})
+	} else {
+		s.auditReseller(r, "reseller.deleted", res.Username, map[string]any{"removed": removed})
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

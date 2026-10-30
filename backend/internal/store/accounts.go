@@ -210,8 +210,8 @@ func (s *Store) CreateAccount(ctx context.Context, p CreateAccountParams) (Accou
 		if err != nil {
 			return Account{}, err
 		}
-		if lim.MaxAccounts != nil && count >= *lim.MaxAccounts {
-			return Account{}, ErrResellerAccountLimit
+		if err := lim.checkAccountRoom(count); err != nil {
+			return Account{}, err
 		}
 		if p.DataQuotaBytes != nil {
 			if err := lim.checkCredit(allocated, *p.DataQuotaBytes); err != nil {
@@ -459,7 +459,7 @@ func (s *Store) ListAccountPeersWithNode(ctx context.Context, accountID string, 
 		FROM account_peers ap
 		JOIN nodes n ON n.id = ap.node_id
 		JOIN accounts a ON a.id = ap.account_id
-		WHERE ap.account_id = $2 AND `+namespaceFilter+`
+		WHERE ap.account_id = $2 AND `+namespaceTreeFilter+`
 		ORDER BY ap.created_at
 	`, callerNamespace, accountID)
 	if err != nil {
@@ -575,7 +575,7 @@ func (s *Store) GetAccount(ctx context.Context, id string, callerNamespace *stri
 	}
 	var a Account
 	err := scanAccount(s.pool.QueryRow(ctx,
-		`SELECT `+accountColumns+` FROM accounts WHERE id = $2 AND `+namespaceFilter,
+		`SELECT `+accountColumns+` FROM accounts WHERE id = $2 AND `+namespaceTreeFilter,
 		callerNamespace, id,
 	), &a)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -595,7 +595,7 @@ func (s *Store) ListAccounts(ctx context.Context, limit, offset int, callerNames
 	}
 	filterSQL, filterArgs := accountFilterClause(ctx, 5) // ?tag= / ?q= (account_meta.go)
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+accountColumns+` FROM accounts WHERE status != 'deleted' AND `+namespaceFilter+`
+		`SELECT `+accountColumns+` FROM accounts WHERE status != 'deleted' AND `+namespaceTreeFilter+`
 		 AND ($3 = '' OR ($3 = 'admin' AND owner_key_namespace IS NULL) OR owner_key_namespace = $3)`+filterSQL+`
 		 ORDER BY created_at, id LIMIT $2 OFFSET $4`,
 		append([]any{callerNamespace, limit, ownerFilter, offset}, filterArgs...)...,
@@ -628,7 +628,7 @@ func (s *Store) FindAccountsByExternalRef(ctx context.Context, ref string, calle
 		return nil, err
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+accountColumns+` FROM accounts WHERE external_ref = $2 AND `+namespaceFilter+` ORDER BY created_at, id`,
+		`SELECT `+accountColumns+` FROM accounts WHERE external_ref = $2 AND `+namespaceTreeFilter+` ORDER BY created_at, id`,
 		callerNamespace, ref,
 	)
 	if err != nil {
@@ -786,7 +786,7 @@ func (s *Store) SuspendAccount(ctx context.Context, id string, callerNamespace *
 	var a Account
 	err := scanAccount(s.pool.QueryRow(ctx, `
 		UPDATE accounts SET status = 'suspended', suspend_reason = $3, updated_at = now()
-		WHERE id = $2 AND status != 'deleted' AND `+namespaceFilter+`
+		WHERE id = $2 AND status != 'deleted' AND `+namespaceTreeFilter+`
 		RETURNING `+accountColumns,
 		callerNamespace, id, reason,
 	), &a)
@@ -813,8 +813,8 @@ func (s *Store) EnableAccount(ctx context.Context, id string, callerNamespace *s
 	var a Account
 	err := scanAccount(s.pool.QueryRow(ctx, `
 		UPDATE accounts SET status = 'active', suspend_reason = NULL, updated_at = now()
-		WHERE id = $2 AND status != 'deleted' AND `+namespaceFilter+`
-		  AND NOT COALESCE($3::bool AND suspend_reason = 'reseller_suspended', false)
+		WHERE id = $2 AND status != 'deleted' AND `+namespaceTreeFilter+`
+		  AND NOT `+enableLockedSQL+`
 		  AND NOT `+accountQuotaReachedSQL+`
 		RETURNING `+accountColumns,
 		callerNamespace, id, isReseller,
@@ -823,8 +823,8 @@ func (s *Store) EnableAccount(ctx context.Context, id string, callerNamespace *s
 		// Nothing matched: say which guard it was (404 and 403 keep precedence).
 		var locked, exhausted bool
 		qerr := s.pool.QueryRow(ctx, `
-			SELECT COALESCE($3::bool AND suspend_reason = 'reseller_suspended', false), `+accountQuotaReachedSQL+`
-			FROM accounts WHERE id = $2 AND status != 'deleted' AND `+namespaceFilter,
+			SELECT `+enableLockedSQL+`, `+accountQuotaReachedSQL+`
+			FROM accounts WHERE id = $2 AND status != 'deleted' AND `+namespaceTreeFilter,
 			callerNamespace, id, isReseller,
 		).Scan(&locked, &exhausted)
 		switch {
@@ -1088,7 +1088,7 @@ func (s *Store) ListAccountsAfter(ctx context.Context, limit int, afterCreatedAt
 	}
 	filterSQL, filterArgs := accountFilterClause(ctx, 6) // ?tag= / ?q= (account_meta.go)
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+accountColumns+` FROM accounts WHERE status != 'deleted' AND `+namespaceFilter+`
+		`SELECT `+accountColumns+` FROM accounts WHERE status != 'deleted' AND `+namespaceTreeFilter+`
 		 AND ($3 = '' OR ($3 = 'admin' AND owner_key_namespace IS NULL) OR owner_key_namespace = $3)
 		 AND ($4::timestamptz IS NULL OR (created_at, id) > ($4::timestamptz, $5::uuid))`+filterSQL+`
 		 ORDER BY created_at, id LIMIT $2`,

@@ -192,9 +192,9 @@ func (s *Server) apiKeyIdentity(ctx context.Context, key store.APIKey) (*CallerI
 		case err != nil:
 			s.Logger.Error("reseller_limits_lookup_failed", "error", err)
 			return nil, &apiError{Status: http.StatusInternalServerError, Code: "internal_error", Message: "authentication failed"}
-		case limits.Disabled:
+		case limits.IsDisabled():
 			return nil, &apiError{Status: http.StatusUnauthorized, Code: "reseller_disabled", Message: "the reseller owning this API key is disabled"}
-		case limits.ExpiresAt != nil && !limits.ExpiresAt.After(time.Now()):
+		case limits.PlanEnd() != nil && !limits.PlanEnd().After(time.Now()):
 			return nil, &apiError{Status: http.StatusUnauthorized, Code: "reseller_expired", Message: "the reseller plan owning this API key has expired"}
 		}
 		identity.ResellerID = *key.ResellerID

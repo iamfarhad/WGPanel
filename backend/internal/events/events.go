@@ -35,6 +35,10 @@ const (
 	// Abuse controls (migration 0033). Keep in sync with notificationEvents.ts.
 	AccountSharingSuspected = "account.sharing_suspected"
 	AccountTorrentDetected  = "account.torrent_detected"
+	// Sub-reseller lifecycle, emitted into the PARENT's namespace (migration 0032).
+	ResellerChildCreated = "reseller.child_created"
+	ResellerChildUpdated = "reseller.child_updated"
+	ResellerChildDeleted = "reseller.child_deleted"
 )
 
 // Test pings are not part of All - they are delivered only to the endpoint tested.
@@ -69,6 +73,9 @@ var catalog = []Meta{
 	{AccountExpired, SeverityWarning, true},
 	{ResellerCreditLow, SeverityWarning, true},
 	{ResellerPlanExpires, SeverityWarning, true},
+	{ResellerChildCreated, SeverityInfo, false},
+	{ResellerChildUpdated, SeverityInfo, false},
+	{ResellerChildDeleted, SeverityInfo, false},
 	{BackupSucceeded, SeverityInfo, true},
 	{BackupFailed, SeverityCritical, true},
 	{NodeMaintStarted, SeverityInfo, true},

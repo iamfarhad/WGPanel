@@ -5,7 +5,8 @@ import QRCode from 'qrcode'
 import { Apple, Check, Copy, Download, Laptop, MonitorSmartphone, Smartphone } from 'lucide-react'
 import { useI18n, readStoredLang } from '../lib/i18n'
 import { ltr } from '../lib/bidi'
-import { BrandLockup, Illustration } from '../components/brand/Brand'
+import { Illustration } from '../components/brand/Brand'
+import { BrandFrame, BrandMark, BrandSupport, type PublicBrand } from '../components/branding/PublicBrand'
 import { LanguageToggle } from '../components/ui/LanguageToggle'
 import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
@@ -34,6 +35,7 @@ interface SubInfo {
   device_limit: number | null
   devices_active: number
   support_contact: string | null
+  brand: PublicBrand | null
   config_path: string
   nodes: SubNode[]
 }
@@ -151,7 +153,7 @@ export function SubscriptionPage() {
 
   const header = (
     <header className="mx-auto flex w-full max-w-xl items-center justify-between gap-3 px-4 pt-5">
-      <BrandLockup />
+      <BrandMark brand={info?.brand} />
       <LanguageToggle />
     </header>
   )
@@ -214,6 +216,7 @@ export function SubscriptionPage() {
         : t('Suspended')
 
   return (
+    <BrandFrame brand={info.brand}>
     <div className="min-h-dvh bg-bg pb-12">
       {header}
       <main className="mx-auto mt-5 w-full max-w-xl space-y-4 px-4">
@@ -351,15 +354,12 @@ export function SubscriptionPage() {
           </p>
         </Section>
 
-        {info.support_contact && (
-          <p className="text-center text-xs text-muted">
-            {t('Need help?')} <span className="ltr font-mono text-fg">{info.support_contact}</span>
-          </p>
-        )}
+        <BrandSupport brand={info.brand} contact={info.support_contact} />
         <p className="text-center text-[11px] text-faint" lang={lang}>
-          Jirjirak WireGuard
+          {info.brand?.name || 'Jirjirak WireGuard'}
         </p>
       </main>
     </div>
+    </BrandFrame>
   )
 }

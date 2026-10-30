@@ -78,6 +78,14 @@ interface Report {
     data_limit_bytes: number | null
     rx_bytes: number
     tx_bytes: number
+    // Tree: rows arrive depth-first (a parent directly above its children); subtree_*
+    // roll the reseller and all its descendants up.
+    parent_id: string | null
+    depth: number
+    children: number
+    subtree_accounts: number
+    subtree_rx_bytes: number
+    subtree_tx_bytes: number
   }[] | null
 }
 
@@ -188,6 +196,8 @@ export function ReportsPage() {
     placeholderData: keepPreviousData, // keep the previous frame (dimmed) while a new range loads
   })
   const report = reportQuery.data
+  // Shallowest tree depth in the reseller breakdown: 1 for staff, the caller's own for a reseller.
+  const resellerRootDepth = Math.min(1000, ...(report?.resellers ?? []).map((r) => r.depth))
   const busy = reportQuery.isFetching && reportQuery.isPlaceholderData
 
   const ownerName = (o: Owned) =>
@@ -444,7 +454,14 @@ export function ReportsPage() {
 
           {report.resellers && report.resellers.length > 0 && (
             <Card className="overflow-hidden">
-              <CardHeader title="Resellers" description="Plan usage and traffic in this range - select one to scope the report" />
+              <CardHeader
+                title="Resellers"
+                description={
+                  isReseller
+                    ? 'You and your sub-resellers: each row is the reseller itself, and the totals under a name include everyone below it'
+                    : 'Plan usage and traffic in this range - select one to scope the report'
+                }
+              />
               <Table>
                 <THead>
                   <tr>
@@ -457,9 +474,16 @@ export function ReportsPage() {
                 </THead>
                 <tbody>
                   {report.resellers.map((r) => (
-                    <Tr key={r.id} interactive onClick={() => setScope(r.id)}>
+                    <Tr key={r.id} interactive={!isReseller} onClick={isReseller ? undefined : () => setScope(r.id)}>
                       <Td>
-                        <span className="font-medium text-fg">{r.username}</span>
+                        {/* Rolled up under the parent: sub-resellers are indented below it. */}
+                        <span
+                          className="inline-block font-medium text-fg"
+                          style={{ paddingInlineStart: `${(r.depth - resellerRootDepth) * 18}px` }}
+                        >
+                          {r.depth > resellerRootDepth && <span className="me-1.5 text-faint">↳</span>}
+                          {r.username}
+                        </span>
                         {r.disabled && (
                           <Badge className="ms-2" tone="slate">
                             disabled
@@ -478,7 +502,17 @@ export function ReportsPage() {
                           <Progress value={r.data_allocated_bytes} max={r.data_limit_bytes} className="mt-1.5 max-w-36" />
                         )}
                       </Td>
-                      <Td className="text-muted tabular-nums">{ltr(formatBytes(r.rx_bytes + r.tx_bytes))}</Td>
+                      <Td className="text-muted tabular-nums">
+                        {ltr(formatBytes(r.rx_bytes + r.tx_bytes))}
+                        {r.children > 0 && (
+                          <span className="block text-xs text-faint">
+                            {t('with sub-resellers: {amount} · {n} accounts', {
+                              amount: ltr(formatBytes(r.subtree_rx_bytes + r.subtree_tx_bytes)),
+                              n: r.subtree_accounts,
+                            })}
+                          </span>
+                        )}
+                      </Td>
                     </Tr>
                   ))}
                 </tbody>

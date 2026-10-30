@@ -113,6 +113,15 @@ func renderEvent(ev events.Event, lang string) rendered {
 		r.Title = pick("Reseller plan expires soon", "پلن نماینده به‌زودی تمام می‌شود")
 		r.Body = pick(fmt.Sprintf("The plan of reseller %q ends on %s.", reseller, dataStr(d, "expires_at")),
 			faDigits(fmt.Sprintf("پلن نماینده «%s» در تاریخ %s به پایان می‌رسد.", reseller, dataStr(d, "expires_at"))))
+	case events.ResellerChildCreated:
+		r.Title = pick("Sub-reseller created", "نماینده زیرمجموعه ساخته شد")
+		r.Body = pick(fmt.Sprintf("Sub-reseller %q was created.", reseller), fmt.Sprintf("نماینده زیرمجموعه «%s» ساخته شد.", reseller))
+	case events.ResellerChildUpdated:
+		r.Title = pick("Sub-reseller updated", "نماینده زیرمجموعه ویرایش شد")
+		r.Body = pick(fmt.Sprintf("Sub-reseller %q was updated.", reseller), fmt.Sprintf("نماینده زیرمجموعه «%s» ویرایش شد.", reseller))
+	case events.ResellerChildDeleted:
+		r.Title = pick("Sub-reseller deleted", "نماینده زیرمجموعه حذف شد")
+		r.Body = pick(fmt.Sprintf("Sub-reseller %q was deleted.", reseller), fmt.Sprintf("نماینده زیرمجموعه «%s» حذف شد.", reseller))
 	case events.BackupSucceeded:
 		r.Title = pick("Backup completed", "بکاپ با موفقیت انجام شد")
 		r.Body = pick(fmt.Sprintf("Backup %s (%s) was sent to %s.", dataStr(d, "filename"), humanBytes(dataInt(d, "size_bytes")), dataStr(d, "destination")),

@@ -29,7 +29,7 @@ func (s *Store) SteerCandidatesForAccount(ctx context.Context, accountID string,
 		FROM account_peers ap
 		JOIN nodes n ON n.id = ap.node_id
 		JOIN accounts a ON a.id = ap.account_id
-		WHERE ap.account_id = $2 AND `+namespaceFilter+`
+		WHERE ap.account_id = $2 AND `+namespaceTreeFilter+`
 		  AND n.public_key IS NOT NULL AND n.public_key != ''
 		  AND n.maintenance_since IS NULL -- maintenance nodes are never recommended (ops_maintenance.go)
 	`, callerNamespace, accountID, steeringCPUWindow)

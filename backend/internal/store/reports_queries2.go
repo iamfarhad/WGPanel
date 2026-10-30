@@ -1,7 +1,5 @@
 package store
 
-import "sort"
-
 // nodes lists nodes with traffic from the SCOPED accounts only. Staff with no filter
 // see every node; anyone scoped sees only nodes their accounts have a peer on or
 // moved traffic through - never another namespace's load. CPU/RAM averages come from
@@ -43,47 +41,4 @@ func (q reportQuery) nodes(metrics bool) ([]ReportNode, error) {
 		out = append(out, n)
 	}
 	return out, rows.Err()
-}
-
-// resellers is the super-admin leaderboard: every reseller with its allocation and
-// the traffic its accounts moved in the range, busiest first.
-func (q reportQuery) resellers() ([]ReportReseller, error) {
-	list, err := q.s.ListResellers(q.ctx)
-	if err != nil {
-		return nil, err
-	}
-	tbl, ts, rx, tx := q.trafficSource()
-	rows, err := q.s.pool.Query(q.ctx, `
-		SELECT a.owner_key_namespace, sum(t.`+rx+`)::bigint, sum(t.`+tx+`)::bigint
-		FROM `+tbl+` t JOIN accounts a ON a.id = t.account_id
-		WHERE a.owner_key_namespace LIKE 'reseller:%' AND t.`+ts+` >= $1
-		GROUP BY 1`, q.from)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	type pair struct{ rx, tx int64 }
-	traffic := map[string]pair{}
-	for rows.Next() {
-		var ns string
-		var p pair
-		if err := rows.Scan(&ns, &p.rx, &p.tx); err != nil {
-			return nil, err
-		}
-		traffic[ns] = p
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	out := make([]ReportReseller, 0, len(list))
-	for _, r := range list {
-		t := traffic[ResellerNamespace(r.AdminID)]
-		out = append(out, ReportReseller{
-			ID: r.AdminID, Username: r.Username, Disabled: r.Disabled, ExpiresAt: r.ExpiresAt,
-			Accounts: r.Usage.AccountsUsed, DataAllocatedBytes: r.Usage.DataAllocatedBytes,
-			DataLimitBytes: r.DataLimitBytes, RxBytes: t.rx, TxBytes: t.tx,
-		})
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].RxBytes+out[i].TxBytes > out[j].RxBytes+out[j].TxBytes })
-	return out, nil
 }

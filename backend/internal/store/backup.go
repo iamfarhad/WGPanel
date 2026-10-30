@@ -17,6 +17,11 @@ import (
 // stays small and restorable while losing only chart history.
 var backupTables = []string{
 	"admins",
+	// Reseller plans + the sub-reseller tree (parent_id/ancestors) and branding (logos are
+	// capped at 64 KiB, so they cannot bloat the file). reseller_limits was missing from
+	// backups before 0032: restoring truncated it (CASCADE from admins) and never refilled it.
+	"reseller_limits",
+	"brand_profiles",
 	"admin_totp",
 	"admin_recovery_codes",
 	"admin_passkeys",

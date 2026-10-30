@@ -197,6 +197,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /api/v1/backup", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleDownloadBackup))))
 	mux.Handle("POST /api/v1/backup/restore", s.requireAdmin(s.requireRole("super_admin", http.HandlerFunc(s.handleRestoreBackup))))
 
+	s.registerResellerTreeRoutes(mux) // sub-resellers + branding (reseller_children.go, branding.go)
 	s.registerSecurityRoutes(mux)
 	s.registerNotificationRoutes(mux)
 	s.registerMarzbanCompatRoutes(mux)
