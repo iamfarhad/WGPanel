@@ -5,7 +5,8 @@
 # themselves - those use install-node.sh).
 #
 # Usage:
-#   sudo bash install.sh
+#   sudo bash install.sh                     # the newest release
+#   sudo bash install.sh --version v0.1.0    # a specific release (or WGPANEL_VERSION=v0.1.0)
 #
 set -euo pipefail
 
@@ -18,11 +19,14 @@ SCRIPT_SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # sudo bash install.sh` - a single file, not a git clone - but setup_files() below
 # needs docker-compose.yml/Caddyfile/.env.example/wgpanel sitting right next to this
 # script. ensure_deploy_files (called from main, before anything reads
-# SCRIPT_SOURCE_DIR) detects that mismatch and fetches those companion files from
-# the same repo/branch into a temp dir, repointing SCRIPT_SOURCE_DIR there - a real
-# bug hit verifying the README's own instructions on a fresh server, not a
-# hypothetical.
-REPO_RAW_BASE="https://raw.githubusercontent.com/iamfarhad/WGPanel/main/deploy"
+# SCRIPT_SOURCE_DIR) detects that mismatch and fetches those companion files into a
+# temp dir, repointing SCRIPT_SOURCE_DIR there - a real bug hit verifying the
+# README's own instructions on a fresh server, not a hypothetical.
+# docker-compose.yml, Caddyfile and .env.example come from the release tag being
+# installed, so they always match its images. The wgpanel CLI comes from
+# WGPANEL_TOOLS_REF (main) like this script itself: it is the tool that later runs
+# `wgpanel update`, and the CLI in an older tag can't move a pinned version.
+WGPANEL_TOOLS_REF="${WGPANEL_TOOLS_REF:-main}"
 DEPLOY_COMPANION_FILES=(docker-compose.yml Caddyfile .env.example wgpanel)
 
 # The panel's own server can optionally run as this WGPanel's first WireGuard node,
@@ -83,20 +87,37 @@ env_get() {
 
 # --fresh / --reset wipes any prior install (containers, volumes, secrets) for a
 # genuinely clean setup. Off by default so a normal re-run never destroys data.
+# --version picks the release to install; without it the newest release is used.
 FRESH=0
+REQUESTED_VERSION="${WGPANEL_VERSION:-latest}"
+RELEASE=""
 parse_args() {
-  for a in "$@"; do
-    case "$a" in
-      --fresh|--reset) FRESH=1 ;;
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --fresh|--reset) FRESH=1; shift ;;
+      --version)
+        [[ $# -ge 2 ]] || { err "--version needs a value, e.g. --version v0.1.0"; exit 1; }
+        REQUESTED_VERSION="$2"; shift 2 ;;
+      --version=*) REQUESTED_VERSION="${1#--version=}"; shift ;;
       -h|--help)
-        echo "Usage: sudo bash install.sh [--fresh]"
-        echo "  --fresh   Remove any existing WGPanel stack, self-node, secrets, and data"
-        echo "            volumes first, then install cleanly. DESTROYS the database."
+        echo "Usage: sudo bash install.sh [--version vX.Y.Z] [--fresh]"
+        echo "  --version   Release to install, e.g. v0.1.0 (default: the newest release)."
+        echo "              Re-running with a version also moves an existing install to it."
+        echo "  --fresh     Remove any existing WGPanel stack, self-node, secrets, and data"
+        echo "              volumes first, then install cleanly. DESTROYS the database."
         exit 0
         ;;
-      *) err "Unknown argument: $a (try --help)"; exit 1 ;;
+      *) err "Unknown argument: $1 (try --help)"; exit 1 ;;
     esac
   done
+}
+
+# resolve_release turns REQUESTED_VERSION ("latest" or a tag) into the concrete tag
+# that every later step uses: the deploy files, the pinned images and the self-node.
+resolve_release() {
+  log "Looking up the WGPanel release to install (${REQUESTED_VERSION})..."
+  RELEASE="$(version_resolve "$REQUESTED_VERSION")" || exit 1
+  log "Installing WGPanel ${RELEASE}."
 }
 
 # fresh_reset tears down a prior install so the run below starts from nothing. Runs
@@ -123,10 +144,12 @@ ensure_deploy_files() {
   local f
   for f in "${DEPLOY_COMPANION_FILES[@]}"; do
     if [[ ! -f "$SCRIPT_SOURCE_DIR/$f" ]]; then
-      log "Running as a standalone script - downloading companion files (docker-compose.yml, Caddyfile, .env.example, wgpanel) from GitHub..."
-      local tmpdir name; tmpdir="$(mktemp -d)"
+      log "Running as a standalone script - downloading the ${RELEASE} deploy files (docker-compose.yml, Caddyfile, .env.example) and the wgpanel CLI from GitHub..."
+      local tmpdir name ref; tmpdir="$(mktemp -d)"
       for name in "${DEPLOY_COMPANION_FILES[@]}"; do
-        curl -fsSL "$REPO_RAW_BASE/$name" -o "$tmpdir/$name"
+        ref="$RELEASE"
+        [[ "$name" == wgpanel ]] && ref="$WGPANEL_TOOLS_REF"
+        curl -fsSL "$(deploy_file_url "$ref" "$name")" -o "$tmpdir/$name"
       done
       SCRIPT_SOURCE_DIR="$tmpdir"
       return
@@ -268,6 +291,16 @@ setup_files() {
 
   chmod 600 "$ENV_FILE"
   log "Secrets generated and saved to $ENV_FILE (permissions 600)."
+}
+
+# pin_images points API_IMAGE/FRONTEND_IMAGE/NODE_IMAGE at the release being installed.
+# It runs on a fresh .env and on an existing one alike: re-running the installer with
+# --version is how an install is moved to that version.
+pin_images() {
+  env_set_key "$ENV_FILE" API_IMAGE "$(image_ref api "$RELEASE")"
+  env_set_key "$ENV_FILE" FRONTEND_IMAGE "$(image_ref frontend "$RELEASE")"
+  env_set_key "$ENV_FILE" NODE_IMAGE "$(image_ref node "$RELEASE")"
+  log "Images pinned to ${RELEASE} in $ENV_FILE."
 }
 
 setup_firewall() {
@@ -424,7 +457,11 @@ start_stack() {
   # container can keep running against a stale file indefinitely. Found live: fixing
   # a real Caddyfile routing bug and updating the file on disk did nothing until the
   # container was explicitly force-recreated.
-  (cd "$INSTALL_DIR" && docker compose pull)
+  if ! (cd "$INSTALL_DIR" && docker compose pull); then
+    err "Could not pull the ${RELEASE} images. A release tagged minutes ago may still be"
+    err "publishing in CI - wait and re-run, or pick an older one with --version."
+    exit 1
+  fi
   # Bring the stack up, but never let a slow first boot abort the whole install: the
   # api's first start migrates a fresh DB before it reports healthy, and compose can
   # return non-zero while waiting. show_first_admin_credentials waits for real health
@@ -584,7 +621,7 @@ setup_self_node() {
   node_agent_port="$(env_get NODE_AGENT_PORT)"
   node_agent_port="${node_agent_port:-48443}"
   node_image="$(env_get NODE_IMAGE)"
-  node_image="${node_image:-ghcr.io/iamfarhad/wgpanel-node:latest}"
+  node_image="${node_image:-$(image_ref node "$RELEASE")}"
 
   setup_self_node_host || return 1
   bootstrap_self_node || return 1
@@ -742,11 +779,112 @@ ensure_self_node_image() {
   warn "Could not pull ${node_image} - building the node image from source instead."
   local src="/tmp/wgpanel-src.$$"
   rm -rf "$src"
-  git clone --depth 1 "$WGPANEL_REPO_URL" "$src" || return 1
+  # Build the same release the panel runs, not whatever is on the default branch.
+  git clone --depth 1 --branch "$RELEASE" "$WGPANEL_REPO_URL" "$src" || return 1
   docker build -f "$src/deploy/node.Dockerfile" -t wgpanel-node:local "$src" || { rm -rf "$src"; return 1; }
   rm -rf "$src"
   sed -i 's#^NODE_IMAGE=.*#NODE_IMAGE=wgpanel-node:local#' "$NODE_ENV_FILE"
 }
+
+# >>> wgpanel version (this block is identical in install.sh, install-node.sh and wgpanel; deploy/check-net-tune-sync.sh enforces it)
+# Releases are git tags (vX.Y.Z), and CI publishes ghcr.io/iamfarhad/wgpanel-{api,frontend,node}
+# under the same tag. Installs pin that tag instead of :latest, so a plain `docker compose
+# pull` never changes the running version behind the operator's back, and `wgpanel
+# rollback` always has a concrete previous version to go back to.
+WGPANEL_GITHUB_REPO="${WGPANEL_GITHUB_REPO:-iamfarhad/WGPanel}"
+WGPANEL_IMAGE_REGISTRY="${WGPANEL_IMAGE_REGISTRY:-ghcr.io/iamfarhad}"
+
+# version_normalize accepts "0.1.0" or "v0.1.0" (with an optional -rc.1 style suffix)
+# and prints it the way the tags are written, with the leading v.
+version_normalize() {
+  local v="${1#v}"
+  [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || return 1
+  printf 'v%s\n' "$v"
+}
+
+# version_list prints the stable release tags (no pre-releases), oldest first.
+version_list() {
+  if command -v git >/dev/null 2>&1; then
+    git ls-remote --tags --refs "https://github.com/${WGPANEL_GITHUB_REPO}.git" 'v*' 2>/dev/null \
+      | sed -n 's#.*refs/tags/##p'
+  else
+    curl -fsSL --max-time 15 "https://api.github.com/repos/${WGPANEL_GITHUB_REPO}/tags?per_page=100" 2>/dev/null \
+      | sed -n 's/.*"name": *"\([^"]*\)".*/\1/p'
+  fi | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V
+}
+
+# version_latest prints the newest release. GitHub's releases/latest skips drafts and
+# pre-releases; the highest stable tag is the fallback when the API is unreachable or
+# rate-limited (60 unauthenticated calls an hour per IP).
+version_latest() {
+  local tag=""
+  tag="$(curl -fsSL --max-time 15 "https://api.github.com/repos/${WGPANEL_GITHUB_REPO}/releases/latest" 2>/dev/null \
+    | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)" || true
+  [[ -n "$tag" ]] || tag="$(version_list | tail -n1)" || true
+  [[ -n "$tag" ]] || return 1
+  printf '%s\n' "$tag"
+}
+
+# version_exists returns 0 when TAG is a published tag, 2 when GitHub says it isn't,
+# and 1 when GitHub can't be reached to tell.
+version_exists() {
+  local rc=0 code=""
+  if command -v git >/dev/null 2>&1; then
+    git ls-remote --exit-code --tags --refs "https://github.com/${WGPANEL_GITHUB_REPO}.git" "refs/tags/$1" >/dev/null 2>&1 || rc=$?
+    case "$rc" in 0) return 0 ;; 2) return 2 ;; *) return 1 ;; esac
+  fi
+  code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "https://api.github.com/repos/${WGPANEL_GITHUB_REPO}/git/ref/tags/$1" 2>/dev/null)" || true
+  case "$code" in 200) return 0 ;; 404) return 2 ;; *) return 1 ;; esac
+}
+
+# version_resolve prints the release to use: the newest one for "" or "latest", or the
+# requested one once GitHub confirms the tag exists. Messages go to stderr, so callers
+# can capture the result with $(...).
+version_resolve() {
+  local want="${1:-latest}" tag rc=0
+  if [[ "$want" == latest ]]; then
+    tag="$(version_latest)" || {
+      err "Could not look up the latest WGPanel release - is github.com reachable? Pass a version (e.g. --version v0.1.0) to pin one."
+      return 1
+    }
+  else
+    tag="$(version_normalize "$want")" || { err "'$want' is not a version - use a release tag such as v0.1.0."; return 1; }
+    version_exists "$tag" || rc=$?
+    if [[ $rc -eq 2 ]]; then
+      err "$tag is not a WGPanel release. Recent releases: $(version_list | tail -n 5 | tr '\n' ' ')"
+      return 1
+    elif [[ $rc -ne 0 ]]; then
+      warn "Could not reach GitHub to confirm $tag exists - continuing; pulling its images will fail if it doesn't." >&2
+    fi
+  fi
+  printf '%s\n' "$tag"
+}
+
+# image_ref prints the pinned image for one component: api, frontend or node.
+image_ref() { printf '%s/wgpanel-%s:%s\n' "$WGPANEL_IMAGE_REGISTRY" "$1" "$2"; }
+
+# image_tag prints the tag of an image reference, or nothing when it has none.
+image_tag() {
+  local last="${1%%@*}"
+  last="${last##*/}"
+  [[ "$last" == *:* ]] && printf '%s\n' "${last##*:}"
+  return 0
+}
+
+# deploy_file_url prints the raw GitHub URL of deploy/NAME at git ref REF.
+deploy_file_url() { printf 'https://raw.githubusercontent.com/%s/%s/deploy/%s\n' "$WGPANEL_GITHUB_REPO" "$1" "$2"; }
+
+# env_set_key sets KEY=VALUE in an env file: it replaces the existing line, or appends
+# one when the key is missing.
+env_set_key() {
+  local file="$1" key="$2" val="$3"
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    sed -i "s#^${key}=.*#${key}=${val}#" "$file"
+  else
+    printf '%s=%s\n' "$key" "$val" >> "$file"
+  fi
+}
+# <<< wgpanel version
 
 # >>> wgpanel net-tune (this block is identical in install.sh, install-node.sh and wgpanel; deploy/check-net-tune-sync.sh enforces it)
 # Host network tuning for WireGuard throughput: BBR + fq, bigger socket buffers and
@@ -931,12 +1069,14 @@ main() {
   parse_args "$@"
   require_root
   detect_os
-  ensure_deploy_files
   install_prereqs
+  resolve_release
+  ensure_deploy_files
   install_docker
   preflight_resources
   fresh_reset
   setup_files
+  pin_images
   setup_firewall
   start_stack
   install_cli
@@ -969,7 +1109,7 @@ main() {
   fi
   echo
   echo "=================================================================="
-  echo " WGPanel install complete"
+  echo " WGPanel ${RELEASE} install complete"
   echo "=================================================================="
   echo "  Panel address:  ${panel_display_url}"
   if [[ -n "$ADMIN_CREDS_BLOCK" ]]; then
@@ -983,6 +1123,7 @@ main() {
   echo "=================================================================="
   log "(Caddy needs a minute to obtain the TLS certificate on first boot - check with: wgpanel logs caddy)"
   log "Manage the stack with: wgpanel {start|stop|restart|status|logs|update|rollback|backup|restore|doctor|create-admin}"
+  log "Update to the newest release later with: wgpanel update   (or a specific one: wgpanel update --version vX.Y.Z)"
   log "To add more WireGuard nodes later: Nodes -> Add Node in the panel, then run install-node.sh on that server."
 }
 

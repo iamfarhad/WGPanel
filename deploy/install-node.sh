@@ -10,7 +10,10 @@
 # tunnels, and NATs their traffic to the internet.
 #
 # Usage:
-#   sudo bash install-node.sh
+#   sudo bash install-node.sh                          # install the newest release
+#   sudo bash install-node.sh --version v0.1.0         # install a specific release
+#   sudo bash install-node.sh --update [--version vX]  # move an installed node to a release
+# Use the same version as the panel (`wgpanel version` on the panel server).
 #
 # You will be asked for:
 #   - the control-plane address (e.g. panel.example.com:48443)
@@ -19,16 +22,20 @@
 # in the panel (they must match it exactly); you are only asked for them if the
 # panel can't be queried.
 #
-# The node image is pulled from $NODE_IMAGE (GHCR by default). If it can't be pulled
-# (private package, or before CI has published it), the script falls back to building
-# it from source - override the source with WGPANEL_REPO_URL.
+# The node image is ghcr.io/iamfarhad/wgpanel-node pinned to the chosen release (set
+# NODE_IMAGE to override it entirely). If it can't be pulled (private package, or
+# before CI has published it), the script falls back to building that release from
+# source - override the source with WGPANEL_REPO_URL.
 set -euo pipefail
 
 NODE_DIR="/opt/wgpanel-node"
 COMPOSE_FILE="$NODE_DIR/docker-compose.yml"
 ENV_FILE="$NODE_DIR/.env"
-NODE_IMAGE="${NODE_IMAGE:-ghcr.io/iamfarhad/wgpanel-node:latest}"
+NODE_IMAGE="${NODE_IMAGE:-}"
 WGPANEL_REPO_URL="${WGPANEL_REPO_URL:-https://github.com/iamfarhad/WGPanel.git}"
+REQUESTED_VERSION="${WGPANEL_VERSION:-latest}"
+RELEASE=""
+UPDATE=0
 
 log()  { echo -e "\033[1;32m[wgpanel-node]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[wgpanel-node]\033[0m $*"; }
@@ -323,10 +330,12 @@ ensure_image() {
 }
 
 build_image_from_source() {
-  local src="/tmp/wgpanel-src.$$"
-  log "Cloning ${WGPANEL_REPO_URL} and building the node image locally..."
+  local src="/tmp/wgpanel-src.$$" branch=()
+  # Build the chosen release; with a custom NODE_IMAGE there is none, so the default branch.
+  [[ -n "$RELEASE" ]] && branch=(--branch "$RELEASE")
+  log "Cloning ${WGPANEL_REPO_URL} ${RELEASE:-(default branch)} and building the node image locally..."
   rm -rf "$src"
-  git clone --depth 1 "$WGPANEL_REPO_URL" "$src"
+  git clone --depth 1 ${branch[@]+"${branch[@]}"} "$WGPANEL_REPO_URL" "$src"
   docker build -f "$src/deploy/node.Dockerfile" -t wgpanel-node:local "$src"
   rm -rf "$src"
   # Repoint the compose at the locally-built image.
@@ -440,6 +449,106 @@ verify() {
     exit 1
   fi
 }
+
+# >>> wgpanel version (this block is identical in install.sh, install-node.sh and wgpanel; deploy/check-net-tune-sync.sh enforces it)
+# Releases are git tags (vX.Y.Z), and CI publishes ghcr.io/iamfarhad/wgpanel-{api,frontend,node}
+# under the same tag. Installs pin that tag instead of :latest, so a plain `docker compose
+# pull` never changes the running version behind the operator's back, and `wgpanel
+# rollback` always has a concrete previous version to go back to.
+WGPANEL_GITHUB_REPO="${WGPANEL_GITHUB_REPO:-iamfarhad/WGPanel}"
+WGPANEL_IMAGE_REGISTRY="${WGPANEL_IMAGE_REGISTRY:-ghcr.io/iamfarhad}"
+
+# version_normalize accepts "0.1.0" or "v0.1.0" (with an optional -rc.1 style suffix)
+# and prints it the way the tags are written, with the leading v.
+version_normalize() {
+  local v="${1#v}"
+  [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || return 1
+  printf 'v%s\n' "$v"
+}
+
+# version_list prints the stable release tags (no pre-releases), oldest first.
+version_list() {
+  if command -v git >/dev/null 2>&1; then
+    git ls-remote --tags --refs "https://github.com/${WGPANEL_GITHUB_REPO}.git" 'v*' 2>/dev/null \
+      | sed -n 's#.*refs/tags/##p'
+  else
+    curl -fsSL --max-time 15 "https://api.github.com/repos/${WGPANEL_GITHUB_REPO}/tags?per_page=100" 2>/dev/null \
+      | sed -n 's/.*"name": *"\([^"]*\)".*/\1/p'
+  fi | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V
+}
+
+# version_latest prints the newest release. GitHub's releases/latest skips drafts and
+# pre-releases; the highest stable tag is the fallback when the API is unreachable or
+# rate-limited (60 unauthenticated calls an hour per IP).
+version_latest() {
+  local tag=""
+  tag="$(curl -fsSL --max-time 15 "https://api.github.com/repos/${WGPANEL_GITHUB_REPO}/releases/latest" 2>/dev/null \
+    | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)" || true
+  [[ -n "$tag" ]] || tag="$(version_list | tail -n1)" || true
+  [[ -n "$tag" ]] || return 1
+  printf '%s\n' "$tag"
+}
+
+# version_exists returns 0 when TAG is a published tag, 2 when GitHub says it isn't,
+# and 1 when GitHub can't be reached to tell.
+version_exists() {
+  local rc=0 code=""
+  if command -v git >/dev/null 2>&1; then
+    git ls-remote --exit-code --tags --refs "https://github.com/${WGPANEL_GITHUB_REPO}.git" "refs/tags/$1" >/dev/null 2>&1 || rc=$?
+    case "$rc" in 0) return 0 ;; 2) return 2 ;; *) return 1 ;; esac
+  fi
+  code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "https://api.github.com/repos/${WGPANEL_GITHUB_REPO}/git/ref/tags/$1" 2>/dev/null)" || true
+  case "$code" in 200) return 0 ;; 404) return 2 ;; *) return 1 ;; esac
+}
+
+# version_resolve prints the release to use: the newest one for "" or "latest", or the
+# requested one once GitHub confirms the tag exists. Messages go to stderr, so callers
+# can capture the result with $(...).
+version_resolve() {
+  local want="${1:-latest}" tag rc=0
+  if [[ "$want" == latest ]]; then
+    tag="$(version_latest)" || {
+      err "Could not look up the latest WGPanel release - is github.com reachable? Pass a version (e.g. --version v0.1.0) to pin one."
+      return 1
+    }
+  else
+    tag="$(version_normalize "$want")" || { err "'$want' is not a version - use a release tag such as v0.1.0."; return 1; }
+    version_exists "$tag" || rc=$?
+    if [[ $rc -eq 2 ]]; then
+      err "$tag is not a WGPanel release. Recent releases: $(version_list | tail -n 5 | tr '\n' ' ')"
+      return 1
+    elif [[ $rc -ne 0 ]]; then
+      warn "Could not reach GitHub to confirm $tag exists - continuing; pulling its images will fail if it doesn't." >&2
+    fi
+  fi
+  printf '%s\n' "$tag"
+}
+
+# image_ref prints the pinned image for one component: api, frontend or node.
+image_ref() { printf '%s/wgpanel-%s:%s\n' "$WGPANEL_IMAGE_REGISTRY" "$1" "$2"; }
+
+# image_tag prints the tag of an image reference, or nothing when it has none.
+image_tag() {
+  local last="${1%%@*}"
+  last="${last##*/}"
+  [[ "$last" == *:* ]] && printf '%s\n' "${last##*:}"
+  return 0
+}
+
+# deploy_file_url prints the raw GitHub URL of deploy/NAME at git ref REF.
+deploy_file_url() { printf 'https://raw.githubusercontent.com/%s/%s/deploy/%s\n' "$WGPANEL_GITHUB_REPO" "$1" "$2"; }
+
+# env_set_key sets KEY=VALUE in an env file: it replaces the existing line, or appends
+# one when the key is missing.
+env_set_key() {
+  local file="$1" key="$2" val="$3"
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    sed -i "s#^${key}=.*#${key}=${val}#" "$file"
+  else
+    printf '%s=%s\n' "$key" "$val" >> "$file"
+  fi
+}
+# <<< wgpanel version
 
 # >>> wgpanel net-tune (this block is identical in install.sh, install-node.sh and wgpanel; deploy/check-net-tune-sync.sh enforces it)
 # Host network tuning for WireGuard throughput: BBR + fq, bigger socket buffers and
@@ -620,11 +729,81 @@ net_tune_revert() {
 }
 # <<< wgpanel net-tune
 
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --update) UPDATE=1; shift ;;
+      --version)
+        [[ $# -ge 2 ]] || { err "--version needs a value, e.g. --version v0.1.0"; exit 1; }
+        REQUESTED_VERSION="$2"; shift 2 ;;
+      --version=*) REQUESTED_VERSION="${1#--version=}"; shift ;;
+      -h|--help)
+        echo "Usage: sudo bash install-node.sh [--update] [--version vX.Y.Z]"
+        echo "  --version   Release to install, e.g. v0.1.0 (default: the newest release)."
+        echo "              Use the same version as the panel (wgpanel version on the panel server)."
+        echo "  --update    Move an already installed node to that release, keeping its"
+        echo "              registration - no join token needed."
+        exit 0
+        ;;
+      *) err "Unknown argument: $1 (try --help)"; exit 1 ;;
+    esac
+  done
+}
+
+# resolve_node_image pins NODE_IMAGE to the chosen release, unless NODE_IMAGE was set
+# explicitly in the environment.
+resolve_node_image() {
+  if [[ -n "$NODE_IMAGE" ]]; then
+    log "Using node image ${NODE_IMAGE} (from NODE_IMAGE)."
+    return
+  fi
+  log "Looking up the WGPanel release to install (${REQUESTED_VERSION})..."
+  RELEASE="$(version_resolve "$REQUESTED_VERSION")" || exit 1
+  NODE_IMAGE="$(image_ref node "$RELEASE")"
+  log "Node version: ${RELEASE} (${NODE_IMAGE})"
+}
+
+# update_node moves an installed node to another release: only NODE_IMAGE changes, so
+# the node keeps its registration, keys and settings. If the new image can't be
+# pulled, the previous one is put back and nothing restarts.
+update_node() {
+  local current
+  if [[ ! -f "$ENV_FILE" || ! -f "$COMPOSE_FILE" ]]; then
+    err "No node install found in ${NODE_DIR} - run install-node.sh without --update to install one."
+    exit 1
+  fi
+  resolve_node_image
+  current="$(grep -m1 '^NODE_IMAGE=' "$ENV_FILE" | cut -d= -f2- || true)"
+  # verify() reports a listen-port mismatch with WG_PORT, which a fresh install gets
+  # from prompt_config; here it comes from the saved settings.
+  WG_PORT="$(grep -m1 '^WGPANEL_WG_PORT=' "$ENV_FILE" | cut -d= -f2- || true)"
+  if [[ "$current" == "$NODE_IMAGE" ]]; then
+    log "This node already runs ${NODE_IMAGE} - nothing to do."
+    return
+  fi
+  log "Updating the node: ${current:-unknown} -> ${NODE_IMAGE}"
+  env_set_key "$ENV_FILE" NODE_IMAGE "$NODE_IMAGE"
+  if ! (cd "$NODE_DIR" && docker compose pull); then
+    env_set_key "$ENV_FILE" NODE_IMAGE "$current"
+    err "Could not pull ${NODE_IMAGE} - kept ${current}. A release tagged minutes ago may still be publishing in CI."
+    exit 1
+  fi
+  start_node
+  verify
+  log "Node updated to ${NODE_IMAGE}. To go back: sudo bash install-node.sh --update --version $(image_tag "$current")"
+}
+
 main() {
+  parse_args "$@"
   require_root
   detect_os
+  if [[ "$UPDATE" -eq 1 ]]; then
+    update_node
+    return
+  fi
   install_prereqs
   install_docker
+  resolve_node_image
   prompt_config
   write_compose
   ensure_image

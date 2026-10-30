@@ -210,8 +210,10 @@ The release is one ordered sequence — the order is the point:
 ```bash
 git status --short                                   # 1. nothing uncommitted that belongs in it
 # 2. CHANGELOG.md: add "## [X.Y.Z] - YYYY-MM-DD" in English (Keep a Changelog sections) and
-#    the link reference at the bottom; bump the frontend version:
-(cd frontend && npm version X.Y.Z --no-git-tag-version)
+#    the link reference at the bottom; then write the version into frontend/package.json and
+#    the README install instructions (both languages), which must name the release the
+#    installer now gives:
+bash deploy/set-version.sh X.Y.Z                     # ends with its own --check
 git commit -am "Release X.Y.Z: changelog and version"
 git tag -a vX.Y.Z -m "پنل جیرجیرک وایرگارد به نسخه X.Y.Z به‌روزرسانی شد"
 git push origin main && git push origin vX.Y.Z      # 3. the tag builds ghcr.io/iamfarhad/wgpanel-{api,frontend,node}:vX.Y.Z
@@ -226,6 +228,7 @@ pushed tag is never moved: a mistake is fixed by the next version.
 
 - **`CHANGELOG.md`** — the English, technical record (the post is the Persian, seller-facing one).
 - **`README.md` / `README.fa.md`** — the feature lists, and screenshots when a page changed visibly.
+  The version in the install instructions is `deploy/set-version.sh`'s job, never a hand edit.
 - **The GitHub release** — notes from the CHANGELOG section plus the three image tags.
 
 ## Before you hand it over — checklist
@@ -240,3 +243,4 @@ pushed tag is never moved: a mistake is fixed by the next version.
 - [ ] Under 2 000 characters (hard limit 4 096)
 - [ ] Both versions delivered: Telegram paste (`**bold**`) and HTML (`<b>`, `<blockquote expandable>`)
 - [ ] CHANGELOG.md, tag, GitHub release consistent with the post
+- [ ] `bash deploy/set-version.sh --check` passes: both READMEs name the new version

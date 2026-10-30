@@ -1,5 +1,7 @@
 # Jirjirak WireGuard (WGPanel)
 
+[![Latest release](https://img.shields.io/github/v/release/iamfarhad/WGPanel?label=release)](https://github.com/iamfarhad/WGPanel/releases/latest)
+
 **English** | [فارسی](README.fa.md)
 
 <p align="center"><img src="docs/screenshots/jirjirak/login.png" alt="Jirjirak WireGuard sign-in screen" width="720"></p>
@@ -63,12 +65,20 @@ Jirjirak WireGuard is a self-hosted panel for running your own WireGuard VPN ser
 
 ## Installing the panel
 
-Run this on the server that will host the panel:
+Run this on the server that will host the panel. It installs the newest release, currently <!-- release-version -->**v0.1.0**<!-- /release-version --> ([all releases](https://github.com/iamfarhad/WGPanel/releases)):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/iamfarhad/WGPanel/main/deploy/install.sh -o install.sh
 sudo bash install.sh
 ```
+
+To install a specific release instead, give its tag:
+
+```bash
+sudo bash install.sh --version v0.1.0
+```
+
+The installer pins the panel and node images to that release, so the running version only changes when you run `wgpanel update` (see [Updating](#updating)).
 
 The installer will ask for:
 
@@ -95,6 +105,8 @@ Every node, including the panel's own server, is added the same way:
    curl -fsSL https://raw.githubusercontent.com/iamfarhad/WGPanel/main/deploy/install-node.sh -o install-node.sh
    sudo bash install-node.sh
    ```
+
+   This installs the newest release. Keep nodes on the same version as the panel (`wgpanel version` shows it): `sudo bash install-node.sh --version v0.1.0`.
 
 4. Paste in the control-plane address and the join token when prompted.
 
@@ -174,13 +186,30 @@ The installer places a `wgpanel` CLI on the panel server:
 wgpanel status               # container + API health
 wgpanel logs [service]       # tail logs
 wgpanel backup               # dump the database + .env to deploy/backups
-wgpanel update               # backup, pull latest images, redeploy, auto-rollback on failed health check
+wgpanel version              # installed release and the newest one
+wgpanel update               # move to the newest release (see Updating below)
 wgpanel doctor               # disk space, container/DB/Redis health, TLS cert expiry, backup freshness
 wgpanel create-admin         # add another admin account
 wgpanel tune [apply|status|revert]  # host network tuning (BBR, buffers, conntrack)
 ```
 
 Run `wgpanel` with no arguments for the full command list.
+
+### Updating
+
+```bash
+wgpanel update                    # move to the newest release
+wgpanel update --version v0.1.0   # move to a specific release
+wgpanel rollback                  # go back to the version before the last update
+```
+
+`wgpanel update` takes a database backup first, then installs the release's images together with its `docker-compose.yml` and `Caddyfile`, and moves the panel server's own node to the same release. If the panel doesn't come back healthy, it rolls back by itself. Going to an older release asks for confirmation, because database migrations aren't undone.
+
+Remote nodes keep their version until you update each of them. This keeps the node's registration, so no join token is needed:
+
+```bash
+sudo bash install-node.sh --update --version v0.1.0
+```
 
 ## Using the panel
 
@@ -256,7 +285,7 @@ Per-container memory ceilings are tunable via `.env` (`DB_MEM_LIMIT`, `REDIS_MEM
 
 ### Images & CI
 
-Pushes to `main` build and publish three images to GHCR via `.github/workflows/build-{api,frontend,node}.yml`. Each image is tagged `latest` and `sha-<commit>`:
+Pushes to `main` build and publish three images to GHCR via `.github/workflows/build-{api,frontend,node}.yml`, tagged `latest` and `sha-<commit>`. Pushing a release tag (`vX.Y.Z`) publishes the same three images under that tag, which is what the installers and `wgpanel update` pin:
 
 - `ghcr.io/iamfarhad/wgpanel-api`: the control plane (also contains the agent binary).
 - `ghcr.io/iamfarhad/wgpanel-frontend`: the SPA served by nginx.
