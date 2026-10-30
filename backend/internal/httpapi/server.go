@@ -193,6 +193,7 @@ func (s *Server) Routes() http.Handler {
 
 	s.registerSecurityRoutes(mux)
 	s.registerNotificationRoutes(mux)
+	s.registerSalesRoutes(mux)
 
 	return s.loggingMiddleware(mux)
 }

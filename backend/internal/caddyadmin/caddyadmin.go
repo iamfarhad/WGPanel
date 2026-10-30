@@ -66,7 +66,7 @@ var caddyfileTemplate = template.Must(template.New("caddyfile").Parse(`{
 
 	# The customer-facing subscription page (SPA route /s/{token}) and the static
 	# files it needs - nothing else of the frontend is reachable here.
-	@subpage path /s/* /assets/* /favicon.svg /favicon-16.png /favicon-32.png /icon-192.png /icon-512.png /apple-touch-icon.png /manifest.webmanifest
+	@subpage path /s/* /assets/* /favicon.svg /favicon-16.png /favicon-32.png /icon-192.png /icon-512.png /apple-touch-icon.png /manifest.webmanifest /buy
 	handle @subpage {
 		reverse_proxy frontend:80
 	}

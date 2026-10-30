@@ -107,6 +107,10 @@ tags:
     description: In-panel notification center and Telegram/email notification channels.
   - name: Webhooks
     description: Signed outbound webhooks with a persistent retry queue and delivery log.
+  - name: Sales
+    description: >-
+      Prices, orders and payments (card-to-card with admin approval, ZarinPal, NowPayments), the reseller wallet
+      and the public purchase flow. Amounts are whole Toman; the server decides every amount.
   - name: Reports
     description: Traffic, account-status, quota and expiry reporting for staff and resellers.
   - name: Resellers
@@ -1729,6 +1733,14 @@ paths:
                     Extends from the current expiry_at (or from now, if the account has none/has already expired).
                     For an account still **on hold** the clock has not started, so this lengthens its
                     `hold_duration_days` instead and `expiry_at` stays null.
+                template_id:
+                  type: string
+                  format: uuid
+                  nullable: true
+                  description: >-
+                    Renew with a plan template instead: its quota is added and its duration extends the
+                    validity. A reseller with "charge wallet" enabled pays the template's (discounted) price
+                    from its wallet when the template is a priced global one, else `402 insufficient_balance`.
       responses:
         "200":
           description: Account renewed.
@@ -1994,6 +2006,678 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/payments/settings:
+    get:
+      tags: [Sales]
+      summary: Payment methods, cards and gateway settings
+      description: >-
+        super_admin only. Secrets (ZarinPal merchant id, NowPayments API key and IPN
+        secret) are never returned - only `has_*` flags. `effective_callback_base`
+        and the two URLs show where gateways will call back (the subscription
+        domain, else the panel domain, unless `callback_base_url` overrides it):
+        paste the IPN URL into the NowPayments dashboard.
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Settings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentSettings" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [Sales]
+      summary: Update payment settings
+      description: >-
+        super_admin only. Replaces the whole configuration; the write-only secret
+        fields (`merchant_id`, `api_key`, `ipn_secret`) keep their stored value when
+        empty or omitted. Secrets are encrypted at rest with
+        `ACCOUNT_KEY_ENCRYPTION_KEY`. Card numbers may be typed with Persian digits,
+        spaces or dashes. Enabling a method requires its credentials (ZarinPal a
+        merchant id; NowPayments an API key, IPN secret and a Toman-per-USD rate;
+        card-to-card at least one enabled card). Audit-logged without secrets.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PaymentSettings" }
+      responses:
+        "200":
+          description: Saved settings (same shape as GET).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentSettings" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/template-prices:
+    get:
+      tags: [Sales]
+      summary: Prices of the templates the caller can see
+      description: >-
+        One row per priced template (Toman). Same visibility as `GET /templates`.
+        Templates without a row are unpriced.
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
+      responses:
+        "200":
+          description: Prices.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/TemplatePrice" } }
+
+  /api/v1/templates/{id}/price:
+    put:
+      tags: [Sales]
+      summary: Set a template's price and whether customers can buy it
+      description: >-
+        Staff price any template; a reseller (or key with `update`) only its own.
+        `price_toman` is a whole number of Toman (0 clears the sale price); a
+        `purchasable` template needs a price above zero. A global template's price is
+        what staff-owned accounts and `/buy` pay and what a wallet-charging reseller
+        pays before its discount; a reseller's own template price is what ITS
+        customers pay on the subscription page.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TemplatePrice" }
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TemplatePrice" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/resellers/{id}/sales:
+    get:
+      tags: [Sales]
+      summary: A reseller's pricing, wallet switches and balance
+      description: super_admin only.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Pricing.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResellerSales" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Sales]
+      summary: Set a reseller's discount, wallet charging and self-service
+      description: >-
+        super_admin only. `discount_percent` applies to every priced global template;
+        a per-template `overrides` entry wins over the discount. `charge_wallet`: creating
+        or renewing (`template_id`) from a priced global template debits the reseller's
+        wallet and fails with `402 insufficient_balance` when it is too low - for the
+        reseller's UI session and its API keys, single and bulk. `self_service`: the
+        reseller's customers may buy renewals of the reseller's OWN purchasable
+        templates on the public subscription page. `balance_toman` is read-only here.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResellerSales" }
+      responses:
+        "200":
+          description: Saved (same shape as GET).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResellerSales" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/resellers/{id}/wallet:
+    get:
+      tags: [Sales]
+      summary: A reseller's wallet balance and ledger
+      description: super_admin only. Newest first; page with `before` (the previous page's `next_before`).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: before, in: query, schema: { type: string, format: date-time } }
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Ledger.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WalletLedger" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/resellers/{id}/wallet/adjust:
+    post:
+      tags: [Sales]
+      summary: Manually credit or debit a reseller's wallet
+      description: >-
+        super_admin only. Positive `amount_toman` credits (and emits `wallet.credited`),
+        negative debits; a debit larger than the balance is `402 insufficient_balance`.
+        The mandatory `reason` goes into the ledger and the audit log.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount_toman, reason]
+              properties:
+                amount_toman: { type: integer, description: "Non-zero, at most 1,000,000,000 either way." }
+                reason: { type: string, maxLength: 200 }
+      responses:
+        "200":
+          description: New balance.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  balance_toman: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "402": { description: "`insufficient_balance`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/orders:
+    get:
+      tags: [Sales]
+      summary: List orders
+      description: >-
+        Staff see every order; a reseller (session or key) the orders of its namespace;
+        any other API key the orders of the accounts it owns. Needs `read`. Newest
+        first, page with `before`.
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [pending, awaiting_review, paid, fulfilled, failed, expired, rejected, cancelled] } }
+        - { name: kind, in: query, schema: { type: string, enum: [account_renew, account_purchase, wallet_topup] } }
+        - { name: account_id, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: before, in: query, schema: { type: string, format: date-time } }
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
+      responses:
+        "200":
+          description: Orders.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Order" } }
+                  next_before: { type: string, format: date-time, description: Present when there may be more. }
+
+  /api/v1/orders/{id}:
+    get:
+      tags: [Sales]
+      summary: Get an order
+      description: Scoped like the list; an order outside the caller's namespace is `404`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
+      responses:
+        "200":
+          description: Order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/orders/{id}/receipt:
+    get:
+      tags: [Sales]
+      summary: View a card-to-card receipt image
+      description: >-
+        Admin session (a reseller only for its own orders). Served inline with
+        `X-Content-Type-Options: nosniff` and a sandboxing CSP. `404 receipt_unavailable`
+        when none was sent or it was removed (90-day retention after settlement, and
+        receipts are not part of backups).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: The image.
+          content:
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/png: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [Sales]
+      summary: Upload the receipt of your own wallet top-up
+      description: >-
+        Reseller session only, for its own card-to-card `wallet_topup` order.
+        `multipart/form-data` with `tracking_code` (4-32 letters/digits/dashes) and
+        `receipt` (JPEG, PNG or WebP by content, at most 2 MB). The order moves to
+        `awaiting_review` and staff are notified. A tracking code or image already
+        backing another live order is `409 receipt_already_used`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [tracking_code, receipt]
+              properties:
+                tracking_code: { type: string }
+                receipt: { type: string, format: binary }
+      responses:
+        "200":
+          description: Order, now awaiting review.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+        "409": { description: "`receipt_already_used` or `order_not_awaiting_payment`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "413": { description: "`receipt_too_large`." }
+        "415": { description: "`receipt_type_unsupported`." }
+
+  /api/v1/orders/{id}/approve:
+    post:
+      tags: [Sales]
+      summary: Approve an order awaiting review
+      description: >-
+        Role >= `operator`. `awaiting_review` -> `paid`, then fulfilment runs (renew /
+        create the account / credit the wallet) exactly once. A repeated or racing
+        approve gets `409 invalid_order_state` and changes nothing. Emits
+        `payment.approved` and `order.fulfilled`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, properties: { note: { type: string, maxLength: 300 } } }
+      responses:
+        "200":
+          description: Order (normally `fulfilled`; `paid` with `fulfil_error` when delivery failed and will be retried).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+        "409": { description: "`invalid_order_state`." }
+
+  /api/v1/orders/{id}/reject:
+    post:
+      tags: [Sales]
+      summary: Reject an order awaiting review
+      description: Role >= `operator`. Terminal. The optional `note` is shown to the buyer. Emits `payment.rejected`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, properties: { note: { type: string, maxLength: 300 } } }
+      responses:
+        "200":
+          description: Order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+        "409": { description: "`invalid_order_state`." }
+
+  /api/v1/orders/{id}/cancel:
+    post:
+      tags: [Sales]
+      summary: Cancel a pending or awaiting-review order
+      description: Role >= `operator`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+        "409": { description: "`invalid_order_state`." }
+
+  /api/v1/orders/{id}/retry:
+    post:
+      tags: [Sales]
+      summary: Retry fulfilment of a paid order
+      description: >-
+        Role >= `operator`. For a `paid` order whose delivery failed (see `fulfil_error`,
+        e.g. no node had capacity). `?force=true` first re-opens a claim that never
+        finished because the API process died mid-delivery - only do that after checking
+        the account was not already created/renewed.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: force, in: query, schema: { type: boolean } }
+      security: [{ BearerAuth: [] }]
+      responses:
+        "200":
+          description: Order after the attempt.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+        "409": { description: "`invalid_order_state`." }
+
+  /api/v1/wallet:
+    get:
+      tags: [Sales]
+      summary: The reseller's wallet
+      description: >-
+        Reseller session or reseller-owned API key (`read`). `404 no_wallet` for staff
+        and plain keys. `methods` lists the enabled payment methods for top-ups.
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
+      responses:
+        "200":
+          description: Wallet.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  balance_toman: { type: integer }
+                  charge_wallet: { type: boolean }
+                  discount_percent: { type: integer }
+                  self_service: { type: boolean }
+                  methods: { type: array, items: { type: string, enum: [card_to_card, zarinpal, nowpayments] } }
+        "404": { description: "`no_wallet`." }
+
+  /api/v1/wallet/ledger:
+    get:
+      tags: [Sales]
+      summary: The reseller's wallet ledger
+      description: Append-only history, newest first (same shape as the super-admin view).
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: before, in: query, schema: { type: string, format: date-time } }
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
+      responses:
+        "200":
+          description: Ledger.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WalletLedger" }
+        "404": { description: "`no_wallet`." }
+
+  /api/v1/wallet/topups:
+    post:
+      tags: [Sales]
+      summary: Start a wallet top-up
+      description: >-
+        Reseller session or reseller-owned key with `create`. Creates a `wallet_topup`
+        order for the chosen method: for a gateway, redirect the user to
+        `payment.redirect_url`; for card-to-card, show `payment.card`, then upload the
+        receipt (`POST /orders/{id}/receipt`) and wait for staff approval. The wallet is
+        credited exactly once when the order is paid.
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount_toman, method]
+              properties:
+                amount_toman: { type: integer, minimum: 10000, maximum: 1000000000 }
+                method: { type: string, enum: [card_to_card, zarinpal, nowpayments] }
+      responses:
+        "201":
+          description: Order created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order: { $ref: "#/components/schemas/Order" }
+                  payment: { $ref: "#/components/schemas/PublicOrder" }
+        "409": { description: "`payment_method_unavailable`." }
+        "502": { description: "`payment_gateway_error`." }
+
+  /api/v1/sub/{token}/shop:
+    get:
+      tags: [Subscription]
+      summary: Renewal plans and payment methods for this subscription
+      description: >-
+        Public; the token is the credential. `plans` are the purchasable templates
+        with their price in Toman: for a staff-owned account the global purchasable
+        templates, for a reseller's customer only the RESELLER's own purchasable
+        templates and only when that reseller enabled self-service (otherwise none).
+        Payment goes to the admin-configured methods and the reseller's wallet is not
+        charged. `enabled` is false when there is nothing to buy or no method is on.
+        Rate limited per client IP.
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Shop.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Shop" }
+        "404": { description: Unknown token. }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/sub/{token}/orders:
+    post:
+      tags: [Subscription]
+      summary: Buy a renewal for this subscription
+      description: >-
+        Public. The price always comes from the server (any amount in the body is
+        ignored). The template must be one `shop` offers for THIS token's account.
+        Returns the order with `ref` (the buyer's capability for it) plus either a
+        `redirect_url` (ZarinPal / NowPayments) or the `card` to pay and then
+        `.../receipt`. On payment the account is renewed by the template's quota and
+        duration, like `POST /accounts/{id}/renew`. Stricter rate limit; at most 5
+        unpaid orders per account.
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [template_id, method]
+              properties:
+                template_id: { type: string, format: uuid }
+                method: { type: string, enum: [card_to_card, zarinpal, nowpayments] }
+                contact: { type: string, description: "Optional Telegram username or phone." }
+      responses:
+        "201":
+          description: Order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicOrder" }
+        "404": { description: "Unknown token or a template this account cannot buy." }
+        "409": { description: "`payment_method_unavailable`." }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { description: "`payment_gateway_error`." }
+
+  /api/v1/sub/{token}/orders/{ref}:
+    get:
+      tags: [Subscription]
+      summary: Status of an order of this subscription
+      description: Public. `404` for an order that does not belong to this token's account.
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+        - { name: ref, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicOrder" }
+        "404": { description: Unknown. }
+
+  /api/v1/sub/{token}/orders/{ref}/receipt:
+    post:
+      tags: [Subscription]
+      summary: Send the card-to-card receipt of an order
+      description: >-
+        Public. `multipart/form-data`: `tracking_code` (4-32 letters/digits/dashes) and
+        `receipt` (JPEG/PNG/WebP detected from the bytes, at most 2 MB). The order moves
+        to `awaiting_review` and staff are notified (`payment.awaiting_review`).
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+        - { name: ref, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [tracking_code, receipt]
+              properties:
+                tracking_code: { type: string }
+                receipt: { type: string, format: binary }
+      responses:
+        "200":
+          description: Order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicOrder" }
+        "409": { description: "`receipt_already_used` / `order_not_awaiting_payment`." }
+        "413": { description: "`receipt_too_large`." }
+        "415": { description: "`receipt_type_unsupported`." }
+
+  /api/v1/sub/buy/shop:
+    get:
+      tags: [Subscription]
+      summary: Plans and methods on the public purchase page (/buy)
+      description: >-
+        Public. `enabled: false` with empty lists while the `/buy` page is switched off
+        in payment settings (the default).
+      responses:
+        "200":
+          description: Shop.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Shop" }
+
+  /api/v1/sub/buy/orders:
+    post:
+      tags: [Subscription]
+      summary: Buy a new account
+      description: >-
+        Public, only while `/buy` is enabled (404 otherwise). `contact` (Telegram
+        username like `@name` or a phone number) is required; it is stored on the order
+        and used in the account's label, and the account's `external_ref` is
+        `order:<order id>`. After payment and fulfilment `GET .../orders/{ref}` returns
+        `subscription_path`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [template_id, method, contact]
+              properties:
+                template_id: { type: string, format: uuid }
+                method: { type: string, enum: [card_to_card, zarinpal, nowpayments] }
+                contact: { type: string }
+      responses:
+        "201":
+          description: Order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicOrder" }
+        "400": { description: "`invalid_contact`." }
+        "404": { description: Purchases not open, or the plan is not for sale. }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/sub/buy/orders/{ref}:
+    get:
+      tags: [Subscription]
+      summary: Status of a purchase order
+      description: Public; the `ref` is the capability. Only honoured for `account_purchase` orders.
+      parameters:
+        - { name: ref, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicOrder" }
+        "404": { description: Unknown. }
+
+  /api/v1/sub/buy/orders/{ref}/receipt:
+    post:
+      tags: [Subscription]
+      summary: Send the card-to-card receipt of a purchase order
+      description: Same as the subscription receipt endpoint.
+      parameters:
+        - { name: ref, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [tracking_code, receipt]
+              properties:
+                tracking_code: { type: string }
+                receipt: { type: string, format: binary }
+      responses:
+        "200":
+          description: Order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicOrder" }
+
+  /api/v1/sub/pay/zarinpal:
+    get:
+      tags: [Sales]
+      summary: ZarinPal browser callback
+      description: >-
+        Where ZarinPal sends the buyer (`?order=<order id>&Authority=&Status=`). The
+        `Authority` must equal the one stored on the order. With `Status=OK` the panel
+        calls `verify.json` itself using the ORDER'S stored amount (in Rials, x10 of the
+        Toman price, `currency` stated as `IRR` in both calls) - nothing in the query
+        string is trusted for money. Codes 100 and 101 mean paid. Always answers with a
+        redirect (303) back to the page that started the order. A verify call that could
+        not complete is retried by the background worker.
+      parameters:
+        - { name: order, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: Authority, in: query, schema: { type: string } }
+        - { name: Status, in: query, schema: { type: string } }
+      responses:
+        "303": { description: Redirect to the originating page. }
+        "400": { description: "`authority_mismatch`." }
+        "404": { description: "`order_not_found`." }
+
+  /api/v1/sub/pay/nowpayments:
+    post:
+      tags: [Sales]
+      summary: NowPayments IPN callback
+      description: >-
+        Authenticated by `x-nowpayments-sig`: the hex HMAC-SHA512, keyed with the IPN
+        secret, of the JSON body re-serialised with object keys sorted at every depth.
+        Checked before anything else (`401 invalid_signature`). The signed
+        `price_amount`/`price_currency` must match the amount and USD figure frozen on
+        the order (`400 amount_mismatch`) and `invoice_id`, when present, its invoice.
+        `finished` -> paid (then fulfilled); `partially_paid` -> `awaiting_review` for a
+        human (never auto-fulfilled); `failed`/`refunded` -> failed; `expired` ->
+        expired; `waiting`/`confirming`/`confirmed`/`sending` are acknowledged and
+        ignored. Replays are harmless.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { description: Accepted. }
+        "400": { description: "`amount_mismatch` / `invoice_mismatch`." }
+        "401": { description: "`invalid_signature`." }
+        "404": { description: "`order_not_found`." }
 
   /api/v1/sub/{token}:
     get:
@@ -3702,6 +4386,161 @@ components:
         created_at: { type: string, format: date-time }
       required: [id, node_id, label, address, kind, priority, enabled, health_check, last_status, created_at]
 
+    PaymentSettings:
+      type: object
+      properties:
+        card:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            cards:
+              type: array
+              maxItems: 10
+              items:
+                type: object
+                properties:
+                  id: { type: string, format: uuid, readOnly: true }
+                  number: { type: string, description: "12-19 digits (Persian digits, spaces and dashes accepted)." }
+                  holder: { type: string, maxLength: 80 }
+                  bank: { type: string, maxLength: 40 }
+                  enabled: { type: boolean }
+        zarinpal:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            sandbox: { type: boolean }
+            merchant_id: { type: string, writeOnly: true, description: "UUID; empty keeps the stored one." }
+            has_merchant_id: { type: boolean, readOnly: true }
+        nowpayments:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            sandbox: { type: boolean }
+            api_key: { type: string, writeOnly: true }
+            ipn_secret: { type: string, writeOnly: true }
+            has_api_key: { type: boolean, readOnly: true }
+            has_ipn_secret: { type: boolean, readOnly: true }
+            toman_per_usd: { type: integer, description: "Toman worth one US dollar; invoices are raised in USD at this rate." }
+        callback_base_url: { type: string, description: "Bare https origin gateways call back; empty = subscription/panel domain." }
+        public_buy_enabled: { type: boolean, description: "Turns the public /buy page on (default off)." }
+        effective_callback_base: { type: string, readOnly: true }
+        zarinpal_callback_url: { type: string, readOnly: true }
+        nowpayments_ipn_url: { type: string, readOnly: true }
+
+    TemplatePrice:
+      type: object
+      properties:
+        template_id: { type: string, format: uuid, readOnly: true }
+        price_toman: { type: integer, minimum: 0, maximum: 10000000000 }
+        purchasable: { type: boolean }
+
+    ResellerSales:
+      type: object
+      properties:
+        discount_percent: { type: integer, minimum: 0, maximum: 100 }
+        charge_wallet: { type: boolean }
+        self_service: { type: boolean }
+        overrides:
+          type: array
+          items:
+            type: object
+            properties:
+              template_id: { type: string, format: uuid }
+              price_toman: { type: integer, minimum: 0 }
+        balance_toman: { type: integer, readOnly: true }
+
+    WalletLedger:
+      type: object
+      properties:
+        balance_toman: { type: integer }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              kind: { type: string, enum: [topup, manual_credit, manual_debit, purchase, refund] }
+              amount_toman: { type: integer, description: "Signed: negative is a debit." }
+              balance_after: { type: integer }
+              reason: { type: string }
+              order_id: { type: string, format: uuid, nullable: true }
+              actor: { type: string }
+              created_at: { type: string, format: date-time }
+        next_before: { type: string, format: date-time }
+
+    Order:
+      type: object
+      description: >-
+        State machine: `pending` -> `awaiting_review` (receipt uploaded, or a gateway
+        reported a partial payment) -> `paid` -> `fulfilled`; `pending` may also end as
+        `failed`, `expired` or `cancelled`, `awaiting_review` as `rejected`, `failed` or
+        `cancelled`. A verified payment arriving after `expired` still moves it on.
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [account_renew, account_purchase, wallet_topup] }
+        status: { type: string, enum: [pending, awaiting_review, paid, fulfilled, failed, expired, rejected, cancelled] }
+        method: { type: string, enum: [card_to_card, zarinpal, nowpayments] }
+        amount_toman: { type: integer }
+        template_id: { type: string, format: uuid, nullable: true }
+        plan_name: { type: string }
+        account_id: { type: string, format: uuid, nullable: true }
+        account_label: { type: string, nullable: true }
+        reseller_id: { type: string, format: uuid, nullable: true }
+        reseller_username: { type: string, nullable: true }
+        owner: { type: string, description: "Owner namespace; empty for staff-owned." }
+        contact: { type: string }
+        tracking_code: { type: string, nullable: true }
+        has_receipt: { type: boolean }
+        card: { type: object, nullable: true, properties: { number: { type: string }, holder: { type: string }, bank: { type: string } } }
+        gateway_ref: { type: string, nullable: true }
+        reviewer: { type: string }
+        review_note: { type: string }
+        fulfil_error: { type: string, description: "Why the last delivery attempt failed; the order stays `paid` and is retried." }
+        fulfil_attempts: { type: integer }
+        fulfil_in_progress: { type: boolean }
+        paid_at: { type: string, format: date-time, nullable: true }
+        fulfilled_at: { type: string, format: date-time, nullable: true }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    PublicOrder:
+      type: object
+      description: What a buyer may see of their order.
+      properties:
+        ref: { type: string, description: "Opaque order reference - the buyer's capability." }
+        kind: { type: string }
+        status: { type: string }
+        method: { type: string }
+        amount_toman: { type: integer }
+        plan_name: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        review_note: { type: string, description: "Present when rejected." }
+        card: { type: object, nullable: true, description: "Pending card-to-card orders: where to transfer.", properties: { number: { type: string }, holder: { type: string }, bank: { type: string } } }
+        redirect_url: { type: string, description: "Pending gateway orders: where to pay." }
+        receipt_submitted: { type: boolean }
+        subscription_path: { type: string, description: "Fulfilled purchase orders: the new account's /s/<token> page." }
+
+    Shop:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        plans:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
+              price_toman: { type: integer }
+              data_quota_bytes: { type: integer, nullable: true }
+              duration_days: { type: integer, nullable: true }
+              device_limit: { type: integer, nullable: true }
+        methods: { type: array, items: { type: string, enum: [card_to_card, zarinpal, nowpayments] } }
+        orders: { type: array, items: { $ref: "#/components/schemas/PublicOrder" }, description: "Recent orders of this subscription (empty on /buy)." }
+        support_contact: { type: string, nullable: true }
+
     SubscriptionInfo:
       type: object
       properties:
@@ -3973,7 +4812,7 @@ components:
         action: { type: string, enum: [create, renew, suspend, enable, delete, reset_usage] }
         count: { type: integer, minimum: 1, maximum: 200, description: "create: how many accounts." }
         label_prefix: { type: string, description: "create: labels are `<prefix>-01`, `<prefix>-02`, ..." }
-        template_id: { type: string, format: uuid, nullable: true, description: "create: as in POST /accounts." }
+        template_id: { type: string, format: uuid, nullable: true, description: "create: as in POST /accounts. renew: renew every listed account with this template (wallet-charged per account for a wallet-charging reseller; the remaining items fail with `insufficient_balance` once the balance runs out)." }
         data_quota_gb: { type: number, nullable: true, description: "create: as in POST /accounts (external_ref is not allowed)." }
         expiry_at: { type: string, format: date-time, nullable: true }
         device_limit: { type: integer, nullable: true }

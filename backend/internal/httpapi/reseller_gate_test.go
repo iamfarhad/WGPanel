@@ -35,7 +35,7 @@ func routePatterns(t *testing.T) []string {
 	var out []string
 	// Routes live in server.go and in feature files that register their own groups
 	// (security.go: registerSecurityRoutes, notify_api.go: registerNotificationRoutes).
-	for _, file := range []string{"server.go", "security.go", "notify_api.go"} {
+	for _, file := range []string{"server.go", "security.go", "notify_api.go", "sales_routes.go"} {
 		src, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
@@ -79,7 +79,7 @@ func TestResellerAllowlist(t *testing.T) {
 		"POST /api/v1/auth/passkey/begin": true, "POST /api/v1/auth/passkey/finish": true,
 	}
 	for _, pattern := range routePatterns(t) {
-		if public[pattern] || strings.Contains(pattern, "/internal/") {
+		if public[pattern] || strings.Contains(pattern, "/internal/") || strings.Contains(pattern, "/api/v1/sub/") { // sub/* = public capability-URL routes
 			continue
 		}
 		method, path, _ := strings.Cut(pattern, " ")

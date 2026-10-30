@@ -152,7 +152,7 @@ func redactPath(path string) string {
 		return path
 	}
 	if i := strings.IndexByte(rest, '/'); i >= 0 {
-		return subPrefix + "[redacted]" + rest[i:]
+		return redactOrderRef(subPrefix + "[redacted]" + rest[i:])
 	}
 	return subPrefix + "[redacted]"
 }
