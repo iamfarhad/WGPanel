@@ -1,5 +1,7 @@
 # جیرجیرک وایرگارد (WGPanel)
 
+[![آخرین نسخه](https://img.shields.io/github/v/release/iamfarhad/WGPanel?label=release)](https://github.com/iamfarhad/WGPanel/releases/latest)
+
 **فارسی** | [English](README.md)
 
 <p align="center"><img src="docs/screenshots/jirjirak/login-fa.png" alt="صفحه‌ی ورود جیرجیرک وایرگارد" width="720"></p>
@@ -57,12 +59,20 @@
 
 ## نصب پنل
 
-این را روی سروری اجرا کنید که قرار است پنل رویش باشد:
+این را روی سروری اجرا کنید که قرار است پنل رویش باشد. آخرین نسخه را نصب می‌کند که الان <!-- release-version -->**v0.1.0**<!-- /release-version --> است ([همه‌ی نسخه‌ها](https://github.com/iamfarhad/WGPanel/releases)):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/iamfarhad/WGPanel/main/deploy/install.sh -o install.sh
 sudo bash install.sh
 ```
+
+برای نصب یک نسخه‌ی مشخص، تگش را بدهید:
+
+```bash
+sudo bash install.sh --version v0.1.0
+```
+
+اسکریپت نصب ایمیج‌های پنل و نود را روی همان نسخه ثابت می‌کند. یعنی نسخه‌ی در حال اجرا فقط وقتی عوض می‌شود که `wgpanel update` بزنید (بخش «به‌روزرسانی» در ادامه).
 
 اسکریپت نصب این‌ها را می‌پرسد:
 
@@ -89,6 +99,8 @@ sudo bash install.sh
    curl -fsSL https://raw.githubusercontent.com/iamfarhad/WGPanel/main/deploy/install-node.sh -o install-node.sh
    sudo bash install-node.sh
    ```
+
+   این هم آخرین نسخه را نصب می‌کند. نسخه‌ی نودها را با پنل یکی نگه دارید (`wgpanel version` نسخه‌ی پنل را نشان می‌دهد): `sudo bash install-node.sh --version v0.1.0`.
 
 4. آدرس پنل و توکن اتصال را وقتی پرسید وارد کنید.
 
@@ -168,13 +180,30 @@ sudo wgpanel tune revert    # پاک کردن فایل و سرویس و برگر
 wgpanel status               # وضعیت کانتینرها و سلامت API
 wgpanel logs [service]       # دیدن لاگ‌ها
 wgpanel backup               # بکاپ از دیتابیس و .env در deploy/backups
-wgpanel update               # بکاپ، دریافت ایمیج‌های جدید، دیپلوی و برگشت خودکار اگر هلت‌چک رد شود
+wgpanel version              # نسخه‌ی نصب‌شده و آخرین نسخه‌ی موجود
+wgpanel update               # رفتن به آخرین نسخه (بخش به‌روزرسانی را ببینید)
 wgpanel doctor               # فضای دیسک، سلامت کانتینرها و دیتابیس و Redis، انقضای گواهی، تازگی بکاپ
 wgpanel create-admin         # ساختن ادمین جدید
 wgpanel tune [apply|status|revert]  # تنظیم شبکه‌ی میزبان (BBR، بافرها، conntrack)
 ```
 
 اگر `wgpanel` را بدون آرگومان اجرا کنید، فهرست کامل دستورها را نشان می‌دهد.
+
+### به‌روزرسانی
+
+```bash
+wgpanel update                    # رفتن به آخرین نسخه
+wgpanel update --version v0.1.0   # رفتن به یک نسخه‌ی مشخص
+wgpanel rollback                  # برگشت به نسخه‌ی قبل از آخرین آپدیت
+```
+
+`wgpanel update` اول از دیتابیس بکاپ می‌گیرد، بعد ایمیج‌های آن نسخه را همراه `docker-compose.yml` و `Caddyfile` همان نسخه نصب می‌کند و نود روی خود سرور پنل را هم به همان نسخه می‌برد. اگر پنل سالم بالا نیاید، خودش برمی‌گردد. رفتن به نسخه‌ی قدیمی‌تر تأیید می‌خواهد، چون مایگریشن‌های دیتابیس برنمی‌گردند.
+
+نودهای دیگر روی نسخه‌ی خودشان می‌مانند تا روی هر کدام جدا آپدیت بزنید. ثبت نود سر جایش می‌ماند و توکن اتصال لازم نیست:
+
+```bash
+sudo bash install-node.sh --update --version v0.1.0
+```
 
 ## کار با پنل
 

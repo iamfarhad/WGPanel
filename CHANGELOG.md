@@ -4,6 +4,23 @@ All notable changes to Jirjirak WireGuard (WGPanel) are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Install and update
+- `install.sh` installs the newest release by default, or the one given with `--version vX.Y.Z`
+  (or `WGPANEL_VERSION`). It pins `API_IMAGE`/`FRONTEND_IMAGE`/`NODE_IMAGE` to that tag instead of
+  `:latest` and takes `docker-compose.yml`, `Caddyfile` and `.env.example` from the same tag.
+- `wgpanel update [--version vX.Y.Z] [--force]` moves to the newest (or given) release: backup, that
+  release's images and deploy files, the self-node too, automatic rollback on a failed health check.
+  It is a no-op when already on that release, and asks before a downgrade.
+- `wgpanel rollback` restores the exact previous release (image tags and deploy files) instead of
+  restarting whatever images happen to be cached.
+- `wgpanel version` shows the installed release and the newest one.
+- `install-node.sh --version vX.Y.Z` installs a node on a given release, and
+  `install-node.sh --update [--version vX.Y.Z]` moves an installed node without a new join token.
+- `deploy/set-version.sh` writes the release version into `frontend/package.json` and both READMEs'
+  install instructions; the READMEs show the current release and a release badge.
+
 ## [0.1.0] - 2026-10-30
 
 First tagged release.
@@ -103,4 +120,5 @@ First tagged release.
 - Passkeys need the panel opened over HTTPS on its configured domain.
 - API clients that page through accounts should handle HTTP 429.
 
+[Unreleased]: https://github.com/iamfarhad/WGPanel/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/iamfarhad/WGPanel/releases/tag/v0.1.0

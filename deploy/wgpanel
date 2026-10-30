@@ -9,9 +9,15 @@ INSTALL_DIR="/opt/wgpanel"
 # The optional self-node (install.sh) runs as its own compose project here.
 NODE_DIR="/opt/wgpanel-node"
 ENV_FILE="$INSTALL_DIR/.env"
+NODE_ENV_FILE="$NODE_DIR/.env"
 BACKUP_DIR="$INSTALL_DIR/backups"
 STATE_DIR="$INSTALL_DIR/state"
+# The image lines (API_IMAGE/FRONTEND_IMAGE/NODE_IMAGE) of the last version that passed
+# its health check, plus copies of its docker-compose.yml and Caddyfile next to it.
 LAST_GOOD_FILE="$STATE_DIR/last-known-good-images.txt"
+# Where `wgpanel update` refreshes this CLI from (see install.sh's WGPANEL_TOOLS_REF).
+WGPANEL_TOOLS_REF="${WGPANEL_TOOLS_REF:-main}"
+CLI_PATH="/usr/local/bin/wgpanel"
 BACKUP_RETENTION_DAYS="${WGPANNEL_BACKUP_RETENTION_DAYS:-14}"
 HEALTH_TIMEOUT_SECONDS="${WGPANNEL_HEALTH_TIMEOUT_SECONDS:-90}"
 
@@ -203,30 +209,130 @@ cmd_restore() {
 
 # ---- update / rollback ----
 
-# update_self_node_container pulls + recreates the self-node container so `wgpanel
-# update` refreshes the node image too, not just the panel stack. The node runs as
-# its own compose project under NODE_DIR (install.sh's setup_self_node); this is a
-# no-op on a panel-only host where that dir doesn't exist. Replaces the old
-# bare-metal wg0.conf patcher - the node's NAT/forwarding now lives inside the
-# container image (node-entrypoint.sh), so there's no host config to patch.
+# installed_version prints the release the panel runs: the tag of API_IMAGE (e.g.
+# v0.1.0), or "latest" for an install from before images were pinned.
+installed_version() {
+  image_tag "$(env_get API_IMAGE || true)"
+}
+
+# update_self_node_container moves the self-node (install.sh's setup_self_node, its own
+# compose project under NODE_DIR) to the same release as the panel. A no-op on a
+# panel-only host where that dir doesn't exist. The node's NAT/forwarding lives inside
+# the container image (node-entrypoint.sh), so there's no host config to patch.
 update_self_node_container() {
+  local release="$1"
   [[ -f "$NODE_DIR/docker-compose.yml" ]] || return 0
-  log "Updating the self-node container..."
+  log "Updating the self-node container to ${release}..."
+  [[ -f "$NODE_ENV_FILE" ]] && env_set_key "$NODE_ENV_FILE" NODE_IMAGE "$(image_ref node "$release")"
   ( cd "$NODE_DIR" && docker compose pull && docker compose up -d ) \
     || warn "Could not update the self-node container - check: cd $NODE_DIR && docker compose logs"
 }
 
+# save_known_good records what is running now - the pinned image lines and the deploy
+# files - so cmd_rollback can put exactly this version back.
+save_known_good() {
+  mkdir -p "$STATE_DIR"
+  grep -E '^(API|FRONTEND|NODE)_IMAGE=' "$ENV_FILE" > "$LAST_GOOD_FILE" || true
+  cp docker-compose.yml "$STATE_DIR/docker-compose.yml.last-good"
+  if [[ -f Caddyfile ]]; then cp Caddyfile "$STATE_DIR/Caddyfile.last-good"; fi
+  if [[ -f "$NODE_ENV_FILE" ]]; then grep '^NODE_IMAGE=' "$NODE_ENV_FILE" > "$STATE_DIR/node-image.last-good" || true; fi
+}
+
+# fetch_release_files installs the release's docker-compose.yml and Caddyfile, the same
+# files install.sh copies (a release can add a service or change routing), and lists
+# settings the release's .env.example has that this .env lacks. Everything is downloaded
+# before anything is replaced, so a failed download leaves the install untouched.
+fetch_release_files() {
+  local release="$1" tmp name missing
+  tmp="$(mktemp -d)"
+  for name in docker-compose.yml Caddyfile .env.example; do
+    if ! curl -fsSL "$(deploy_file_url "$release" "$name")" -o "$tmp/$name"; then
+      rm -rf "$tmp"
+      return 1
+    fi
+  done
+  for name in docker-compose.yml Caddyfile; do
+    if ! cmp -s "$tmp/$name" "$name"; then
+      log "Updating ${name} to the ${release} version."
+      cp "$tmp/$name" "$name"
+    fi
+  done
+  missing="$(comm -23 <(grep -oE '^[A-Z0-9_]+=' "$tmp/.env.example" | sort -u) \
+                      <(grep -oE '^[A-Z0-9_]+=' "$ENV_FILE" | sort -u) | tr -d '=' | tr '\n' ' ')"
+  if [[ -n "${missing// /}" ]]; then
+    warn "${release} has settings your .env doesn't set (their defaults apply): ${missing}"
+    warn "See deploy/.env.example in ${release} if you need to change any of them."
+  fi
+  rm -rf "$tmp"
+}
+
+# refresh_cli replaces this CLI with the one on WGPANEL_TOOLS_REF. The new file is
+# checked with `bash -n` and renamed into place, so the copy running now is never
+# edited underneath itself.
+refresh_cli() {
+  local tmp
+  tmp="$(mktemp)"
+  if curl -fsSL "$(deploy_file_url "$WGPANEL_TOOLS_REF" wgpanel)" -o "$tmp" && bash -n "$tmp"; then
+    if ! cmp -s "$tmp" "$CLI_PATH"; then
+      install -m 0755 "$tmp" "${CLI_PATH}.new" && mv -f "${CLI_PATH}.new" "$CLI_PATH"
+      log "Refreshed the wgpanel CLI from ${WGPANEL_TOOLS_REF}."
+    fi
+  else
+    warn "Could not refresh the wgpanel CLI - keeping the current one."
+  fi
+  rm -f "$tmp"
+}
+
 cmd_update() {
+  local requested="latest" force=0 target current answer
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --version)
+        [[ $# -ge 2 ]] || { err "--version needs a value, e.g. wgpanel update --version v0.1.0"; exit 1; }
+        requested="$2"; shift 2 ;;
+      --version=*) requested="${1#--version=}"; shift ;;
+      --force) force=1; shift ;;
+      latest|v[0-9]*|[0-9]*) requested="$1"; shift ;;
+      *) err "Unknown argument: $1 (usage: wgpanel update [--version vX.Y.Z] [--force])"; exit 1 ;;
+    esac
+  done
+
+  target="$(version_resolve "$requested")" || exit 1
+  current="$(installed_version)"
+  if [[ "$target" == "$current" && "$force" -eq 0 ]]; then
+    log "Already on ${target} - nothing to update (wgpanel update --force redeploys it anyway)."
+    return 0
+  fi
+  # Migrations only ever run forward: an older API on a newer schema may not start.
+  if [[ "$current" == v* && "$(printf '%s\n%s\n' "$current" "$target" | sort -V | head -n1)" == "$target" && "$target" != "$current" ]]; then
+    warn "${target} is older than the installed ${current}. Database migrations are not undone,"
+    warn "so the older version may fail on the newer schema; the pre-update backup is the way back."
+    if [[ "$force" -eq 0 ]]; then
+      read -rp "Downgrade anyway? [y/N]: " answer || answer=""
+      [[ "$answer" =~ ^[Yy] ]] || { log "Cancelled."; return 0; }
+    fi
+  fi
+  log "Updating WGPanel ${current:-unknown} -> ${target}"
+
   log "Taking a pre-update backup..."
   cmd_backup
+  log "Recording the current version for rollback..."
+  save_known_good
 
-  mkdir -p "$STATE_DIR"
-  log "Recording current image versions for rollback..."
-  docker compose images --format '{{.Repository}}:{{.Tag}}' > "$LAST_GOOD_FILE" 2>/dev/null || \
-    docker compose config --images > "$LAST_GOOD_FILE"
+  if ! fetch_release_files "$target"; then
+    err "Could not download the ${target} deploy files from GitHub - nothing was changed."
+    exit 1
+  fi
+  env_set_key "$ENV_FILE" API_IMAGE "$(image_ref api "$target")"
+  env_set_key "$ENV_FILE" FRONTEND_IMAGE "$(image_ref frontend "$target")"
+  env_set_key "$ENV_FILE" NODE_IMAGE "$(image_ref node "$target")"
 
-  log "Pulling latest images..."
-  docker compose pull
+  log "Pulling the ${target} images..."
+  if ! docker compose pull; then
+    err "Could not pull the ${target} images. A release tagged minutes ago may still be publishing in CI."
+    cmd_rollback
+    exit 1
+  fi
 
   log "Recreating containers..."
   # --force-recreate: plain `up -d` skips a container whose service definition
@@ -236,34 +342,71 @@ cmd_update() {
   docker compose up -d --force-recreate
 
   if wait_for_health "$HEALTH_TIMEOUT_SECONDS"; then
-    log "Update successful. Current versions:"
-    cmd_version
-    update_self_node_container
+    log "Update to ${target} successful."
+    update_self_node_container "$target"
+    refresh_cli
+    log "Remote nodes keep their own version - on each one run:"
+    log "    sudo bash install-node.sh --update --version ${target}"
     log "Panel address: $(panel_url)"
   else
-    err "Health check failed after update - rolling back to the previous known-good images."
+    err "Health check failed after update - rolling back to ${current:-the previous version}."
     cmd_rollback
     exit 1
   fi
 }
 
 cmd_rollback() {
+  local line
   if [[ ! -f "$LAST_GOOD_FILE" ]]; then
     err "No recorded known-good version to roll back to (nothing to do)."
     exit 1
   fi
-  warn "Rolling back is best-effort: it restarts the stack against whatever images are cached locally"
-  warn "from before the last 'wgpanel update'. If those images were pruned, this will not work -"
-  warn "restore from a database backup instead: wgpanel restore <backup-file>"
-  docker compose up -d
+  if grep -qE '^(API|FRONTEND|NODE)_IMAGE=' "$LAST_GOOD_FILE"; then
+    while IFS= read -r line; do
+      env_set_key "$ENV_FILE" "${line%%=*}" "${line#*=}"
+    done < <(grep -E '^(API|FRONTEND|NODE)_IMAGE=' "$LAST_GOOD_FILE")
+    if [[ -f "$STATE_DIR/docker-compose.yml.last-good" ]]; then cp "$STATE_DIR/docker-compose.yml.last-good" docker-compose.yml; fi
+    if [[ -f "$STATE_DIR/Caddyfile.last-good" ]]; then cp "$STATE_DIR/Caddyfile.last-good" Caddyfile; fi
+    log "Rolling back to $(installed_version)..."
+    docker compose pull || warn "Could not pull the previous images - trying with the ones cached locally."
+  else
+    # Recorded by a CLI from before images were pinned: only a list of unpinned
+    # image names, so all that can be done is restart against the local cache.
+    warn "Rolling back is best-effort: it restarts the stack against whatever images are cached locally"
+    warn "from before the last 'wgpanel update'. If those images were pruned, this will not work -"
+    warn "restore from a database backup instead: wgpanel restore <backup-file>"
+  fi
+  docker compose up -d --force-recreate
   if wait_for_health "$HEALTH_TIMEOUT_SECONDS"; then
     log "Rollback health check passed."
   else
     err "Rollback health check also failed - manual intervention needed."
   fi
+  if [[ -f "$STATE_DIR/node-image.last-good" && -f "$NODE_ENV_FILE" ]]; then
+    line="$(head -n1 "$STATE_DIR/node-image.last-good")"
+    if [[ -n "$line" ]]; then
+      env_set_key "$NODE_ENV_FILE" NODE_IMAGE "${line#*=}"
+      ( cd "$NODE_DIR" && docker compose pull && docker compose up -d ) \
+        || warn "Could not roll back the self-node container - check: cd $NODE_DIR && docker compose logs"
+    fi
+  fi
 }
 
 cmd_version() {
+  local current latest
+  current="$(installed_version)"
+  if [[ "$current" == v* ]]; then
+    log "Installed: WGPanel ${current}"
+  else
+    log "Installed: unpinned images (${current:-unknown}) - 'wgpanel update' pins the newest release."
+  fi
+  if latest="$(version_latest)"; then
+    if [[ "$latest" == "$current" ]]; then
+      log "This is the newest release."
+    else
+      log "Newest release: ${latest} - update with: wgpanel update"
+    fi
+  fi
   docker compose images 2>/dev/null || docker compose config --images
 }
 
@@ -392,8 +535,12 @@ Lifecycle:
   status                  Show container + API health status
 
 Day-2 operations:
-  update                  Backup, pull latest images, redeploy, auto-rollback on failed health check
-  rollback                Redeploy the last known-good image set (best-effort; prefer restore for real recovery)
+  update [--version vX.Y.Z] [--force]
+                          Move to the newest release (or the one given): backup, pinned
+                          images + that release's compose/Caddyfile, redeploy, self-node
+                          too, auto-rollback on a failed health check
+  rollback                Go back to the version that ran before the last update
+  version                 Show the installed release and the newest one available
   backup                  Dump the database + .env into deploy/backups (auto-pruned after 14 days)
   restore <file>          Restore the database from a backup archive (destructive, asks for confirmation)
   doctor                  Check disk space, container/DB/Redis health, TLS cert expiry, backup freshness
@@ -423,6 +570,106 @@ Other:
                           /opt/wgpanel*, and this CLI (destructive, asks for confirmation)
 EOF
 }
+
+# >>> wgpanel version (this block is identical in install.sh, install-node.sh and wgpanel; deploy/check-net-tune-sync.sh enforces it)
+# Releases are git tags (vX.Y.Z), and CI publishes ghcr.io/iamfarhad/wgpanel-{api,frontend,node}
+# under the same tag. Installs pin that tag instead of :latest, so a plain `docker compose
+# pull` never changes the running version behind the operator's back, and `wgpanel
+# rollback` always has a concrete previous version to go back to.
+WGPANEL_GITHUB_REPO="${WGPANEL_GITHUB_REPO:-iamfarhad/WGPanel}"
+WGPANEL_IMAGE_REGISTRY="${WGPANEL_IMAGE_REGISTRY:-ghcr.io/iamfarhad}"
+
+# version_normalize accepts "0.1.0" or "v0.1.0" (with an optional -rc.1 style suffix)
+# and prints it the way the tags are written, with the leading v.
+version_normalize() {
+  local v="${1#v}"
+  [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || return 1
+  printf 'v%s\n' "$v"
+}
+
+# version_list prints the stable release tags (no pre-releases), oldest first.
+version_list() {
+  if command -v git >/dev/null 2>&1; then
+    git ls-remote --tags --refs "https://github.com/${WGPANEL_GITHUB_REPO}.git" 'v*' 2>/dev/null \
+      | sed -n 's#.*refs/tags/##p'
+  else
+    curl -fsSL --max-time 15 "https://api.github.com/repos/${WGPANEL_GITHUB_REPO}/tags?per_page=100" 2>/dev/null \
+      | sed -n 's/.*"name": *"\([^"]*\)".*/\1/p'
+  fi | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V
+}
+
+# version_latest prints the newest release. GitHub's releases/latest skips drafts and
+# pre-releases; the highest stable tag is the fallback when the API is unreachable or
+# rate-limited (60 unauthenticated calls an hour per IP).
+version_latest() {
+  local tag=""
+  tag="$(curl -fsSL --max-time 15 "https://api.github.com/repos/${WGPANEL_GITHUB_REPO}/releases/latest" 2>/dev/null \
+    | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)" || true
+  [[ -n "$tag" ]] || tag="$(version_list | tail -n1)" || true
+  [[ -n "$tag" ]] || return 1
+  printf '%s\n' "$tag"
+}
+
+# version_exists returns 0 when TAG is a published tag, 2 when GitHub says it isn't,
+# and 1 when GitHub can't be reached to tell.
+version_exists() {
+  local rc=0 code=""
+  if command -v git >/dev/null 2>&1; then
+    git ls-remote --exit-code --tags --refs "https://github.com/${WGPANEL_GITHUB_REPO}.git" "refs/tags/$1" >/dev/null 2>&1 || rc=$?
+    case "$rc" in 0) return 0 ;; 2) return 2 ;; *) return 1 ;; esac
+  fi
+  code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "https://api.github.com/repos/${WGPANEL_GITHUB_REPO}/git/ref/tags/$1" 2>/dev/null)" || true
+  case "$code" in 200) return 0 ;; 404) return 2 ;; *) return 1 ;; esac
+}
+
+# version_resolve prints the release to use: the newest one for "" or "latest", or the
+# requested one once GitHub confirms the tag exists. Messages go to stderr, so callers
+# can capture the result with $(...).
+version_resolve() {
+  local want="${1:-latest}" tag rc=0
+  if [[ "$want" == latest ]]; then
+    tag="$(version_latest)" || {
+      err "Could not look up the latest WGPanel release - is github.com reachable? Pass a version (e.g. --version v0.1.0) to pin one."
+      return 1
+    }
+  else
+    tag="$(version_normalize "$want")" || { err "'$want' is not a version - use a release tag such as v0.1.0."; return 1; }
+    version_exists "$tag" || rc=$?
+    if [[ $rc -eq 2 ]]; then
+      err "$tag is not a WGPanel release. Recent releases: $(version_list | tail -n 5 | tr '\n' ' ')"
+      return 1
+    elif [[ $rc -ne 0 ]]; then
+      warn "Could not reach GitHub to confirm $tag exists - continuing; pulling its images will fail if it doesn't." >&2
+    fi
+  fi
+  printf '%s\n' "$tag"
+}
+
+# image_ref prints the pinned image for one component: api, frontend or node.
+image_ref() { printf '%s/wgpanel-%s:%s\n' "$WGPANEL_IMAGE_REGISTRY" "$1" "$2"; }
+
+# image_tag prints the tag of an image reference, or nothing when it has none.
+image_tag() {
+  local last="${1%%@*}"
+  last="${last##*/}"
+  [[ "$last" == *:* ]] && printf '%s\n' "${last##*:}"
+  return 0
+}
+
+# deploy_file_url prints the raw GitHub URL of deploy/NAME at git ref REF.
+deploy_file_url() { printf 'https://raw.githubusercontent.com/%s/%s/deploy/%s\n' "$WGPANEL_GITHUB_REPO" "$1" "$2"; }
+
+# env_set_key sets KEY=VALUE in an env file: it replaces the existing line, or appends
+# one when the key is missing.
+env_set_key() {
+  local file="$1" key="$2" val="$3"
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    sed -i "s#^${key}=.*#${key}=${val}#" "$file"
+  else
+    printf '%s=%s\n' "$key" "$val" >> "$file"
+  fi
+}
+# <<< wgpanel version
 
 # >>> wgpanel net-tune (this block is identical in install.sh, install-node.sh and wgpanel; deploy/check-net-tune-sync.sh enforces it)
 # Host network tuning for WireGuard throughput: BBR + fq, bigger socket buffers and
@@ -612,7 +859,7 @@ main() {
     restart) cmd_restart "$@" ;;
     status) cmd_status ;;
     logs) cmd_logs "$@" ;;
-    update) cmd_update ;;
+    update) cmd_update "$@" ;;
     rollback) cmd_rollback ;;
     backup) cmd_backup ;;
     restore) cmd_restore "$@" ;;
