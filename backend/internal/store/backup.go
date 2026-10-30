@@ -20,6 +20,7 @@ var backupTables = []string{
 	"admin_totp",
 	"admin_recovery_codes",
 	"admin_passkeys",
+	"obfuscation_profiles", // before nodes: nodes.obfuscation_profile_id references it
 	"nodes",
 	"node_endpoints",
 	"accounts",
