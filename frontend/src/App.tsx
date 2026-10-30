@@ -14,6 +14,7 @@ import { AdminUsersPage } from './pages/AdminUsersPage'
 import { AuditLogPage } from './pages/AuditLogPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { ResellersPage } from './pages/ResellersPage'
+import { MyResellersPage } from './pages/MyResellersPage'
 import { ReportsPage } from './pages/ReportsPage'
 import { SecurityPage } from './pages/SecurityPage'
 import { TemplatesPage } from './pages/TemplatesPage'
@@ -50,6 +51,7 @@ function App() {
                   <Route path="/audit-log" element={<AuditLogPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                   <Route path="/resellers" element={<ResellersPage />} />
+                  <Route path="/my-resellers" element={<MyResellersPage />} />
                   <Route path="/reports" element={<ReportsPage />} />
                   <Route path="/security" element={<SecurityPage />} />
                   <Route path="/webhooks" element={<WebhooksPage />} />

@@ -20,6 +20,7 @@ import { Dialog } from '../components/ui/Dialog'
 import { SecuritySettingsCard } from '../components/SecuritySettingsCard'
 import { NotificationChannelsCard } from '../components/settings/NotificationChannelsCard'
 import { BackupScheduleCard } from '../components/settings/BackupScheduleCard'
+import { BrandingEditor } from '../components/branding/BrandingEditor'
 
 interface Settings {
   public_base_url: string | null
@@ -626,6 +627,12 @@ export function SettingsPage() {
             </form>
           )}
         </Card>
+
+        <BrandingEditor
+          endpoint="/api/v1/branding"
+          title="Default branding"
+          description="Brand name, logo, support link and an announcement shown on the subscription page of your own accounts and of resellers without branding."
+        />
 
         <SecuritySettingsCard />
 

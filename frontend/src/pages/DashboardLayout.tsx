@@ -21,6 +21,7 @@ import {
   ExternalLink,
   Fingerprint,
   Webhook,
+  Network,
 } from 'lucide-react'
 import { useAuth } from '../lib/auth'
 import type { AdminRole } from '../lib/auth'
@@ -39,6 +40,8 @@ interface NavItem {
   // Shown to reseller sessions. Resellers get a deliberately small panel (their own
   // dashboard and accounts); everything else is staff tooling the API denies them.
   reseller?: boolean
+  // Only for reseller sessions (staff manage the same data on their own pages).
+  resellerOnly?: boolean
   // External items are plain links opened in a new tab (e.g. the static Swagger
   // page), not SPA routes - they render as <a>, never match as "active".
   external?: boolean
@@ -71,6 +74,7 @@ const navGroups: NavGroup[] = [
     label: 'Administration',
     items: [
       { to: '/resellers', label: 'Resellers', icon: Store, minRole: 'super_admin' },
+      { to: '/my-resellers', label: 'My resellers', icon: Network, reseller: true, resellerOnly: true },
       { to: '/api-keys', label: 'API Keys', icon: KeyRound, minRole: 'super_admin', reseller: true },
       { to: '/webhooks', label: 'Webhooks', icon: Webhook, minRole: 'support', reseller: true },
       { to: '/admins', label: 'Admin Users', icon: ShieldCheck, minRole: 'super_admin' },
@@ -139,7 +143,7 @@ export function DashboardLayout() {
         (item) =>
           user?.role === 'reseller'
             ? item.reseller === true
-            : !item.minRole || (user && roleRank[user.role] >= roleRank[item.minRole]),
+            : !item.resellerOnly && (!item.minRole || (user && roleRank[user.role] >= roleRank[item.minRole])),
       ),
     }))
     .filter((group) => group.items.length > 0)

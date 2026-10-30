@@ -15,6 +15,9 @@ export const EVENT_CATALOG: { type: string; label: string; severity: 'info' | 'w
   { type: 'account.expired', label: 'Account expired', severity: 'warning' },
   { type: 'reseller.credit_low', label: 'Reseller data credit is low', severity: 'warning' },
   { type: 'reseller.plan_expiring', label: 'Reseller plan expires soon', severity: 'warning' },
+  { type: 'reseller.child_created', label: 'Sub-reseller created', severity: 'info' },
+  { type: 'reseller.child_updated', label: 'Sub-reseller updated', severity: 'info' },
+  { type: 'reseller.child_deleted', label: 'Sub-reseller deleted', severity: 'info' },
   { type: 'backup.succeeded', label: 'Backup completed', severity: 'info' },
   { type: 'backup.failed', label: 'Backup failed', severity: 'critical' },
 ]
